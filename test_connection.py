@@ -3,11 +3,11 @@
 Test Polymarket API Connection
 ===============================
 
-Run this BEFORE going live to verify your credentials work.
+Run this to verify read-only market data connectivity and local credentials.
 
 Usage:
     python3 test_connection.py
-    python3 test_connection.py --config config.live.yaml
+    python3 test_connection.py --config config.yaml
 """
 
 import asyncio
@@ -19,18 +19,18 @@ from utils.logging_utils import setup_logging
 from polymarket_client import PolymarketClient
 
 
-async def test_connection(config_path: str = "config.live.yaml"):
+async def test_connection(config_path: str = "config.yaml"):
     """Test the API connection and credentials."""
     print("=" * 60)
-    print("🔌 Polymarket API Connection Test")
+    print("Polymarket API Connection Test")
     print("=" * 60)
     
     # Load config
     try:
         config = load_config(config_path)
-        print(f"✅ Config loaded from {config_path}")
+        print(f"[OK] Config loaded from {config_path}")
     except Exception as e:
-        print(f"❌ Failed to load config: {e}")
+        print(f"[ERROR] Failed to load config: {e}")
         return False
     
     print(f"   Mode: {config.mode.trading_mode.upper()}")
@@ -38,18 +38,18 @@ async def test_connection(config_path: str = "config.live.yaml"):
     
     # Check credentials
     if config.is_live:
-        if not config.api.api_key or config.api.api_key == "YOUR_API_KEY_HERE":
-            print("❌ API key not configured!")
-            print("   Edit config.live.yaml and add your API key")
+        if not config.api.api_key:
+            print("[ERROR] API key not configured!")
+            print("   Add POLYMARKET_API_KEY to .env.local or your secret manager")
             return False
         
-        if not config.api.private_key or config.api.private_key == "YOUR_WALLET_PRIVATE_KEY_HERE":
-            print("❌ Private key not configured!")
-            print("   Edit config.live.yaml and add your wallet private key")
+        if not config.api.private_key:
+            print("[ERROR] Private key not configured!")
+            print("   Add POLYMARKET_PRIVATE_KEY to .env.local or your secret manager")
             return False
     
     print()
-    print("📡 Testing API connection...")
+    print("Testing API connection...")
     
     # Create client
     client = PolymarketClient(
@@ -65,17 +65,17 @@ async def test_connection(config_path: str = "config.live.yaml"):
     
     try:
         await client.connect()
-        print("✅ HTTP client connected")
+        print("[OK] HTTP client connected")
     except Exception as e:
-        print(f"❌ Connection failed: {e}")
+        print(f"[ERROR] Connection failed: {e}")
         return False
     
     # Test Gamma API (market data)
     print()
-    print("📊 Testing Gamma API (market data)...")
+    print("Testing Gamma API (market data)...")
     try:
         markets = await client.list_markets({"limit": 5, "closed": "false"})
-        print(f"✅ Gamma API working - found {len(markets)} markets")
+        print(f"[OK] Gamma API working - found {len(markets)} markets")
         
         if markets:
             print("   Sample markets:")
@@ -83,32 +83,32 @@ async def test_connection(config_path: str = "config.live.yaml"):
                 print(f"   - {m.question[:50]}...")
                 print(f"     Volume 24h: ${m.volume_24h:,.0f} | Liquidity: ${m.liquidity:,.0f}")
     except Exception as e:
-        print(f"❌ Gamma API error: {e}")
+        print(f"[ERROR] Gamma API error: {e}")
         await client.disconnect()
         return False
     
     # Test positions (requires auth)
     if config.is_live:
         print()
-        print("💼 Testing authenticated endpoints...")
+        print("Testing authenticated endpoints...")
         try:
             positions = await client.get_positions()
-            print(f"✅ Auth working - {len(positions)} positions")
+            print(f"[OK] Auth working - {len(positions)} positions")
         except Exception as e:
-            print(f"⚠️  Could not fetch positions: {e}")
+            print(f"[WARN] Could not fetch positions: {e}")
             print("   This may be normal if you have no positions yet")
     
     await client.disconnect()
     
     print()
     print("=" * 60)
-    print("✅ Connection test PASSED!")
+    print("[OK] Connection test PASSED!")
     print("=" * 60)
     print()
     print("Next steps:")
-    print("1. Review config.live.yaml settings")
-    print("2. Start with: python3 run_with_dashboard.py -c config.live.yaml")
-    print("3. Monitor closely on the dashboard")
+    print("1. Run scanner: uv run python run_with_dashboard.py")
+    print("2. Run paper mode intentionally: uv run python run_with_dashboard.py --paper")
+    print("3. Keep live mode disabled until the Phase 6 execution layer exists")
     print()
     
     return True
@@ -116,7 +116,7 @@ async def test_connection(config_path: str = "config.live.yaml"):
 
 def main():
     parser = argparse.ArgumentParser(description="Test Polymarket API connection")
-    parser.add_argument("-c", "--config", default="config.live.yaml", help="Config file")
+    parser.add_argument("-c", "--config", default="config.yaml", help="Config file")
     args = parser.parse_args()
     
     setup_logging(console_level="WARNING")
@@ -127,4 +127,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

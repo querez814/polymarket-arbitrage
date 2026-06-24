@@ -246,12 +246,23 @@ class PolymarketClient(BasePolymarketClient):
                 params["limit"] = limit
                 params["offset"] = offset
                 
-                data = await self._request(
-                    "GET", 
-                    "/markets",
-                    params=params,
-                    base_url=self.gamma_url,
-                )
+                try:
+                    data = await self._request(
+                        "GET",
+                        "/markets",
+                        params=params,
+                        base_url=self.gamma_url,
+                    )
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code in (400, 422) and all_markets:
+                        logger.warning(
+                            "Stopping market pagination at offset=%s after API rejected the page; "
+                            "continuing with %s loaded markets",
+                            offset,
+                            len(all_markets),
+                        )
+                        break
+                    raise
                 
                 if not data:
                     break
@@ -786,32 +797,12 @@ class PolymarketClient(BasePolymarketClient):
             logger.info(f"[DRY RUN] Placing order: {order}")
             self._simulated_orders[order_id] = order
             return order
-        
-        try:
-            # TODO: Implement actual order placement
-            # Would need to:
-            # 1. Build order with proper token IDs
-            # 2. Sign with private key
-            # 3. Submit to CLOB
-            payload = {
-                "market_id": market_id,
-                "token_id": "",  # TODO: Map token_type to actual token ID
-                "side": side.value,
-                "price": str(price),
-                "size": str(size),
-            }
-            
-            data = await self._request("POST", "/order", json_data=payload)
-            order.order_id = data.get("order_id", order_id)
-            order.status = OrderStatus.OPEN
-            
-            logger.info(f"Order placed: {order.order_id}")
-            return order
-            
-        except Exception as e:
-            logger.error(f"Failed to place order: {e}")
-            order.status = OrderStatus.REJECTED
-            raise
+
+        order.status = OrderStatus.REJECTED
+        raise NotImplementedError(
+            "Live Polymarket order placement is intentionally disabled. "
+            "Use scanner or paper mode until the Phase 6 live execution layer is implemented."
+        )
     
     async def cancel_order(self, order_id: str) -> None:
         """
@@ -825,13 +816,11 @@ class PolymarketClient(BasePolymarketClient):
                 self._simulated_orders[order_id].status = OrderStatus.CANCELLED
                 logger.info(f"[DRY RUN] Cancelled order: {order_id}")
             return
-        
-        try:
-            await self._request("DELETE", f"/order/{order_id}")
-            logger.info(f"Order cancelled: {order_id}")
-        except Exception as e:
-            logger.error(f"Failed to cancel order {order_id}: {e}")
-            raise
+
+        raise NotImplementedError(
+            "Live Polymarket order cancellation is intentionally disabled. "
+            "Use scanner or paper mode until the Phase 6 live execution layer is implemented."
+        )
     
     async def cancel_all_orders(self, market_id: Optional[str] = None) -> int:
         """Cancel all open orders, optionally for a specific market."""
@@ -990,4 +979,3 @@ class PolymarketClient(BasePolymarketClient):
                 realized = (trade.price - pos.avg_entry_price) * trade.size
                 pos.realized_pnl += realized
             pos.size -= trade.size
-

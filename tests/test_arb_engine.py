@@ -24,6 +24,7 @@ def arb_config() -> ArbConfig:
     return ArbConfig(
         min_edge=0.01,
         bundle_arb_enabled=True,
+        bundle_short_enabled=True,
         min_spread=0.05,
         mm_enabled=True,
         tick_size=0.01,
@@ -127,6 +128,31 @@ class TestBundleArbitrage:
         signal = bundle_signals[0]
         assert signal.opportunity.opportunity_type == OpportunityType.BUNDLE_SHORT
         assert signal.opportunity.edge >= 0.04
+
+    def test_bundle_short_disabled_by_default(self):
+        """Bundle short is not part of the default safe strategy set."""
+        engine = ArbEngine(ArbConfig(
+            min_edge=0.01,
+            bundle_arb_enabled=True,
+            bundle_short_enabled=False,
+            mm_enabled=False,
+            maker_fee_bps=0,
+            taker_fee_bps=0,
+            gas_cost_per_order=0,
+        ))
+        order_book = create_order_book(
+            market_id="test_market",
+            yes_bid=0.55,
+            yes_ask=0.57,
+            no_bid=0.50,
+            no_ask=0.52,
+        )
+
+        state = create_market_state(order_book)
+        signals = engine.analyze(state)
+
+        bundle_signals = [s for s in signals if s.opportunity and s.opportunity.is_bundle_arb]
+        assert len(bundle_signals) == 0
     
     def test_no_opportunity_when_fair(self, arb_engine: ArbEngine):
         """Test no bundle opportunity when prices are fair."""
@@ -290,4 +316,3 @@ class TestEdgeCases:
         # Should not crash
         signals = arb_engine.analyze(state)
         assert isinstance(signals, list)
-

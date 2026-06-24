@@ -10,13 +10,14 @@ api:
   # Kalshi API endpoint (public, no auth needed for market data)
   kalshi_api_url: "https://api.elections.kalshi.com/trade-api/v2"
   
-  # Authentication (replace with your credentials)
-  api_key: "YOUR_API_KEY_HERE"
-  api_secret: "YOUR_API_SECRET_HERE"
-  passphrase: "YOUR_PASSPHRASE_HERE"
-  
-  # Wallet configuration
-  private_key: "YOUR_PRIVATE_KEY_HERE"
+  # Authentication comes from .env.local, the shell environment, keychain, or a
+  # secret manager. Keep real secrets out of tracked YAML.
+  api_key: ""
+  api_secret: ""
+  passphrase: ""
+  private_key: ""
+  kalshi_api_key: ""
+  kalshi_private_key_path: ""
   
   # Request settings
   timeout_seconds: 30
@@ -30,8 +31,9 @@ trading:
   # Arbitrage settings
   min_edge: 0.01           # 1% edge required for bundle arbitrage
   bundle_arb_enabled: true
+  bundle_short_enabled: false  # Disabled until live inventory/execution is hardened
   
-  # Market-making settings
+  # Market-making settings (disabled until paper data proves it is safe)
   min_spread: 0.05         # 5c spread to act as market maker
   tick_size: 0.01          # Minimum price increment
   mm_enabled: false        # Disabled for real data (markets too efficient)
@@ -72,8 +74,11 @@ risk:
   auto_unwind_on_breach: false
 
 mode:
-  # Trading mode: "live" or "dry_run"
-  trading_mode: "dry_run"
+  # Trading mode: "scanner", "paper", or "live"
+  # scanner: detect/log opportunities only; no order ledger
+  # paper: simulated order ledger/fills only; no real orders
+  # live: refused until the Phase 6 execution layer is implemented
+  trading_mode: "scanner"
   
   # Data mode: "real" or "simulation"
   # - "real": Fetch actual order books from Polymarket CLOB API
@@ -84,11 +89,21 @@ mode:
   cross_platform_enabled: true    # Enable cross-platform arbitrage detection
   kalshi_enabled: true            # Enable Kalshi market monitoring
   min_match_similarity: 0.6       # Minimum similarity score for market matching (0-1)
+
+  # Live mode hard gates. These must remain false in tracked config.
+  live_trading_enabled: false
+  manual_live_approval: false
   
-  # Dry run settings
+  # Paper trading settings
   dry_run_initial_balance: 10000
   simulate_fills: true
-  fill_probability: 0.8          # Probability of order being filled in dry run
+  fill_probability: 0.8          # Probability of order being filled in paper mode
+
+venue_access:
+  # Confirm these manually before any future live-trading work.
+  polymarket_venue: "unconfirmed"     # global | us | none | unconfirmed
+  kalshi_environment: "unconfirmed"   # demo | production | none | unconfirmed
+  no_geoblock_workarounds: false
 
 logging:
   # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -115,4 +130,3 @@ monitoring:
   # Performance metrics
   track_latency: true
   track_fill_rates: true
-

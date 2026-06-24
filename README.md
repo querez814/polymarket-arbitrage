@@ -1,4 +1,4 @@
-# Polymarket + Kalshi Arbitrage Bot
+# Polymarket + Kalshi Arbitrage Scanner
 
 <div align="center">
 
@@ -7,7 +7,7 @@
 ![Status](https://img.shields.io/badge/Status-Active-brightgreen.svg)
 ![Platforms](https://img.shields.io/badge/Platforms-Polymarket%20%7C%20Kalshi-orange.svg)
 
-**Cross-platform arbitrage detection between Polymarket and Kalshi prediction markets**
+**Scanner-first arbitrage detection between Polymarket and Kalshi prediction markets**
 
 [Features](#-features) • [Demo](#-demo) • [Quick Start](#-quick-start) • [Dashboard](#-live-dashboard) • [Configuration](#%EF%B8%8F-configuration)
 
@@ -45,9 +45,9 @@
 
 ## 🎯 Features
 
-- **🔀 Cross-Platform Arbitrage** - Detects price differences between Polymarket and Kalshi for the same prediction
-- **🔍 Bundle Arbitrage Detection** - Identifies when YES + NO prices don't sum to ~$1.00
-- **📊 Market Making** - Captures spreads by placing competitive bid/ask orders  
+- **🔀 Cross-Platform Candidate Matching** - Suggests similar Polymarket/Kalshi markets for review
+- **🔍 Bundle Long Detection** - Identifies when YES ask + NO ask is below $1.00 after fees
+- **📊 Market Making Research** - Legacy detector is present but disabled by default
 - **🛡️ Risk Management** - Position limits, loss limits, kill switch
 - **📈 Live Dashboard** - Real-time web UI showing opportunities and bot activity
 - **🔄 Dual Data Modes** - Switch between real market data and simulation
@@ -73,7 +73,7 @@ mode:
 - Perfect for **screenshots, demos, and testing strategies**
 - Fast updates to see the bot in action
 
-### 🌐 Real Mode (for live trading)
+### 🌐 Real Mode (for live market data)
 
 ```yaml
 mode:
@@ -81,7 +81,7 @@ mode:
 ```
 
 - Connects to **Polymarket's Gamma API** for market discovery
-- Fetches **real order books** from the CLOB (Central Limit Order Book) API
+- Fetches **real order books** from the configured CLOB API
 - Scans **5,000+ markets** across all categories
 - Real markets are highly efficient - arbitrage opportunities are rare!
 
@@ -93,8 +93,9 @@ mode:
 polymarket-arbitrage/
 ├── main.py                   # Main entry point
 ├── run_with_dashboard.py     # Bot + live dashboard
-├── config.yaml               # Configuration (edit this!)
-├── requirements.txt          # Python dependencies
+├── config.yaml               # Safe scanner configuration template
+├── pyproject.toml            # uv project dependencies
+├── uv.lock                   # Locked dependency graph
 │
 ├── polymarket_client/        # Polymarket API client
 │   ├── api.py               # REST + WebSocket integration
@@ -140,21 +141,16 @@ git clone https://github.com/ImMike/polymarket-arbitrage.git
 cd polymarket-arbitrage
 
 # Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate      # Linux/Mac
-venv\Scripts\activate         # Windows
-
-# Install dependencies
-pip install -r requirements.txt
+uv sync
 ```
 
 ### 2. Configure
 
-Edit `config.yaml`:
+Edit `config.yaml` only for non-secret settings:
 
 ```yaml
 mode:
-  trading_mode: "dry_run"     # Start with dry run!
+  trading_mode: "scanner"     # scanner | paper | live
   data_mode: "real"           # Use "simulation" for demos
   cross_platform_enabled: true  # Enable Polymarket + Kalshi arbitrage
   kalshi_enabled: true        # Enable Kalshi monitoring
@@ -162,6 +158,8 @@ mode:
 trading:
   min_edge: 0.01              # 1% minimum edge
   default_order_size: 5       # Start small
+  bundle_short_enabled: false # Disabled by default
+  mm_enabled: false           # Disabled by default
 
 risk:
   max_position_per_market: 15
@@ -172,23 +170,26 @@ risk:
 ### 3. Run with Dashboard
 
 ```bash
-# Run bot with live dashboard
-python run_with_dashboard.py
+# Run scanner with dashboard
+uv run python run_with_dashboard.py
 
-# Open http://localhost:8000 in your browser
+# Open http://localhost:8888 in your browser
 ```
 
 ### 4. Other Run Modes
 
 ```bash
 # Bot only (no dashboard)
-python main.py
+uv run python main.py
+
+# Paper trading ledger (simulated orders/fills only)
+uv run python main.py --paper
 
 # Verbose logging
-python main.py -v
+uv run python main.py -v
 
 # Specify config file
-python main.py --config config.live.yaml
+uv run python main.py --config custom.yaml
 ```
 
 ---
@@ -209,7 +210,7 @@ The dashboard provides real-time visibility into bot operations:
 
 </div>
 
-Access at `http://localhost:8000` when running with `run_with_dashboard.py`
+Access at `http://localhost:8888` when running with `run_with_dashboard.py`
 
 ---
 
@@ -217,7 +218,7 @@ Access at `http://localhost:8000` when running with `run_with_dashboard.py`
 
 ### 🔀 Cross-Platform Arbitrage (NEW!)
 
-Detects when the same prediction is priced differently on Polymarket vs Kalshi:
+Suggests when similar predictions may be priced differently on Polymarket vs Kalshi:
 
 | Condition | Action | Profit |
 |-----------|--------|--------|
@@ -229,7 +230,7 @@ Detects when the same prediction is priced differently on Polymarket vs Kalshi:
 - Same prediction YES is **$0.58** on Kalshi
 - **Profit opportunity**: Buy on Polymarket, sell on Kalshi = **6% edge** (minus fees)
 
-The bot uses **text similarity matching** to automatically find equivalent predictions across platforms.
+The current matcher is a scanner aid. Treatable pairs should be manually reviewed for exact resolution rules before any future paper or live execution.
 
 ### Bundle Arbitrage
 
@@ -237,18 +238,19 @@ Detects when YES + NO tokens are mispriced within a single platform:
 
 | Condition | Action | Profit |
 |-----------|--------|--------|
-| `ask_yes + ask_no < $1.00` | Buy both | Guaranteed $1 payout |
-| `bid_yes + bid_no > $1.00` | Sell both | Lock in premium |
+| `ask_yes + ask_no < $1.00` | Buy both | $1 payout less fees/slippage |
+| `bid_yes + bid_no > $1.00` | Disabled by default | Requires inventory/execution controls |
 
 **Example**: If YES trades at $0.45 and NO at $0.52, buying both costs $0.97 but pays out $1.00 = **3% profit**
 
 ### Market Making
 
-Places orders inside wide spreads:
+The market-making detector is legacy research code and is disabled by default. Do not enable it until paper logs prove fill behavior, inventory reconciliation, and loss controls are reliable.
 
-1. If spread ≥ 5¢, place bid slightly above best bid
-2. Place ask slightly below best ask  
-3. Profit when both sides fill
+```yaml
+trading:
+  mm_enabled: false
+```
 
 ---
 
@@ -258,14 +260,15 @@ Places orders inside wide spreads:
 
 | Section | Parameter | Description | Default |
 |---------|-----------|-------------|---------|
-| `mode` | `trading_mode` | `"dry_run"` or `"live"` | `dry_run` |
+| `mode` | `trading_mode` | `"scanner"`, `"paper"`, or `"live"` | `scanner` |
 | `mode` | `data_mode` | `"simulation"` or `"real"` | `real` |
 | `mode` | `cross_platform_enabled` | Enable Polymarket + Kalshi | `true` |
 | `mode` | `kalshi_enabled` | Enable Kalshi monitoring | `true` |
 | `mode` | `min_match_similarity` | Market matching threshold | 0.6 |
 | `trading` | `min_edge` | Min profit after fees | 0.01 (1%) |
+| `trading` | `bundle_short_enabled` | Enable bundle short research path | false |
 | `trading` | `min_spread` | Min spread for MM | 0.05 (5¢) |
-| `trading` | `mm_enabled` | Enable market making | true |
+| `trading` | `mm_enabled` | Enable market making research path | false |
 | `risk` | `max_position_per_market` | Max $ per market | 200 |
 | `risk` | `max_global_exposure` | Max total exposure | 5000 |
 | `risk` | `max_daily_loss` | Stop-loss limit | 500 |
@@ -281,11 +284,10 @@ trading:
 
 ### Environment Variables
 
-Store sensitive data in environment variables:
+Store sensitive data in `.env.local`, your shell, keychain, or a secret manager. Keep tracked YAML blank and use `.env.example` as the template:
 
 ```bash
-export POLYMARKET_API_KEY="your_api_key"
-export POLYMARKET_PRIVATE_KEY="your_private_key"
+cp .env.example .env.local
 ```
 
 ---
@@ -294,13 +296,13 @@ export POLYMARKET_PRIVATE_KEY="your_private_key"
 
 ```bash
 # Run all tests
-pytest tests/ -v
+uv run pytest tests/ -v
 
 # Run specific test
-pytest tests/test_arb_engine.py -v
+uv run pytest tests/test_arb_engine.py -v
 
 # With coverage report
-pytest tests/ --cov=core --cov=polymarket_client
+uv run pytest tests/ --cov=core --cov=polymarket_client
 ```
 
 ---
@@ -346,18 +348,18 @@ pytest tests/ --cov=core --cov=polymarket_client
 
 ### Risk Warnings
 
-1. **🧪 Start in dry run mode** - Always test before using real money
-2. **💵 Start small** - Begin with minimal capital ($50-100)
-3. **👀 Monitor actively** - Don't leave running unattended
-4. **📉 Expect losses** - Trading always carries risk
-5. **🔬 This is experimental** - Use at your own risk
+1. **Start in scanner mode** - The default path never places real or simulated orders
+2. **Move to paper mode intentionally** - Use `--paper` for simulated ledger/fill data
+3. **Keep live disabled** - Live startup currently refuses until the Phase 6 execution layer exists
+4. **Confirm venue access manually** - No geoblock/workaround assumptions belong in config or code
+5. **Expect losses** - Trading always carries risk
 
 ### Polymarket Notes
 
 - Polymarket uses a **hybrid model**: centralized order matching, on-chain settlement
 - No gas fees for trading (Polymarket covers them)
 - Funds are held in USDC on Polygon
-- API keys required for live trading
+- Future authenticated adapters should read credentials from `.env.local`, keychain, or a secret manager
 
 ### Kalshi Notes
 

@@ -7,8 +7,8 @@ Starts the trading bot and web dashboard together.
 Supports cross-platform arbitrage between Polymarket and Kalshi.
 
 Usage:
-    python run_with_dashboard.py              # Dry run mode
-    python run_with_dashboard.py --live       # Live mode
+    python run_with_dashboard.py              # Scanner mode
+    python run_with_dashboard.py --paper      # Paper trading mode
     python run_with_dashboard.py --port 8080  # Custom port
 """
 
@@ -30,7 +30,7 @@ from core.execution import ExecutionEngine, ExecutionConfig
 from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketMatcher
-from utils.config_loader import load_config, BotConfig
+from utils.config_loader import BotConfig, ConfigError, load_config, validate_config
 from utils.logging_utils import setup_logging
 from dashboard.server import app, dashboard_state
 from dashboard.integration import DashboardIntegration
@@ -69,10 +69,13 @@ class TradingBotWithDashboard:
     
     async def start(self) -> None:
         """Start the bot and dashboard."""
+        validate_config(self.config)
+
         logger.info("=" * 60)
         logger.info("Polymarket + Kalshi Arbitrage Bot")
         logger.info("=" * 60)
-        logger.info(f"Mode: {'DRY RUN' if self.config.is_dry_run else 'LIVE'}")
+        logger.info(f"Mode: {self.config.trading_mode.upper()}")
+        logger.info(f"Execution: {'ENABLED' if self.config.is_paper else 'DISABLED'}")
         logger.info(f"Cross-Platform: {'ENABLED' if self.config.mode.cross_platform_enabled else 'DISABLED'}")
         logger.info(f"Dashboard: http://localhost:{self.port}")
         logger.info("=" * 60)
@@ -112,7 +115,7 @@ class TradingBotWithDashboard:
         # Initialize portfolio
         initial_balance = (
             self.config.mode.dry_run_initial_balance 
-            if self.config.is_dry_run 
+            if self.config.is_paper 
             else 0.0
         )
         self.portfolio = Portfolio(initial_balance=initial_balance)
@@ -139,6 +142,8 @@ class TradingBotWithDashboard:
                 slippage_tolerance=self.config.trading.slippage_tolerance,
                 order_timeout_seconds=self.config.trading.order_timeout_seconds,
                 dry_run=self.config.is_dry_run,
+                execution_enabled=self.config.is_paper,
+                trading_mode=self.config.trading_mode,
             ),
         )
         await self.execution_engine.start()
@@ -147,6 +152,7 @@ class TradingBotWithDashboard:
         self.arb_engine = ArbEngine(ArbConfig(
             min_edge=self.config.trading.min_edge,
             bundle_arb_enabled=self.config.trading.bundle_arb_enabled,
+            bundle_short_enabled=self.config.trading.bundle_short_enabled,
             min_spread=self.config.trading.min_spread,
             mm_enabled=self.config.trading.mm_enabled,
             tick_size=self.config.trading.tick_size,
@@ -173,12 +179,12 @@ class TradingBotWithDashboard:
             execution_engine=self.execution_engine,
             risk_manager=self.risk_manager,
             portfolio=self.portfolio,
-            mode="dry_run" if self.config.is_dry_run else "live",
+            mode=self.config.trading_mode,
         )
         await self.dashboard_integration.start()
         
-        # Start fill simulation for dry run
-        if self.config.is_dry_run and self.config.mode.simulate_fills:
+        # Start fill simulation for paper mode
+        if self.config.is_paper and self.config.mode.simulate_fills:
             asyncio.create_task(self._simulate_fills())
         
         # Start the web server
@@ -225,12 +231,16 @@ class TradingBotWithDashboard:
                 action=signal.action,
                 market_id=signal.market_id,
             )
+
+            if self.config.is_scanner:
+                logger.debug(f"Scanner mode observed signal: {signal.signal_id}")
+                continue
             
             # Submit to execution
             asyncio.create_task(self.execution_engine.submit_signal(signal))
     
     async def _simulate_fills(self) -> None:
-        """Simulate order fills in dry run mode."""
+        """Simulate order fills in paper mode."""
         import random
         
         while self._running:
@@ -435,6 +445,25 @@ class TradingBotWithDashboard:
             pass
 
 
+def _apply_mode_overrides(config: BotConfig, args: argparse.Namespace) -> None:
+    """Apply command-line mode overrides with conflict detection."""
+    requested_modes: list[str] = []
+    if args.mode:
+        requested_modes.append(args.mode)
+    if args.scanner:
+        requested_modes.append("scanner")
+    if args.paper or args.dry_run:
+        requested_modes.append("paper")
+    if args.live:
+        requested_modes.append("live")
+
+    if len(set(requested_modes)) > 1:
+        raise ConfigError("choose only one trading mode override")
+
+    if requested_modes:
+        config.mode.trading_mode = requested_modes[0]
+
+
 async def main_async(args: argparse.Namespace) -> None:
     """Async main function."""
     # Load config
@@ -444,11 +473,12 @@ async def main_async(args: argparse.Namespace) -> None:
         logger.error(f"Failed to load config: {e}")
         sys.exit(1)
     
-    # Override mode
-    if args.live:
-        config.mode.trading_mode = "live"
-    elif args.dry_run:
-        config.mode.trading_mode = "dry_run"
+    try:
+        _apply_mode_overrides(config, args)
+        validate_config(config)
+    except ConfigError as e:
+        logger.error(f"Invalid runtime configuration: {e}")
+        sys.exit(1)
     
     # Create and run bot with dashboard
     bot = TradingBotWithDashboard(config, port=args.port)
@@ -497,18 +527,36 @@ def main() -> None:
         default=8888,
         help="Dashboard port (default: 8888)"
     )
+
+    parser.add_argument(
+        "--mode",
+        choices=["scanner", "paper", "live"],
+        help="Trading mode override"
+    )
+
+    parser.add_argument(
+        "--scanner",
+        action="store_true",
+        help="Run in scanner mode (default, no orders)"
+    )
+
+    parser.add_argument(
+        "--paper",
+        action="store_true",
+        help="Run in paper trading mode (simulated orders only)"
+    )
     
     parser.add_argument(
         "--live",
         action="store_true",
-        help="Run in live mode"
+        help="Request live mode; startup will refuse until live execution is implemented"
     )
     
     parser.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="Run in dry-run mode (default)"
+        help="Deprecated alias for --paper"
     )
     
     parser.add_argument(
@@ -532,4 +580,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

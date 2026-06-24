@@ -29,7 +29,7 @@ class DashboardIntegration:
         execution_engine=None,
         risk_manager=None,
         portfolio=None,
-        mode: str = "dry_run",
+        mode: str = "scanner",
     ):
         self.data_feed = data_feed
         self.arb_engine = arb_engine
@@ -231,4 +231,3 @@ class DashboardIntegration:
             "type": "activity",
             "data": trade
         }))
-

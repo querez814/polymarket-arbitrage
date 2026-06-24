@@ -39,6 +39,8 @@ class ExecutionConfig:
     retry_delay: float = 0.5
     enable_slippage_check: bool = True
     dry_run: bool = True
+    execution_enabled: bool = False
+    trading_mode: str = "scanner"
 
 
 @dataclass
@@ -88,7 +90,11 @@ class ExecutionEngine:
         self._processing_task: Optional[asyncio.Task] = None
         self._running = False
         
-        logger.info(f"ExecutionEngine initialized (dry_run={config.dry_run})")
+        logger.info(
+            "ExecutionEngine initialized "
+            f"(mode={config.trading_mode}, dry_run={config.dry_run}, "
+            f"execution_enabled={config.execution_enabled})"
+        )
     
     async def start(self) -> None:
         """Start the execution engine."""
@@ -124,6 +130,14 @@ class ExecutionEngine:
     
     async def submit_signal(self, signal: Signal) -> None:
         """Submit a signal for processing."""
+        if signal.is_place and not self.config.execution_enabled:
+            self.stats.signals_rejected += 1
+            logger.debug(
+                "Signal observed but execution is disabled "
+                f"(mode={self.config.trading_mode}): {signal.signal_id}"
+            )
+            return
+
         await self._signal_queue.put(signal)
         logger.debug(f"Signal queued: {signal.signal_id}")
     
@@ -161,6 +175,14 @@ class ExecutionEngine:
     
     async def _handle_place_orders(self, signal: Signal) -> None:
         """Handle a place_orders signal."""
+        if not self.config.execution_enabled:
+            self.stats.signals_rejected += 1
+            logger.warning(
+                "Place-orders signal rejected because execution is disabled "
+                f"(mode={self.config.trading_mode})"
+            )
+            return
+
         for order_spec in signal.orders:
             try:
                 # Extract order parameters
@@ -214,6 +236,13 @@ class ExecutionEngine:
     
     async def _handle_cancel_orders(self, signal: Signal) -> None:
         """Handle a cancel_orders signal."""
+        if not self.config.execution_enabled:
+            logger.debug(
+                "Cancel-orders signal ignored because execution is disabled "
+                f"(mode={self.config.trading_mode})"
+            )
+            return
+
         for order_id in signal.cancel_order_ids:
             try:
                 await self.cancel_order(order_id)
@@ -427,4 +456,3 @@ class ExecutionEngine:
     def open_order_count(self) -> int:
         """Get number of open orders."""
         return len(self._open_orders)
-

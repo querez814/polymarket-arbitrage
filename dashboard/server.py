@@ -34,7 +34,7 @@ class DashboardState:
         self.timing: dict = {}  # Opportunity timing stats
         self.operational: dict = {}  # Operational stats
         self.is_running: bool = False
-        self.mode: str = "dry_run"
+        self.mode: str = "scanner"
         self.last_update: datetime = datetime.utcnow()
         self.started_at: datetime = datetime.utcnow()
         
@@ -334,7 +334,12 @@ def get_embedded_html() -> str:
             text-transform: uppercase;
         }
         
-        .mode-badge.dry-run {
+        .mode-badge.scanner {
+            background: var(--accent-green);
+            color: #000;
+        }
+
+        .mode-badge.paper {
             background: var(--accent-yellow);
             color: #000;
         }
@@ -1307,7 +1312,7 @@ def get_embedded_html() -> str:
                 <span class="status-dot" id="statusDot"></span>
                 <span id="statusText">Connecting...</span>
             </div>
-            <span class="mode-badge" id="modeBadge">DRY RUN</span>
+            <span class="mode-badge" id="modeBadge">SCANNER</span>
         </div>
     </header>
     
@@ -1668,9 +1673,12 @@ def get_embedded_html() -> str:
             if (state.mode === 'live') {
                 modeBadge.className = 'mode-badge live';
                 modeBadge.textContent = 'LIVE';
+            } else if (state.mode === 'paper') {
+                modeBadge.className = 'mode-badge paper';
+                modeBadge.textContent = 'PAPER';
             } else {
-                modeBadge.className = 'mode-badge dry-run';
-                modeBadge.textContent = 'DRY RUN';
+                modeBadge.className = 'mode-badge scanner';
+                modeBadge.textContent = 'SCANNER';
             }
             
             // Metrics
@@ -2432,4 +2440,3 @@ def get_embedded_html() -> str:
 
 # Create the app
 app = create_app()
-

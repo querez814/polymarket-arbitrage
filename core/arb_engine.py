@@ -33,10 +33,11 @@ class ArbConfig:
     # Bundle arbitrage
     min_edge: float = 0.01  # Minimum edge required (1%)
     bundle_arb_enabled: bool = True
+    bundle_short_enabled: bool = False
     
     # Market-making
     min_spread: float = 0.05  # Minimum spread to MM (5c)
-    mm_enabled: bool = True
+    mm_enabled: bool = False
     tick_size: float = 0.01
     
     # Sizing
@@ -354,7 +355,11 @@ class ArbEngine:
         gross_edge_short = total_bid - 1.0
         net_edge_short = gross_edge_short - fee_cost_short - gas_cost
         
-        if opportunity is None and net_edge_short >= self.config.min_edge:
+        if (
+            opportunity is None
+            and self.config.bundle_short_enabled
+            and net_edge_short >= self.config.min_edge
+        ):
             edge = net_edge_short  # Use NET edge (after fees)
             
             # Calculate max size based on liquidity
@@ -595,4 +600,3 @@ class ArbEngine:
     def get_stats(self) -> ArbStats:
         """Get engine statistics."""
         return self.stats
-
