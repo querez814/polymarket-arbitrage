@@ -30,6 +30,18 @@ class DashboardState:
         self.trades: list = []
         self.portfolio: dict = {}
         self.risk: dict = {}
+        self.paper_ledger: dict = {
+            "summary": {
+                "events": 0,
+                "orders_submitted": 0,
+                "fills": 0,
+                "rejections": 0,
+                "expected_pnl": 0.0,
+                "open_exposure": {},
+                "empty_message": "No paper fills yet",
+            },
+            "events": [],
+        }
         self.stats: dict = {}
         self.timing: dict = {}  # Opportunity timing stats
         self.operational: dict = {}  # Operational stats
@@ -67,6 +79,7 @@ class DashboardState:
             "trades": self.trades[-100:],  # Last 100
             "portfolio": self.portfolio,
             "risk": self.risk,
+            "paper_ledger": self.paper_ledger,
             "stats": self.stats,
             "timing": self.timing,  # Opportunity timing stats
             "operational": self.operational,  # Operational stats
@@ -1390,6 +1403,21 @@ def get_embedded_html() -> str:
                 </div>
             </div>
         </section>
+
+        <!-- Paper Ledger -->
+        <section class="card">
+            <div class="card-header">
+                <span class="card-title">Paper Ledger</span>
+            </div>
+            <div class="card-body">
+                <div class="activity-list" id="paperLedgerList">
+                    <div class="empty-state">
+                        <div class="empty-icon">📒</div>
+                        <div>No paper fills yet</div>
+                    </div>
+                </div>
+            </div>
+        </section>
         
         <!-- Risk -->
         <section class="card risk-card">
@@ -1692,6 +1720,9 @@ def get_embedded_html() -> str:
             
             // Risk
             updateRisk();
+
+            // Paper ledger
+            updatePaperLedger();
             
             // Timing
             updateTiming();
@@ -1800,6 +1831,51 @@ def get_embedded_html() -> str:
                     </div>
                 `;
             }).join('');
+        }
+
+        function updatePaperLedger() {
+            const list = document.getElementById('paperLedgerList');
+            if (!list) return;
+
+            const ledger = state.paper_ledger || {};
+            const summary = ledger.summary || {};
+            const events = ledger.events || [];
+
+            if (events.length === 0) {
+                const message = summary.empty_message || 'No paper fills yet';
+                list.innerHTML = `<div class="empty-state"><div class="empty-icon">📒</div><div>${message}</div></div>`;
+                return;
+            }
+
+            const exposureMarkets = Object.keys(summary.open_exposure || {}).length;
+            const header = `
+                <div class="activity-item">
+                    <div class="activity-icon signal">Σ</div>
+                    <div class="activity-content">
+                        <div class="activity-message">
+                            Paper: ${summary.orders_submitted || 0} orders, ${summary.fills || 0} fills, ${summary.rejections || 0} rejected, ${exposureMarkets} exposed markets
+                        </div>
+                        <div class="activity-time">Expected PnL ${formatCurrency(summary.expected_pnl || 0)}</div>
+                    </div>
+                </div>
+            `;
+
+            const rows = events.slice(-15).reverse().map(event => {
+                const status = (event.status || 'event').toUpperCase();
+                const reason = event.rejection_reason ? ` · ${event.rejection_reason}` : '';
+                const pnl = event.expected_pnl ? ` · exp ${formatCurrency(event.expected_pnl)}` : '';
+                return `
+                    <div class="activity-item">
+                        <div class="activity-icon ${event.status === 'filled' ? 'fill' : 'signal'}">${status.slice(0, 1)}</div>
+                        <div class="activity-content">
+                            <div class="activity-message">${status}: ${event.strategy || 'paper'} ${event.market_id || ''}${pnl}</div>
+                            <div class="activity-time">${formatTime(event.timestamp)}${reason}</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            list.innerHTML = header + rows;
         }
         
         function updateRisk() {

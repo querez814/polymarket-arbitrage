@@ -25,6 +25,7 @@ from polymarket_client.models import (
 )
 from core.risk_manager import RiskManager
 from core.portfolio import Portfolio
+from core.paper_ledger import PaperLedger
 
 
 logger = logging.getLogger(__name__)
@@ -70,11 +71,13 @@ class ExecutionEngine:
         risk_manager: RiskManager,
         portfolio: Portfolio,
         config: ExecutionConfig,
+        paper_ledger: Optional[PaperLedger] = None,
     ):
         self.client = client
         self.risk_manager = risk_manager
         self.portfolio = portfolio
         self.config = config
+        self.paper_ledger = paper_ledger
         self.stats = ExecutionStats()
         
         # Track open orders
@@ -132,6 +135,8 @@ class ExecutionEngine:
         """Submit a signal for processing."""
         if signal.is_place and not self.config.execution_enabled:
             self.stats.signals_rejected += 1
+            if self.paper_ledger:
+                self.paper_ledger.record_rejection(signal, "execution disabled outside paper mode")
             logger.debug(
                 "Signal observed but execution is disabled "
                 f"(mode={self.config.trading_mode}): {signal.signal_id}"
@@ -177,11 +182,21 @@ class ExecutionEngine:
         """Handle a place_orders signal."""
         if not self.config.execution_enabled:
             self.stats.signals_rejected += 1
+            if self.paper_ledger:
+                self.paper_ledger.record_rejection(signal, "execution disabled outside paper mode")
             logger.warning(
                 "Place-orders signal rejected because execution is disabled "
                 f"(mode={self.config.trading_mode})"
             )
             return
+
+        if self.paper_ledger:
+            self.paper_ledger.record_signal(signal)
+            if self.paper_ledger.would_exceed_one_sided_cap(signal):
+                self.stats.signals_rejected += 1
+                self.paper_ledger.record_rejection(signal, "paper one-sided exposure cap exceeded")
+                logger.warning("Paper signal rejected by one-sided exposure cap: %s", signal.signal_id)
+                return
 
         for order_spec in signal.orders:
             try:
@@ -196,6 +211,8 @@ class ExecutionEngine:
                 if self.config.enable_slippage_check and signal.opportunity:
                     if not self._check_slippage(signal.opportunity, order_spec):
                         self.stats.slippage_rejections += 1
+                        if self.paper_ledger:
+                            self.paper_ledger.record_rejection(signal, "slippage tolerance exceeded")
                         logger.warning(f"Order rejected due to slippage: {order_spec}")
                         continue
                 
@@ -212,6 +229,8 @@ class ExecutionEngine:
                 
                 if not self.risk_manager.check_order(proposed_order):
                     self.stats.signals_rejected += 1
+                    if self.paper_ledger:
+                        self.paper_ledger.record_rejection(signal, "risk manager rejected order")
                     logger.warning(f"Order rejected by risk manager: {order_spec}")
                     continue
                 
@@ -227,12 +246,16 @@ class ExecutionEngine:
                 
                 if order:
                     self._track_order(order)
+                    if self.paper_ledger:
+                        self.paper_ledger.record_order(order)
                     self.stats.orders_placed += 1
                     self.stats.total_notional += order.notional
                     
             except Exception as e:
                 logger.error(f"Failed to place order: {e}")
                 self.stats.orders_rejected += 1
+                if self.paper_ledger:
+                    self.paper_ledger.record_rejection(signal, str(e))
     
     async def _handle_cancel_orders(self, signal: Signal) -> None:
         """Handle a cancel_orders signal."""
@@ -356,7 +379,10 @@ class ExecutionEngine:
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel a specific order."""
         try:
+            order = self._open_orders.get(order_id)
             await self.client.cancel_order(order_id)
+            if order and self.paper_ledger:
+                self.paper_ledger.record_miss(order, "cancelled or timed out before fill")
             self._untrack_order(order_id)
             self.stats.orders_cancelled += 1
             logger.info(f"Order cancelled: {order_id}")
@@ -432,6 +458,9 @@ class ExecutionEngine:
         
         # Update portfolio
         self.portfolio.update_from_fill(trade)
+
+        if self.paper_ledger:
+            self.paper_ledger.record_fill(trade)
         
         # Update risk manager
         self.risk_manager.update_from_fill(trade)

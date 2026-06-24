@@ -66,6 +66,29 @@ def create_order_book(
     )
 
 
+def create_depth_order_book(market_id: str) -> OrderBook:
+    """Helper to create a multi-level bundle-long opportunity."""
+    return OrderBook(
+        market_id=market_id,
+        yes=TokenOrderBook(
+            token_type=TokenType.YES,
+            bids=OrderBookSide(levels=[PriceLevel(price=0.44, size=100)]),
+            asks=OrderBookSide(levels=[
+                PriceLevel(price=0.40, size=3),
+                PriceLevel(price=0.42, size=7),
+            ]),
+        ),
+        no=TokenOrderBook(
+            token_type=TokenType.NO,
+            bids=OrderBookSide(levels=[PriceLevel(price=0.49, size=100)]),
+            asks=OrderBookSide(levels=[
+                PriceLevel(price=0.50, size=3),
+                PriceLevel(price=0.51, size=7),
+            ]),
+        ),
+    )
+
+
 def create_market_state(order_book: OrderBook) -> MarketState:
     """Helper to create a market state."""
     return MarketState(
@@ -107,6 +130,30 @@ class TestBundleArbitrage:
         assert signal.opportunity.opportunity_type == OpportunityType.BUNDLE_LONG
         assert signal.opportunity.edge >= 0.04  # At least 4% edge
         assert len(signal.orders) == 2  # Both YES and NO orders
+
+    def test_bundle_long_walks_order_book_depth(self):
+        """Depth-walked bundle sizing can use more than top-of-book size."""
+        engine = ArbEngine(ArbConfig(
+            min_edge=0.01,
+            bundle_arb_enabled=True,
+            bundle_short_enabled=False,
+            mm_enabled=False,
+            default_order_size=50,
+            min_order_size=2,
+            max_order_size=20,
+            maker_fee_bps=0,
+            taker_fee_bps=0,
+            gas_cost_per_order=0,
+        ))
+        state = create_market_state(create_depth_order_book("depth_market"))
+
+        signals = engine.analyze(state)
+
+        bundle = [s for s in signals if s.opportunity and s.opportunity.is_bundle_arb][0]
+        metadata = bundle.opportunity.metadata["depth_walked"]
+        assert bundle.opportunity.max_size == 10
+        assert metadata["levels_walked"] == 2
+        assert bundle.opportunity.suggested_size == 10
     
     def test_detect_bundle_short_opportunity(self, arb_engine: ArbEngine):
         """Test detection of bundle short (sell YES + NO for > $1)."""

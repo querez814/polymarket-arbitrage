@@ -303,6 +303,7 @@ class Opportunity:
     detected_at: datetime = field(default_factory=datetime.utcnow)
     expires_at: Optional[datetime] = None
     acted_upon: bool = False
+    metadata: dict = field(default_factory=dict)
     
     @property
     def is_bundle_arb(self) -> bool:
@@ -357,4 +358,3 @@ class MarketState:
         yes_notional = self.yes_position.notional if self.yes_position else 0
         no_notional = self.no_position.notional if self.no_position else 0
         return yes_notional + no_notional
-

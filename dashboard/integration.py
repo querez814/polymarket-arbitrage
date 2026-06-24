@@ -29,6 +29,7 @@ class DashboardIntegration:
         execution_engine=None,
         risk_manager=None,
         portfolio=None,
+        paper_ledger=None,
         mode: str = "scanner",
     ):
         self.data_feed = data_feed
@@ -36,6 +37,7 @@ class DashboardIntegration:
         self.execution_engine = execution_engine
         self.risk_manager = risk_manager
         self.portfolio = portfolio
+        self.paper_ledger = paper_ledger
         
         dashboard_state.mode = mode
         dashboard_state.is_running = False
@@ -110,6 +112,12 @@ class DashboardIntegration:
         # Update risk
         if self.risk_manager:
             dashboard_state.risk = self.risk_manager.get_summary()
+
+        if self.paper_ledger:
+            dashboard_state.paper_ledger = {
+                "summary": self.paper_ledger.summary(),
+                "events": self.paper_ledger.recent(100),
+            }
         
         # Update orders
         if self.execution_engine:

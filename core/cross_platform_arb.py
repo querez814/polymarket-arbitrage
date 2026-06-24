@@ -31,6 +31,12 @@ class MarketPair:
     kalshi_title: str
     similarity_score: float
     category: str = ""
+    full_rules: str = ""
+    resolution_source: str = ""
+    expiry: Optional[datetime] = None
+    payout_semantics: str = "binary_1_or_0"
+    resolution_match: str = "fuzzy"
+    manual_approval_status: str = "unapproved"
     
     # Timestamps
     matched_at: datetime = field(default_factory=datetime.utcnow)
@@ -39,6 +45,14 @@ class MarketPair:
     def pair_id(self) -> str:
         """Unique identifier for this pair."""
         return f"poly:{self.polymarket_id}|kalshi:{self.kalshi_ticker}"
+
+    @property
+    def is_tradable_resolution(self) -> bool:
+        """Only exact or manually approved pairs are eligible for paper synthetic trading."""
+        return (
+            self.resolution_match == "exact"
+            or self.manual_approval_status == "manually_approved"
+        )
 
 
 @dataclass
@@ -742,6 +756,68 @@ class CrossPlatformArbEngine:
             logger.info(f"🎯 CROSS-PLATFORM ARB: {best_opp}")
         
         return best_opp
+
+    def check_synthetic_paper_arbitrage(
+        self,
+        market_pair: MarketPair,
+        polymarket_ob: OrderBook,
+        kalshi_ob: OrderBook,
+    ) -> Optional[CrossPlatformOpportunity]:
+        """
+        Check paper-only synthetic bundle arbitrage across venues.
+
+        Buys YES on one venue and NO on the other when the combined cost is
+        below $1 after fees. Fuzzy matches are rejected until exact or manually
+        approved resolution metadata exists.
+        """
+        if not market_pair.is_tradable_resolution:
+            logger.info(
+                "Cross-platform synthetic rejected for unapproved pair: %s",
+                market_pair.pair_id,
+            )
+            return None
+
+        candidates = [
+            ("polymarket", "kalshi", "YES", polymarket_ob.best_ask_yes, kalshi_ob.best_ask_no,
+             polymarket_ob.yes.asks.best_size or 0, kalshi_ob.no.asks.best_size or 0),
+            ("kalshi", "polymarket", "YES", kalshi_ob.best_ask_yes, polymarket_ob.best_ask_no,
+             kalshi_ob.yes.asks.best_size or 0, polymarket_ob.no.asks.best_size or 0),
+            ("polymarket", "kalshi", "NO", polymarket_ob.best_ask_no, kalshi_ob.best_ask_yes,
+             polymarket_ob.no.asks.best_size or 0, kalshi_ob.yes.asks.best_size or 0),
+            ("kalshi", "polymarket", "NO", kalshi_ob.best_ask_no, polymarket_ob.best_ask_yes,
+             kalshi_ob.no.asks.best_size or 0, polymarket_ob.yes.asks.best_size or 0),
+        ]
+
+        best = None
+        best_net = 0.0
+        for first_platform, second_platform, token, first_price, second_price, first_liq, second_liq in candidates:
+            if first_price is None or second_price is None:
+                continue
+            gross = 1.0 - first_price - second_price
+            fees = (
+                first_price * (self.polymarket_taker_fee if first_platform == "polymarket" else self.kalshi_taker_fee)
+                + second_price * (self.polymarket_taker_fee if second_platform == "polymarket" else self.kalshi_taker_fee)
+                + self.gas_cost * 2
+            )
+            net = gross - fees
+            if net > best_net and net >= self.min_edge:
+                best_net = net
+                best = self._create_opportunity(
+                    market_pair=market_pair,
+                    buy_platform=first_platform,
+                    sell_platform=second_platform,
+                    token=token,
+                    buy_price=first_price,
+                    sell_price=second_price,
+                    gross_edge=gross,
+                    net_edge=net,
+                    buy_liquidity=first_liq,
+                    sell_liquidity=second_liq,
+                )
+
+        if best:
+            self._opportunities.append(best)
+        return best
     
     def _create_opportunity(
         self,
@@ -796,4 +872,3 @@ class CrossPlatformArbEngine:
                 if self._opportunities else 0
             ),
         }
-

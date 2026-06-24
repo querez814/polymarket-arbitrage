@@ -26,6 +26,9 @@ from core.arb_engine import ArbEngine, ArbConfig
 from core.execution import ExecutionEngine, ExecutionConfig
 from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
+from core.paper_ledger import PaperLedger
+from core.paper_risk import build_paper_runtime_settings
+from polymarket_client.models import OrderSide, TokenType
 from utils.config_loader import BotConfig, ConfigError, load_config, validate_config
 from utils.logging_utils import setup_logging, performance_logger
 
@@ -52,6 +55,7 @@ class TradingBot:
         self.execution_engine: Optional[ExecutionEngine] = None
         self.risk_manager: Optional[RiskManager] = None
         self.portfolio: Optional[Portfolio] = None
+        self.paper_ledger: Optional[PaperLedger] = None
         
         # Statistics
         self._start_time: Optional[datetime] = None
@@ -71,6 +75,7 @@ class TradingBot:
         
         self._start_time = datetime.utcnow()
         self._running = True
+        paper_settings = build_paper_runtime_settings(self.config)
         
         # Initialize API client
         self.client = PolymarketClient(
@@ -94,6 +99,10 @@ class TradingBot:
             else 0.0
         )
         self.portfolio = Portfolio(initial_balance=initial_balance)
+        if self.config.is_paper:
+            self.paper_ledger = PaperLedger(
+                one_sided_exposure_cap=paper_settings.one_sided_exposure_cap
+            )
         
         # Initialize risk manager
         self.risk_manager = RiskManager(RiskConfig(
@@ -116,25 +125,31 @@ class TradingBot:
             portfolio=self.portfolio,
             config=ExecutionConfig(
                 slippage_tolerance=self.config.trading.slippage_tolerance,
-                order_timeout_seconds=self.config.trading.order_timeout_seconds,
+                order_timeout_seconds=(
+                    paper_settings.quote_lifetime_seconds
+                    if paper_settings.market_making_enabled
+                    else self.config.trading.order_timeout_seconds
+                ),
                 dry_run=self.config.is_dry_run,
                 execution_enabled=self.config.is_paper,
                 trading_mode=self.config.trading_mode,
             ),
+            paper_ledger=self.paper_ledger,
         )
         await self.execution_engine.start()
         
         # Initialize arbitrage engine
         self.arb_engine = ArbEngine(ArbConfig(
-            min_edge=self.config.trading.min_edge,
+            min_edge=paper_settings.min_edge,
             bundle_arb_enabled=self.config.trading.bundle_arb_enabled,
-            bundle_short_enabled=self.config.trading.bundle_short_enabled,
+            bundle_short_enabled=paper_settings.bundle_short_enabled,
             min_spread=self.config.trading.min_spread,
-            mm_enabled=self.config.trading.mm_enabled,
+            mm_enabled=paper_settings.market_making_enabled,
             tick_size=self.config.trading.tick_size,
-            default_order_size=self.config.trading.default_order_size,
+            default_order_size=paper_settings.default_order_size,
             min_order_size=self.config.trading.min_order_size,
-            max_order_size=self.config.trading.max_order_size,
+            max_order_size=paper_settings.max_order_size,
+            signal_expiry_seconds=paper_settings.quote_lifetime_seconds,
         ))
         
         # Initialize data feed
@@ -238,8 +253,11 @@ class TradingBot:
                 orders = self.execution_engine.get_open_orders()
                 
                 for order in orders:
-                    # Random chance of fill
-                    if random.random() < self.config.mode.fill_probability:
+                    if not self._paper_order_is_marketable(order):
+                        continue
+
+                    # Random chance of fill after the book is actually marketable.
+                    if random.random() < build_paper_runtime_settings(self.config).fill_probability:
                         trade = self.client.simulate_fill(order.order_id)
                         if trade:
                             self.execution_engine.handle_fill(trade)
@@ -248,6 +266,20 @@ class TradingBot:
                 break
             except Exception as e:
                 logger.error(f"Fill simulation error: {e}")
+
+    def _paper_order_is_marketable(self, order) -> bool:
+        """Only fill paper orders that are executable against the latest real book."""
+        if not self.data_feed:
+            return False
+
+        state = self.data_feed.get_market_state(order.market_id)
+        if not state:
+            return False
+
+        token_book = state.order_book.yes if order.token_type == TokenType.YES else state.order_book.no
+        if order.side == OrderSide.BUY:
+            return token_book.best_ask is not None and order.price >= token_book.best_ask
+        return token_book.best_bid is not None and order.price <= token_book.best_bid
     
     async def stop(self) -> None:
         """Stop all components gracefully."""

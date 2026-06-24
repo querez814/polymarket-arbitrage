@@ -18,6 +18,7 @@ from polymarket_client.models import (
     Opportunity,
     OpportunityType,
     OrderBook,
+    OrderBookSide,
     OrderSide,
     Signal,
     TokenType,
@@ -91,6 +92,33 @@ class ArbStats:
     opportunities_under_500ms: int = 0
     opportunities_under_1s: int = 0
     opportunities_over_1s: int = 0
+
+
+@dataclass
+class BundleDepthWalk:
+    """Depth-walked bundle pricing result."""
+    avg_yes_price: float
+    avg_no_price: float
+    total_price: float
+    max_size: float
+    net_edge: float
+    gross_edge: float
+    fee_cost: float
+    levels_walked: int
+    side: str
+
+    def to_metadata(self) -> dict:
+        return {
+            "side": self.side,
+            "avg_yes_price": round(self.avg_yes_price, 4),
+            "avg_no_price": round(self.avg_no_price, 4),
+            "total_price": round(self.total_price, 4),
+            "max_size": round(self.max_size, 4),
+            "net_edge": round(self.net_edge, 4),
+            "gross_edge": round(self.gross_edge, 4),
+            "fee_cost": round(self.fee_cost, 4),
+            "levels_walked": self.levels_walked,
+        }
 
 
 class ArbEngine:
@@ -293,106 +321,88 @@ class ArbEngine:
         if None in (best_ask_yes, best_ask_no, best_bid_yes, best_bid_no):
             return None
         
-        total_ask = best_ask_yes + best_ask_no
-        total_bid = best_bid_yes + best_bid_no
-        
         # Calculate total fees for 2 orders (buy YES + buy NO, or sell both)
         # Fee is percentage of notional, applied to each leg
         taker_fee_pct = self.config.taker_fee_bps / 10000  # Convert bps to decimal
         gas_cost = self.config.gas_cost_per_order * 2  # 2 orders
-        
-        # For bundle long: we buy both, pay fees on each
-        # Fee cost = taker_fee_pct * (ask_yes + ask_no) = taker_fee_pct * total_ask
-        fee_cost_long = taker_fee_pct * total_ask
-        
-        # For bundle short: we sell both, pay fees on each  
-        fee_cost_short = taker_fee_pct * total_bid
-        
+
         opportunity: Optional[Opportunity] = None
-        
-        # Check for bundle long opportunity (buy both for < $1)
-        # Must be profitable AFTER fees: 1.0 - total_ask - fees > min_edge
-        gross_edge_long = 1.0 - total_ask
-        net_edge_long = gross_edge_long - fee_cost_long - gas_cost
-        
-        if net_edge_long >= self.config.min_edge:
-            edge = net_edge_long  # Use NET edge (after fees)
-            
-            # Calculate max size based on liquidity
-            yes_ask_size = order_book.yes.best_ask_size or 0
-            no_ask_size = order_book.no.best_ask_size or 0
-            max_size = min(yes_ask_size, no_ask_size)
-            
-            suggested_size = min(
-                self.config.default_order_size / max(best_ask_yes, best_ask_no),
-                max_size
-            )
-            suggested_size = max(self.config.min_order_size, suggested_size)
-            
+
+        long_walk = self._walk_bundle_depth(
+            yes_side=order_book.yes.asks,
+            no_side=order_book.no.asks,
+            side="long",
+            taker_fee_pct=taker_fee_pct,
+            gas_cost=gas_cost,
+        )
+
+        if long_walk and long_walk.net_edge >= self.config.min_edge:
+            suggested_size = self._suggest_bundle_size(long_walk)
+            if suggested_size < self.config.min_order_size:
+                return None
+
             opportunity = Opportunity(
                 opportunity_id=f"bundle_long_{uuid.uuid4().hex[:8]}",
                 opportunity_type=OpportunityType.BUNDLE_LONG,
                 market_id=market_id,
-                edge=edge,
+                edge=long_walk.net_edge,
                 best_bid_yes=best_bid_yes,
-                best_ask_yes=best_ask_yes,
+                best_ask_yes=long_walk.avg_yes_price,
                 best_bid_no=best_bid_no,
-                best_ask_no=best_ask_no,
+                best_ask_no=long_walk.avg_no_price,
                 suggested_size=suggested_size,
-                max_size=max_size,
+                max_size=long_walk.max_size,
                 expires_at=datetime.utcnow() + timedelta(seconds=self.config.signal_expiry_seconds),
+                metadata={"depth_walked": long_walk.to_metadata()},
             )
             
             self.stats.bundle_opportunities_detected += 1
             logger.info(
                 f"Bundle LONG opportunity: {market_id} | "
-                f"total_ask={total_ask:.4f} | gross={gross_edge_long:.4f} | "
-                f"fees={fee_cost_long:.4f} | NET edge={edge:.4f} | size={suggested_size:.2f}"
+                f"total_ask={long_walk.total_price:.4f} | gross={long_walk.gross_edge:.4f} | "
+                f"fees={long_walk.fee_cost:.4f} | NET edge={long_walk.net_edge:.4f} | "
+                f"size={suggested_size:.2f} | depth={long_walk.levels_walked}"
             )
-        
-        # Check for bundle short opportunity (sell both for > $1)
-        # Must be profitable AFTER fees: total_bid - 1.0 - fees > min_edge
-        gross_edge_short = total_bid - 1.0
-        net_edge_short = gross_edge_short - fee_cost_short - gas_cost
-        
+
+        short_walk = self._walk_bundle_depth(
+            yes_side=order_book.yes.bids,
+            no_side=order_book.no.bids,
+            side="short",
+            taker_fee_pct=taker_fee_pct,
+            gas_cost=gas_cost,
+        )
+
         if (
             opportunity is None
             and self.config.bundle_short_enabled
-            and net_edge_short >= self.config.min_edge
+            and short_walk
+            and short_walk.net_edge >= self.config.min_edge
         ):
-            edge = net_edge_short  # Use NET edge (after fees)
-            
-            # Calculate max size based on liquidity
-            yes_bid_size = order_book.yes.best_bid_size or 0
-            no_bid_size = order_book.no.best_bid_size or 0
-            max_size = min(yes_bid_size, no_bid_size)
-            
-            suggested_size = min(
-                self.config.default_order_size / max(best_bid_yes, best_bid_no),
-                max_size
-            )
-            suggested_size = max(self.config.min_order_size, suggested_size)
+            suggested_size = self._suggest_bundle_size(short_walk)
+            if suggested_size < self.config.min_order_size:
+                return None
             
             opportunity = Opportunity(
                 opportunity_id=f"bundle_short_{uuid.uuid4().hex[:8]}",
                 opportunity_type=OpportunityType.BUNDLE_SHORT,
                 market_id=market_id,
-                edge=edge,
-                best_bid_yes=best_bid_yes,
+                edge=short_walk.net_edge,
+                best_bid_yes=short_walk.avg_yes_price,
                 best_ask_yes=best_ask_yes,
-                best_bid_no=best_bid_no,
+                best_bid_no=short_walk.avg_no_price,
                 best_ask_no=best_ask_no,
                 suggested_size=suggested_size,
-                max_size=max_size,
+                max_size=short_walk.max_size,
                 expires_at=datetime.utcnow() + timedelta(seconds=self.config.signal_expiry_seconds),
+                metadata={"depth_walked": short_walk.to_metadata()},
             )
             
             self.stats.bundle_opportunities_detected += 1
             logger.info(
                 f"Bundle SHORT opportunity: {market_id} | "
-                f"total_bid={total_bid:.4f} | gross={gross_edge_short:.4f} | "
-                f"fees={fee_cost_short:.4f} | NET edge={edge:.4f} | size={suggested_size:.2f}"
-                f"total_bid={total_bid:.4f} | edge={edge:.4f} | size={suggested_size:.2f}"
+                f"total_bid={short_walk.total_price:.4f} | gross={short_walk.gross_edge:.4f} | "
+                f"fees={short_walk.fee_cost:.4f} | NET edge={short_walk.net_edge:.4f} | "
+                f"size={suggested_size:.2f} | depth={short_walk.levels_walked}"
             )
         
         if not opportunity:
@@ -413,6 +423,86 @@ class ArbEngine:
         
         # Generate signal
         return self._create_bundle_signal(opportunity)
+
+    def _walk_bundle_depth(
+        self,
+        yes_side: OrderBookSide,
+        no_side: OrderBookSide,
+        side: str,
+        taker_fee_pct: float,
+        gas_cost: float,
+    ) -> Optional[BundleDepthWalk]:
+        """Walk YES and NO book depth and return the largest profitable bundle size."""
+        yes_levels = yes_side.levels
+        no_levels = no_side.levels
+        if not yes_levels or not no_levels:
+            return None
+
+        yes_idx = no_idx = 0
+        yes_remaining = yes_levels[0].size
+        no_remaining = no_levels[0].size
+        total_size = 0.0
+        yes_notional = 0.0
+        no_notional = 0.0
+        best_profitable: Optional[BundleDepthWalk] = None
+
+        while yes_idx < len(yes_levels) and no_idx < len(no_levels):
+            chunk = min(yes_remaining, no_remaining, self.config.max_order_size - total_size)
+            if chunk <= 0:
+                break
+
+            yes_notional += yes_levels[yes_idx].price * chunk
+            no_notional += no_levels[no_idx].price * chunk
+            total_size += chunk
+
+            avg_yes = yes_notional / total_size
+            avg_no = no_notional / total_size
+            total_price = avg_yes + avg_no
+            fee_cost = taker_fee_pct * total_price
+            if side == "long":
+                gross_edge = 1.0 - total_price
+            else:
+                gross_edge = total_price - 1.0
+            net_edge = gross_edge - fee_cost - gas_cost
+
+            if net_edge >= self.config.min_edge:
+                best_profitable = BundleDepthWalk(
+                    avg_yes_price=avg_yes,
+                    avg_no_price=avg_no,
+                    total_price=total_price,
+                    max_size=total_size,
+                    net_edge=net_edge,
+                    gross_edge=gross_edge,
+                    fee_cost=fee_cost,
+                    levels_walked=max(yes_idx + 1, no_idx + 1),
+                    side=side,
+                )
+
+            yes_remaining -= chunk
+            no_remaining -= chunk
+
+            if total_size >= self.config.max_order_size:
+                break
+            if yes_remaining <= 1e-9:
+                yes_idx += 1
+                if yes_idx < len(yes_levels):
+                    yes_remaining = yes_levels[yes_idx].size
+            if no_remaining <= 1e-9:
+                no_idx += 1
+                if no_idx < len(no_levels):
+                    no_remaining = no_levels[no_idx].size
+
+        return best_profitable
+
+    def _suggest_bundle_size(self, depth_walk: BundleDepthWalk) -> float:
+        """Calculate executable bundle size from depth-walked liquidity."""
+        denominator = max(depth_walk.avg_yes_price, depth_walk.avg_no_price, 0.01)
+        suggested_size = min(
+            self.config.default_order_size / denominator,
+            depth_walk.max_size,
+            self.config.max_order_size,
+        )
+        return suggested_size
     
     def _create_bundle_signal(self, opportunity: Opportunity) -> Signal:
         """Create a trading signal for a bundle arbitrage opportunity."""
@@ -538,6 +628,17 @@ class ArbEngine:
             edge=our_spread / 2,  # Expected edge per side
             suggested_size=order_size,
             max_size=order_size * 2,
+            metadata={
+                "paper_market_making": {
+                    "quote_lifetime_seconds": self.config.signal_expiry_seconds,
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
+                    "our_bid": our_bid,
+                    "our_ask": our_ask,
+                    "stale_quote_cancel": True,
+                    "adverse_selection_tracking": True,
+                }
+            },
         )
         
         self.stats.mm_opportunities_detected += 1

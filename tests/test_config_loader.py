@@ -12,6 +12,7 @@ from utils.config_loader import (
     load_config,
     validate_config,
 )
+from core.paper_risk import build_paper_runtime_settings
 
 
 def write_config(tmp_path, content: str):
@@ -105,3 +106,47 @@ venue_access:
 
     with pytest.raises(ConfigError, match="live order execution is not implemented"):
         load_config(str(path))
+
+
+def test_aggressive_paper_profile_changes_only_paper_runtime(tmp_path):
+    path = write_config(
+        tmp_path,
+        """
+trading:
+  min_edge: 0.01
+  default_order_size: 5
+  max_order_size: 10
+mode:
+  trading_mode: scanner
+paper_risk:
+  profile: aggressive
+  paper_enable_bundle_short: true
+  paper_enable_market_making: true
+  paper_enable_cross_platform_synthetic: true
+  aggressive_min_edge: 0.0025
+  aggressive_default_order_size: 100
+  aggressive_max_order_size: 500
+  aggressive_fill_probability: 0.95
+""",
+    )
+
+    scanner_config = load_config(str(path))
+    scanner_settings = build_paper_runtime_settings(scanner_config)
+
+    assert scanner_settings.min_edge == 0.01
+    assert scanner_settings.default_order_size == 5
+    assert scanner_settings.max_order_size == 10
+    assert scanner_settings.bundle_short_enabled is False
+    assert scanner_settings.market_making_enabled is False
+    assert scanner_settings.cross_platform_synthetic_enabled is False
+
+    scanner_config.mode.trading_mode = "paper"
+    validate_config(scanner_config)
+    paper_settings = build_paper_runtime_settings(scanner_config)
+
+    assert paper_settings.min_edge == 0.0025
+    assert paper_settings.default_order_size == 100
+    assert paper_settings.max_order_size == 500
+    assert paper_settings.bundle_short_enabled is True
+    assert paper_settings.market_making_enabled is True
+    assert paper_settings.cross_platform_synthetic_enabled is True

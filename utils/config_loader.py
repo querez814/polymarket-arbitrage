@@ -30,6 +30,7 @@ LEGACY_TRADING_MODE_ALIASES = {
 VALID_DATA_MODES = ("real", "simulation")
 VALID_POLYMARKET_VENUES = ("unconfirmed", "global", "us", "none")
 VALID_KALSHI_ENVIRONMENTS = ("unconfirmed", "demo", "production", "none")
+VALID_PAPER_RISK_PROFILES = ("conservative", "aggressive")
 LIVE_CONFIRMATION_ENV = "POLYMARKET_ARB_LIVE_CONFIRMATION"
 LIVE_CONFIRMATION_VALUE = "I_UNDERSTAND_LIVE_RISK"
 PLACEHOLDER_SECRET_VALUES = {
@@ -107,6 +108,21 @@ class ModeConfig:
 
 
 @dataclass
+class PaperRiskConfig:
+    """Paper-only risk and strategy controls."""
+    profile: str = "conservative"
+    paper_enable_bundle_short: bool = False
+    paper_enable_market_making: bool = False
+    paper_enable_cross_platform_synthetic: bool = False
+    aggressive_min_edge: float = 0.0025
+    aggressive_default_order_size: float = 100.0
+    aggressive_max_order_size: float = 500.0
+    aggressive_fill_probability: float = 0.95
+    quote_lifetime_seconds: float = 15.0
+    one_sided_exposure_cap: float = 250.0
+
+
+@dataclass
 class VenueAccessConfig:
     """Venue access and compliance confirmations."""
     polymarket_venue: str = "unconfirmed"  # "global", "us", "none", or "unconfirmed"
@@ -143,6 +159,7 @@ class BotConfig:
     trading: TradingConfig = field(default_factory=TradingConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     mode: ModeConfig = field(default_factory=ModeConfig)
+    paper_risk: PaperRiskConfig = field(default_factory=PaperRiskConfig)
     venue_access: VenueAccessConfig = field(default_factory=VenueAccessConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
@@ -218,6 +235,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     trading_data = raw_config.get("trading", {})
     risk_data = raw_config.get("risk", {})
     mode_data = raw_config.get("mode", {})
+    paper_risk_data = raw_config.get("paper_risk", {})
     venue_access_data = raw_config.get("venue_access", {})
     logging_data = raw_config.get("logging", {})
     monitoring_data = raw_config.get("monitoring", {})
@@ -239,6 +257,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         trading=_build_dataclass(TradingConfig, trading_data),
         risk=_build_dataclass(RiskConfig, risk_data),
         mode=_build_dataclass(ModeConfig, mode_data),
+        paper_risk=_build_dataclass(PaperRiskConfig, paper_risk_data),
         venue_access=_build_dataclass(VenueAccessConfig, venue_access_data),
         logging=_build_dataclass(LoggingConfig, logging_data),
         monitoring=_build_dataclass(MonitoringConfig, monitoring_data),
@@ -371,6 +390,29 @@ def validate_config(config: BotConfig) -> None:
 
     if not 0 <= config.mode.fill_probability <= 1:
         errors.append("mode.fill_probability must be between 0 and 1")
+
+    # Paper-risk validation
+    config.paper_risk.profile = str(config.paper_risk.profile).lower()
+    if config.paper_risk.profile not in VALID_PAPER_RISK_PROFILES:
+        errors.append("paper_risk.profile must be 'conservative' or 'aggressive'")
+
+    if not 0 <= config.paper_risk.aggressive_min_edge <= 1:
+        errors.append("paper_risk.aggressive_min_edge must be between 0 and 1")
+
+    if config.paper_risk.aggressive_default_order_size <= 0:
+        errors.append("paper_risk.aggressive_default_order_size must be positive")
+
+    if config.paper_risk.aggressive_max_order_size <= 0:
+        errors.append("paper_risk.aggressive_max_order_size must be positive")
+
+    if not 0 <= config.paper_risk.aggressive_fill_probability <= 1:
+        errors.append("paper_risk.aggressive_fill_probability must be between 0 and 1")
+
+    if config.paper_risk.quote_lifetime_seconds <= 0:
+        errors.append("paper_risk.quote_lifetime_seconds must be positive")
+
+    if config.paper_risk.one_sided_exposure_cap <= 0:
+        errors.append("paper_risk.one_sided_exposure_cap must be positive")
 
     # Venue access validation
     polymarket_venue = config.venue_access.polymarket_venue.lower()

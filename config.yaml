@@ -53,9 +53,10 @@ trading:
   estimated_gas_per_order: 0.02  # ~$0.02 gas on Polygon
 
 risk:
-  # Position limits - CONSERVATIVE for $50 budget
-  max_position_per_market: 15    # Max $15 per market
-  max_global_exposure: 50        # Max $50 total (your starting amount!)
+  # Position limits - raised for aggressive paper testing only.
+  # Live mode is still hard-refused by startup gates.
+  max_position_per_market: 300
+  max_global_exposure: 1500
   
   # Loss limits - tight stops
   max_daily_loss: 10             # Stop if losing $10/day
@@ -98,6 +99,19 @@ mode:
   dry_run_initial_balance: 10000
   simulate_fills: true
   fill_probability: 0.8          # Probability of order being filled in paper mode
+
+paper_risk:
+  # Paper-only risk lane. Ignored in scanner and live modes.
+  profile: "aggressive"          # conservative | aggressive
+  paper_enable_bundle_short: true
+  paper_enable_market_making: false
+  paper_enable_cross_platform_synthetic: true
+  aggressive_min_edge: 0.0025
+  aggressive_default_order_size: 100
+  aggressive_max_order_size: 500
+  aggressive_fill_probability: 0.95
+  quote_lifetime_seconds: 15
+  one_sided_exposure_cap: 300
 
 venue_access:
   # Confirm these manually before any future live-trading work.
