@@ -54,6 +54,7 @@ class ArbConfig:
     maker_fee_bps: float = 0        # Limit orders adding liquidity
     taker_fee_bps: float = 150      # Taking liquidity (1.5%)
     gas_cost_per_order: float = 0.02  # ~$0.02 on Polygon
+    near_miss_edge_window: float = 0.02  # Track bundle rejects within 2c of threshold
 
 
 @dataclass
@@ -92,6 +93,33 @@ class ArbStats:
     opportunities_under_500ms: int = 0
     opportunities_under_1s: int = 0
     opportunities_over_1s: int = 0
+
+
+@dataclass
+class NearMiss:
+    """A rejected opportunity close enough to be useful for tuning."""
+    market_id: str
+    opportunity_type: str
+    net_edge: float
+    required_edge: float
+    shortfall: float
+    max_size: float
+    reason: str
+    detected_at: datetime = field(default_factory=datetime.utcnow)
+    metadata: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {
+            "market_id": self.market_id,
+            "type": self.opportunity_type,
+            "net_edge": round(self.net_edge, 5),
+            "required_edge": round(self.required_edge, 5),
+            "shortfall": round(self.shortfall, 5),
+            "max_size": round(self.max_size, 4),
+            "reason": self.reason,
+            "timestamp": self.detected_at.isoformat(),
+            "metadata": self.metadata,
+        }
 
 
 @dataclass
@@ -140,6 +168,7 @@ class ArbEngine:
         # Track active opportunities for duration measurement
         self._active_opportunities: dict[str, OpportunityTiming] = {}
         self._opportunity_history: list[OpportunityTiming] = []
+        self._near_misses: list[NearMiss] = []
         
         logger.info(f"ArbEngine initialized with min_edge={config.min_edge}, min_spread={config.min_spread}")
     
@@ -339,6 +368,12 @@ class ArbEngine:
         if long_walk and long_walk.net_edge >= self.config.min_edge:
             suggested_size = self._suggest_bundle_size(long_walk)
             if suggested_size < self.config.min_order_size:
+                self._record_near_miss(
+                    market_id,
+                    "bundle_long",
+                    long_walk,
+                    "insufficient executable depth for min order size",
+                )
                 return None
 
             opportunity = Opportunity(
@@ -380,6 +415,12 @@ class ArbEngine:
         ):
             suggested_size = self._suggest_bundle_size(short_walk)
             if suggested_size < self.config.min_order_size:
+                self._record_near_miss(
+                    market_id,
+                    "bundle_short",
+                    short_walk,
+                    "insufficient executable depth for min order size",
+                )
                 return None
             
             opportunity = Opportunity(
@@ -406,6 +447,10 @@ class ArbEngine:
             )
         
         if not opportunity:
+            if long_walk:
+                self._record_near_miss(market_id, "bundle_long", long_walk, "edge below threshold")
+            if self.config.bundle_short_enabled and short_walk:
+                self._record_near_miss(market_id, "bundle_short", short_walk, "edge below threshold")
             return None
         
         # Check cooldown to avoid spam
@@ -423,6 +468,38 @@ class ArbEngine:
         
         # Generate signal
         return self._create_bundle_signal(opportunity)
+
+    def _record_near_miss(
+        self,
+        market_id: str,
+        opportunity_type: str,
+        depth_walk: BundleDepthWalk,
+        reason: str,
+    ) -> None:
+        """Track close rejects so paper mode explains why it did not trade."""
+        shortfall = self.config.min_edge - depth_walk.net_edge
+        if shortfall > self.config.near_miss_edge_window:
+            return
+
+        # Avoid flooding the dashboard with the same market every update.
+        cooldown_key = f"near_{market_id}_{opportunity_type}"
+        if cooldown_key in self._opportunity_cooldown:
+            if datetime.utcnow() < self._opportunity_cooldown[cooldown_key]:
+                return
+        self._opportunity_cooldown[cooldown_key] = datetime.utcnow() + timedelta(seconds=10)
+
+        self._near_misses.append(NearMiss(
+            market_id=market_id,
+            opportunity_type=opportunity_type,
+            net_edge=depth_walk.net_edge,
+            required_edge=self.config.min_edge,
+            shortfall=max(shortfall, 0.0),
+            max_size=depth_walk.max_size,
+            reason=reason,
+            metadata={"depth_walked": depth_walk.to_metadata()},
+        ))
+        if len(self._near_misses) > 500:
+            self._near_misses = self._near_misses[-250:]
 
     def _walk_bundle_depth(
         self,
@@ -701,3 +778,7 @@ class ArbEngine:
     def get_stats(self) -> ArbStats:
         """Get engine statistics."""
         return self.stats
+
+    def get_recent_near_misses(self, limit: int = 50) -> list[dict]:
+        """Get recent near-miss rejects for dashboard tuning."""
+        return [near_miss.to_dict() for near_miss in self._near_misses[-limit:]]

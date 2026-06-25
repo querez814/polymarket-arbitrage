@@ -25,6 +25,7 @@ class DashboardState:
     def __init__(self):
         self.markets: dict = {}
         self.opportunities: list = []
+        self.near_misses: list = []
         self.signals: list = []
         self.orders: list = []
         self.trades: list = []
@@ -74,6 +75,7 @@ class DashboardState:
         return {
             "markets": self.markets,
             "opportunities": self.opportunities[-50:],  # Last 50
+            "near_misses": self.near_misses[-50:],
             "signals": self.signals[-50:],
             "orders": self.orders,
             "trades": self.trades[-100:],  # Last 100
@@ -1373,6 +1375,21 @@ def get_embedded_html() -> str:
                 </div>
             </div>
         </section>
+
+        <!-- Near Misses -->
+        <section class="card">
+            <div class="card-header">
+                <span class="card-title">Near Misses</span>
+            </div>
+            <div class="card-body">
+                <div class="opportunity-list" id="nearMissList">
+                    <div class="empty-state">
+                        <div class="empty-icon">📉</div>
+                        <div>No near misses yet</div>
+                    </div>
+                </div>
+            </div>
+        </section>
         
         <!-- Activity Feed -->
         <section class="card activity-card">
@@ -1714,6 +1731,9 @@ def get_embedded_html() -> str:
             
             // Opportunities
             updateOpportunities();
+
+            // Near misses
+            updateNearMisses();
             
             // Activity
             updateActivity();
@@ -1788,6 +1808,33 @@ def get_embedded_html() -> str:
             }).join('');
             
             document.getElementById('oppRefresh').textContent = `Last: ${formatTime(state.last_update)}`;
+        }
+
+        function updateNearMisses() {
+            const list = document.getElementById('nearMissList');
+            if (!list) return;
+
+            const nearMisses = state.near_misses || [];
+            if (nearMisses.length === 0) {
+                list.innerHTML = '<div class="empty-state"><div class="empty-icon">📉</div><div>No near misses yet</div></div>';
+                return;
+            }
+
+            list.innerHTML = nearMisses.slice(-20).reverse().map(item => {
+                const shortfall = ((item.shortfall || 0) * 100).toFixed(2);
+                const edge = ((item.net_edge || 0) * 100).toFixed(2);
+                const typeLabel = (item.type || 'bundle').replace('_', ' ').toUpperCase();
+                return `
+                    <div class="opportunity-item">
+                        <span class="opportunity-type bundle-short">${typeLabel}</span>
+                        <div class="opportunity-details">
+                            <div class="opportunity-market">${item.market_id || 'Unknown'}</div>
+                            <span class="opportunity-edge">Edge ${edge}% · short ${shortfall}% · ${item.reason || ''}</span>
+                        </div>
+                        <span class="opportunity-time">${formatTime(item.timestamp)}</span>
+                    </div>
+                `;
+            }).join('');
         }
         
         function updateActivity() {

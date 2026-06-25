@@ -153,6 +153,7 @@ class DashboardIntegration:
                 "mm_opportunities": arb_stats.mm_opportunities_detected,
                 "signals_generated": arb_stats.signals_generated,
             })
+            dashboard_state.near_misses = self.arb_engine.get_recent_near_misses()
             
             # Update opportunity timing stats
             dashboard_state.timing = self.arb_engine.get_timing_stats()

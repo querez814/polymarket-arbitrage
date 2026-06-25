@@ -515,13 +515,23 @@ class PolymarketClient(BasePolymarketClient):
             bids = []
             asks = []
             
-            for bid in data.get("bids", [])[:10]:
+            raw_bids = sorted(
+                data.get("bids", []),
+                key=lambda level: float(level.get("price", 0)),
+                reverse=True,
+            )
+            raw_asks = sorted(
+                data.get("asks", []),
+                key=lambda level: float(level.get("price", 0)),
+            )
+
+            for bid in raw_bids[:10]:
                 bids.append(PriceLevel(
                     price=float(bid.get("price", 0)),
                     size=float(bid.get("size", 0)),
                 ))
             
-            for ask in data.get("asks", [])[:10]:
+            for ask in raw_asks[:10]:
                 asks.append(PriceLevel(
                     price=float(ask.get("price", 0)),
                     size=float(ask.get("size", 0)),
