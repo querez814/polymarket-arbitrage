@@ -82,6 +82,27 @@ class PointInTimeExample:
     def label_mapping(self) -> dict[str, float | bool]:
         return dict(zip(LABEL_NAMES, self.labels))
 
+    def inference_features(self) -> "InferenceFeatures":
+        """Return the label-free observation accepted by inference code."""
+        return InferenceFeatures(
+            schema_version=self.schema_version,
+            pair_id=self.pair_id,
+            direction_id=self.direction_id,
+            observed_at=self.feature_timestamp,
+            features=self.features,
+        )
+
+
+@dataclass(frozen=True)
+class InferenceFeatures:
+    """Point-in-time features with no future label fields by construction."""
+
+    schema_version: str
+    pair_id: str
+    direction_id: str
+    observed_at: datetime
+    features: tuple[float, ...]
+
 
 @dataclass(frozen=True)
 class ChronologicalSplit:
@@ -259,6 +280,18 @@ def validate_point_in_time_examples(examples: Sequence[PointInTimeExample]) -> N
         if identity in identities:
             raise ValueError(f"duplicate example identity: {identity}")
         identities.add(identity)
+
+
+def validate_inference_features(observation: InferenceFeatures) -> None:
+    """Fail closed on malformed or drifted production-facing observations."""
+    if observation.schema_version != SCHEMA_VERSION:
+        raise ValueError(f"unsupported schema version: {observation.schema_version}")
+    if not observation.pair_id or not observation.direction_id:
+        raise ValueError("inference identity fields must not be empty")
+    if observation.observed_at.tzinfo is None:
+        raise ValueError("inference observation timestamp must be timezone-aware")
+    if len(observation.features) != len(FEATURE_NAMES):
+        raise ValueError("feature vector does not match schema")
 
 
 def validate_chronological_split(split: ChronologicalSplit) -> None:

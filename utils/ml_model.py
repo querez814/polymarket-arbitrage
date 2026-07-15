@@ -16,8 +16,10 @@ from utils.ml_dataset import (
     FEATURE_NAMES,
     SCHEMA_VERSION,
     ChronologicalSplit,
+    InferenceFeatures,
     PointInTimeExample,
     validate_chronological_split,
+    validate_inference_features,
     validate_point_in_time_examples,
 )
 
@@ -69,14 +71,19 @@ class LogisticEdgeModel:
 
     def predict_probability(self, example: PointInTimeExample) -> float:
         validate_point_in_time_examples((example,))
+        return self.predict_features(example.inference_features())
+
+    def predict_features(self, observation: InferenceFeatures) -> float:
+        """Score a label-free point-in-time observation."""
+        validate_inference_features(observation)
         if self.model_version != MODEL_VERSION:
             raise ValueError("model version is unsupported")
-        if example.schema_version != self.dataset_schema_version:
+        if observation.schema_version != self.dataset_schema_version:
             raise ValueError("example schema does not match model schema")
         if self.feature_names != FEATURE_NAMES:
             raise ValueError("model feature schema is unsupported")
         if not (
-            len(example.features)
+            len(observation.features)
             == len(self.feature_means)
             == len(self.feature_scales)
             == len(self.weights)
@@ -84,7 +91,7 @@ class LogisticEdgeModel:
             raise ValueError("model dimensions do not match example features")
         score = self.intercept
         for value, mean, scale, weight in zip(
-            example.features,
+            observation.features,
             self.feature_means,
             self.feature_scales,
             self.weights,
