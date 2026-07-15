@@ -60,7 +60,7 @@ class PolymarketUSClient(BasePolymarketClient):
         self.timeout = timeout
         self.dry_run = dry_run
 
-        self._sdk = None
+        self._sdk: Any = None
         self._markets_cache: dict[str, Market] = {}
         self._slug_index: dict[str, tuple[str, TokenType]] = {}
         self._order_slugs: dict[str, str] = {}
@@ -423,10 +423,12 @@ class PolymarketUSClient(BasePolymarketClient):
 
     async def get_trades(self, market_id: Optional[str] = None, limit: int = 100) -> list[Trade]:
         if self.dry_run:
-            trades = self._simulated_trades
+            simulated_trades = self._simulated_trades
             if market_id:
-                trades = [trade for trade in trades if trade.market_id == market_id]
-            return trades[-limit:]
+                simulated_trades = [
+                    trade for trade in simulated_trades if trade.market_id == market_id
+                ]
+            return simulated_trades[-limit:]
 
         if not self._sdk:
             return []

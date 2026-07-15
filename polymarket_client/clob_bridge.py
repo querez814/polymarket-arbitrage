@@ -165,7 +165,7 @@ class ClobTradingBridge:
         self.api_key = api_key
         self.api_secret = api_secret
         self.passphrase = passphrase
-        self._client = None
+        self._client: Any = None
 
     @property
     def is_ready(self) -> bool:

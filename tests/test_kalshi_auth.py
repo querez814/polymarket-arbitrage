@@ -1,7 +1,9 @@
 """Tests for Kalshi RSA-PSS request signing."""
 
+import pytest
+
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
 from kalshi_client.auth import auth_headers, sign_path_for_url, sign_request
 
@@ -12,8 +14,13 @@ def _generate_test_key():
 
 def test_sign_path_includes_trade_api_prefix():
     base = "https://api.elections.kalshi.com/trade-api/v2"
-    assert sign_path_for_url(base, "/portfolio/balance") == "/trade-api/v2/portfolio/balance"
-    assert sign_path_for_url(base, "/exchange/status") == "/trade-api/v2/exchange/status"
+    assert (
+        sign_path_for_url(base, "/portfolio/balance")
+        == "/trade-api/v2/portfolio/balance"
+    )
+    assert (
+        sign_path_for_url(base, "/exchange/status") == "/trade-api/v2/exchange/status"
+    )
 
 
 def test_sign_path_strips_query_string():
@@ -73,3 +80,19 @@ def test_load_private_key_from_pem_file(tmp_path):
 
     loaded = load_private_key(key_path)
     assert loaded.key_size == 2048
+
+
+def test_load_private_key_rejects_non_rsa_key(tmp_path):
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    key_path = tmp_path / "wrong-key-type.pem"
+    key_path.write_bytes(pem)
+
+    from kalshi_client.auth import load_private_key
+
+    with pytest.raises(ValueError, match="must be an RSA private key"):
+        load_private_key(key_path)

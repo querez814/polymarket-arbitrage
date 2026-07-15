@@ -120,6 +120,12 @@ No finding is marked resolved on the strength of the source report alone.
 - Corrected the automated-test boundary for the explicitly invoked, networked `test_kalshi_connection.py` diagnostic. The module now declares `__test__ = False`, so pytest does not mistake its async connectivity helper for an offline unit test; its existing importable function and standalone CLI behavior are unchanged.
 - Formatted the touched diagnostic with the repository's configured Black version. No connectivity check, exchange client, or network request was run.
 
+### 2026-07-14 — Iteration 9 (22:14 EDT)
+
+- Cleared the 23 previously recorded mypy errors in the four exchange-client modules by making optional-client narrowing explicit, correcting the abstract async-iterator contract, annotating response collections and mixed-type query parameters, and separating dry-run/live local collection names. These changes do not add or enable order behavior.
+- Made Kalshi key loading fail closed when a parseable PEM contains a non-RSA private key. Kalshi authentication requires RSA-PSS; accepting another key family would defer the mismatch to a less actionable signing failure.
+- Added offline regression coverage proving that an Ed25519 PEM is rejected as a Kalshi credential. No production key file was parsed.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -201,6 +207,18 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS**.
 - No bot, dashboard, scanner, websocket, collector, exchange client, connectivity diagnostic, order/signing flow, or network request was started. No background process was created.
 
+### 2026-07-14 — Iteration 9 (22:14 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_kalshi_auth.py tests/test_kalshi_client.py tests/test_clob_bridge.py tests/test_polymarket_factory.py tests/test_polymarket_us_parsing.py -q`: **PASS** — 18 focused exchange-client tests passed.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports test_kalshi_connection.py`: **PASS** — the transitive exchange-client slice that reported 23 errors in iteration 8 now reports no issues.
+- `uv run --with-requirements requirements.txt black --check kalshi_client/auth.py tests/test_kalshi_auth.py`: **PASS**. The legacy exchange API modules remain outside a repository-wide Black baseline, so they were not reformatted wholesale merely to satisfy this bounded slice.
+- `uv run --with-requirements requirements.txt python -m py_compile $(git ls-files '*.py')`: **PASS**.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered suite passed with 130 tests and 266 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports .`: **FAIL / DISCOVERY CONFIGURATION** — without package-base guidance, mypy sees `scripts/backtest_cross_platform.py` under two module names because `scripts/` is not a package.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports --explicit-package-bases .`: **PARTIAL / REPOSITORY TYPE BASELINE** — checked 61 source files and found 91 remaining errors in ten files outside this iteration's exchange-client slice. Full static verification is therefore still outstanding and is not represented as passing.
+- `git diff --check`: **PASS**.
+- No bot, dashboard, scanner, websocket, collector, exchange client, connectivity diagnostic, production credential parser, authenticated request, order/signing flow, or network request was started. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
@@ -211,7 +229,7 @@ Not evaluated yet. The source audit reports snapshot-building and collection cod
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
-- Full static, test, configuration, offline matched-data, ML, and dependency/security verification remains outstanding.
+- Full static verification remains outstanding with 91 known mypy errors in ten files outside the exchange-client slice. Configuration, offline matched-data, ML, and dependency/security verification also remain outstanding; the complete discovered test suite and Python compilation currently pass.
 - Live-only evidence is prohibited during this run and must never be implied.
 
 ## Commits

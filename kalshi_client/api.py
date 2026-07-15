@@ -15,6 +15,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, Optional, AsyncIterator
 import httpx
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from kalshi_client.auth import auth_headers, load_private_key, sign_path_for_url
 
@@ -62,7 +63,7 @@ class KalshiClient:
         self.base_url = (base_url or self.BASE_URL).rstrip("/")
         self.api_key_id = api_key_id or ""
         self.private_key_path = private_key_path or ""
-        self._private_key = None
+        self._private_key: Optional[rsa.RSAPrivateKey] = None
         if private_key_path:
             self._private_key = load_private_key(private_key_path)
         self.timeout = timeout
@@ -131,14 +132,15 @@ class KalshiClient:
         return {}
 
     def _auth_headers(self, method: str, endpoint: str) -> dict[str, str]:
-        if not self.is_authenticated:
+        private_key = self._private_key
+        if not self.api_key_id or private_key is None:
             raise RuntimeError(
                 "Kalshi API key id and private key path are required for authenticated requests"
             )
         timestamp_ms = str(int(time.time() * 1000))
         sign_path = sign_path_for_url(self.base_url, endpoint)
         return auth_headers(
-            self._private_key,
+            private_key,
             self.api_key_id,
             timestamp_ms,
             method,
@@ -345,8 +347,8 @@ class KalshiClient:
         Returns:
             List of all markets
         """
-        all_markets = []
-        cursor = None
+        all_markets: list[KalshiMarket] = []
+        cursor: Optional[str] = None
         
         while len(all_markets) < max_markets:
             markets, next_cursor = await self.list_markets(
@@ -409,7 +411,7 @@ class KalshiClient:
         """
         List markets archived to Kalshi historical data.
         """
-        params = {"limit": min(max_markets, 1000)}
+        params: dict[str, Any] = {"limit": min(max_markets, 1000)}
         if cursor:
             params["cursor"] = cursor
 
@@ -635,7 +637,7 @@ class KalshiClient:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 for ticker, result in zip(batch, results):
-                    if isinstance(result, Exception):
+                    if isinstance(result, BaseException):
                         logger.debug(f"Failed to get Kalshi orderbook for {ticker}: {result}")
                         continue
                     if result:

@@ -15,13 +15,20 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 
-def load_private_key(key_path: str | Path):
+def load_private_key(key_path: str | Path) -> rsa.RSAPrivateKey:
     """Load an RSA private key from a PEM file (Kalshi .key download)."""
     path = Path(key_path).expanduser()
     if not path.is_file():
         raise FileNotFoundError(f"Kalshi private key not found: {path}")
     data = path.read_bytes()
-    return serialization.load_pem_private_key(data, password=None, backend=default_backend())
+    private_key = serialization.load_pem_private_key(
+        data,
+        password=None,
+        backend=default_backend(),
+    )
+    if not isinstance(private_key, rsa.RSAPrivateKey):
+        raise ValueError(f"Kalshi private key must be an RSA private key: {path}")
+    return private_key
 
 
 def sign_path_for_url(base_url: str, endpoint: str) -> str:

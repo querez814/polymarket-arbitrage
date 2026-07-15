@@ -61,7 +61,7 @@ class BasePolymarketClient(ABC):
         pass
     
     @abstractmethod
-    async def stream_orderbook(self, market_ids: list[str]) -> AsyncIterator[tuple[str, OrderBook]]:
+    def stream_orderbook(self, market_ids: list[str]) -> AsyncIterator[tuple[str, OrderBook]]:
         """Stream order book updates for multiple markets."""
         pass
     
@@ -153,7 +153,7 @@ class PolymarketClient(BasePolymarketClient):
         self._http_client: Optional[httpx.AsyncClient] = None
         
         # WebSocket connection
-        self._ws_connection = None
+        self._ws_connection: Any = None
         self._ws_subscriptions: set[str] = set()
         
         # Live CLOB trading
@@ -280,12 +280,15 @@ class PolymarketClient(BasePolymarketClient):
         """Make an HTTP request with retry logic."""
         if not self._http_client:
             await self.connect()
+        client = self._http_client
+        if client is None:
+            raise RuntimeError("Polymarket HTTP client failed to initialize")
         
         url = f"{base_url or self.rest_url}{endpoint}"
         
         for attempt in range(self.max_retries):
             try:
-                response = await self._http_client.request(
+                response = await client.request(
                     method,
                     url,
                     params=params,
@@ -322,7 +325,7 @@ class PolymarketClient(BasePolymarketClient):
             params.setdefault("order", "volume24hr")
             params.setdefault("ascending", "false")
             
-            all_markets = []
+            all_markets: list[Market] = []
             offset = 0
             requested_limit = int(params.pop("limit", 100) or 100)
             max_markets = int(params.pop("max_markets", requested_limit if "limit" in (filters or {}) else 5000) or 5000)
@@ -888,7 +891,7 @@ class PolymarketClient(BasePolymarketClient):
         try:
             # Real API call would go here
             data = await self._request("GET", "/positions")
-            positions = {}
+            positions: dict[str, dict[TokenType, Position]] = {}
             for item in data:
                 market_id = item["market_id"]
                 token_type = TokenType.YES if item["outcome"] == "Yes" else TokenType.NO
@@ -1008,11 +1011,11 @@ class PolymarketClient(BasePolymarketClient):
     async def get_open_orders(self, market_id: Optional[str] = None) -> list[Order]:
         """Get all open orders."""
         if self.dry_run:
-            orders = [
+            simulated_orders = [
                 o for o in self._simulated_orders.values()
                 if o.is_open and (market_id is None or o.market_id == market_id)
             ]
-            return orders
+            return simulated_orders
 
         if not self._clob_bridge:
             return []
@@ -1041,19 +1044,21 @@ class PolymarketClient(BasePolymarketClient):
     async def get_trades(self, market_id: Optional[str] = None, limit: int = 100) -> list[Trade]:
         """Get recent trades."""
         if self.dry_run:
-            trades = self._simulated_trades[-limit:]
+            simulated_trades = self._simulated_trades[-limit:]
             if market_id:
-                trades = [t for t in trades if t.market_id == market_id]
-            return trades
+                simulated_trades = [
+                    trade for trade in simulated_trades if trade.market_id == market_id
+                ]
+            return simulated_trades
         
         try:
-            params = {"limit": limit}
+            params: dict[str, Any] = {"limit": limit}
             if market_id:
                 params["market_id"] = market_id
             
             data = await self._request("GET", "/trades", params=params)
             
-            trades = []
+            trades: list[Trade] = []
             for item in data:
                 trades.append(Trade(
                     trade_id=item["trade_id"],
