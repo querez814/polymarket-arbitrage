@@ -12,7 +12,7 @@ Usage:
 Environment (recommended — never commit keys):
     export KALSHI_API_KEY_ID="your-uuid-from-kalshi"
     export KALSHI_PRIVATE_KEY_PATH="$HOME/.kalshi/kalshi-key.pem"
-    export KALSHI_API_URL="https://api.elections.kalshi.com/trade-api/v2"
+    export KALSHI_API_URL="https://external-api.kalshi.com/trade-api/v2"
     # Demo sandbox:
     # export KALSHI_API_URL="https://demo-api.kalshi.co/trade-api/v2"
 

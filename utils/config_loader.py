@@ -24,7 +24,7 @@ POLYMARKET_US_PRODUCTION_URLS = {
     "api.polymarket_us_api_url": "https://api.polymarket.us",
     "api.polymarket_us_gateway_url": "https://gateway.polymarket.us",
 }
-KALSHI_PRODUCTION_URL = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_PRODUCTION_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 
 class ConfigError(Exception):
@@ -38,7 +38,7 @@ class ApiConfig:
     polymarket_rest_url: str = "https://clob.polymarket.com"
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     gamma_api_url: str = "https://gamma-api.polymarket.com"
-    kalshi_api_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    kalshi_api_url: str = "https://external-api.kalshi.com/trade-api/v2"
     kalshi_api_key_id: str = ""
     kalshi_private_key_path: str = ""
     api_key: str = ""

@@ -20,7 +20,7 @@ api:
   #   file you downloaded when the key was created (Kalshi never stores it for you).
   #   "Optional" in Kalshi docs means you may supply your own key pair (Create Key)
   #   or let Kalshi generate one (Generate Key) — not that you can skip the private key.
-  kalshi_api_url: "https://api.elections.kalshi.com/trade-api/v2"
+  kalshi_api_url: "https://external-api.kalshi.com/trade-api/v2"
   kalshi_api_key_id: ""
   kalshi_private_key_path: ""
   

@@ -461,6 +461,30 @@ mode:
         load_config(str(config_path))
 
 
+def test_live_kalshi_monitoring_rejects_legacy_elections_endpoint(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-wallet-key
+  kalshi_api_url: https://api.elections.kalshi.com/trade-api/v2
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: true
+  kalshi_enabled: true
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="external-api.kalshi.com"):
+        load_config(str(config_path))
+
+
 def test_cross_platform_mode_requires_kalshi_monitoring(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

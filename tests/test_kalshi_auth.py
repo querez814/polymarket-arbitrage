@@ -13,7 +13,7 @@ def _generate_test_key():
 
 
 def test_sign_path_includes_trade_api_prefix():
-    base = "https://api.elections.kalshi.com/trade-api/v2"
+    base = "https://external-api.kalshi.com/trade-api/v2"
     assert (
         sign_path_for_url(base, "/portfolio/balance")
         == "/trade-api/v2/portfolio/balance"

@@ -19,7 +19,7 @@ api:
   polymarket_rest_url: "https://clob.polymarket.com"
   polymarket_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
   gamma_api_url: "https://gamma-api.polymarket.com"
-  kalshi_api_url: "https://api.elections.kalshi.com/trade-api/v2"
+  kalshi_api_url: "https://external-api.kalshi.com/trade-api/v2"
   kalshi_api_key_id: ""
   kalshi_private_key_path: ""
   chain_id: 137

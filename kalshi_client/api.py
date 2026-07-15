@@ -85,11 +85,10 @@ class KalshiClient:
     """
     Async client for Kalshi prediction market API.
     
-    Note: Uses the elections subdomain which provides access to ALL markets,
-    not just election-related ones.
+    Uses Kalshi's current production Trade API root by default.
     """
     
-    BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+    BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
     
     def __init__(
         self,
