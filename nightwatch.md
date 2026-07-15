@@ -27,7 +27,7 @@ Completed at 2026-07-14 21:51 EDT using redacted checks only:
 - The macOS Keychain item labelled `polymarket-trading-wallet` is discoverable. Its value was never printed, logged, serialized, copied, or written to disk.
 - The official Python CLOB v2 SDK successfully authenticated a read-only `get_open_orders(None, True)` request against `https://clob.polymarket.com` by combining the ignored L2 credentials with the Keychain wallet value entirely in process. The response was a list with zero open orders. No create, sign, post, cancel, balance-changing, or allowance-changing method was invoked.
 - This proves that the current L2 credential triplet and matching wallet can authenticate a read-only CLOB query. It does **not** prove order permissions, balances, allowances, funding, live placement, cancellation, profitability, or operational readiness.
-- The application config loader does not retrieve the wallet key from Keychain, and the ignored file intentionally has no `private_key`. Consequently, current application live startup cannot use this credential arrangement without separate environment injection. That mismatch remains part of G4 and will be audited in a later implementation slice.
+- As of iteration 6, the application can explicitly select this wallet item with `POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL` while keeping the ignored file free of wallet material. A redacted in-process validation combined the ignored L2 configuration with the selected Keychain item and satisfied all Polymarket Global live credential checks. No exchange client or network request was created by that validation.
 
 ## Official documentation consulted
 
@@ -101,6 +101,13 @@ No finding is marked resolved on the strength of the source report alone.
 - Made live configuration fail closed when `mode.data_mode` is `simulation` or `mode.simulate_fills` is true. This prevents a live-labelled process from consuming generated market data or hypothetical fill behavior.
 - This is a partial G4 hardening, not resolution of G4: application-level Keychain retrieval, credential-source policy, platform/host consistency, Kalshi credential completeness, and safe production defaults still require later slices.
 
+### 2026-07-14 — Iteration 6
+
+- Added an explicit macOS Keychain wallet-key source for live Polymarket Global startup. `POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL` selects a generic-password item through `/usr/bin/security`; the value is captured only in process and is never placed in command arguments, configuration files, logs, or errors.
+- Both CLI entrypoints resolve runtime secrets after applying mode overrides and before effective configuration validation or client construction. Resolution is idempotent because configuration loaded as live is also revalidated at the entrypoint.
+- Live startup now rejects ambiguous simultaneous direct-key and Keychain-label configuration and fails with actionable, output-redacted errors when Keychain access is unavailable, denied, missing, or empty.
+- Updated tracked templates to document the Keychain alternative without embedding any secret. G4 remains open for tracked-versus-ignored credential-source enforcement, venue/host consistency, Kalshi credential completeness, and conservative production defaults.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -150,15 +157,26 @@ No finding is marked resolved on the strength of the source report alone.
 - Environment discovery: no repository `.venv` exists; Homebrew `python3` lacks both PyYAML and pytest; `/Users/zaki/.local/bin/uv` successfully created an ephemeral environment for the focused checks. Canonical dependency installation remains unresolved.
 - No bot, dashboard, scanner, websocket, collector, exchange client, order/signing flow, or network probe was started. No background process was created.
 
+### 2026-07-14 — Iteration 6
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_config_loader.py -q`: **PASS** — 10 tests passed, including mocked Keychain resolution, repeated-resolution idempotency, ambiguous-source rejection, and output-redacted failure behavior.
+- `uv run --with-requirements requirements.txt python -m pytest tests test_real_data.py -q`: **PASS** — 117 tests passed with 266 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m compileall -q core dashboard kalshi_client polymarket_client polymarket_us_client scripts utils main.py run_with_dashboard.py`: **PASS**.
+- `uv run --with-requirements requirements.txt black --check tests/test_config_loader.py utils/__init__.py`: **PASS** — both focused formatted files unchanged.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports utils/config_loader.py`: **PASS**.
+- Redacted in-process effective-config probe with `POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL=polymarket-trading-wallet`: **PASS** — the ignored L2 configuration plus selected Keychain wallet item satisfied live Polymarket Global validation. The probe printed only a generic pass message; it constructed no exchange client and made no network request.
+- `git diff --check`: **PASS**.
+- No bot, dashboard, scanner, websocket, collector, exchange client, order/signing flow, or network request was started. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G3 and G5–G14 have not yet been audited against current code or current official protocol behavior. G4 has only the partial live-override and simulation-mode hardening recorded in iteration 5.
+- G1–G3 and G5–G14 have not yet been audited against current code or current official protocol behavior. G4 has the live-override, simulation-mode, and Keychain-source hardening recorded in iterations 5–6 but is not complete.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
-- G4 remains open: the authenticated Keychain-backed arrangement is not integrated with the application config loader, and credential sources, venue/host consistency, Kalshi credential fragments, and conservative production defaults have not yet been fully reconciled.
+- G4 remains open: tracked-versus-ignored credential-source enforcement, venue/host consistency, Kalshi credential fragments, and conservative production defaults have not yet been fully reconciled.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
 - The unfiltered root-level pytest command collects an unmarked async function in `test_kalshi_connection.py` and therefore reports one failure even though the 114-test maintained suite plus `test_real_data.py` passes.
 - Full static, test, configuration, offline matched-data, ML, and dependency/security verification remains outstanding.

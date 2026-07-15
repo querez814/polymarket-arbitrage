@@ -27,6 +27,7 @@ api:
   api_secret: ""
   passphrase: ""
   private_key: ""
+  polymarket_private_key_keychain_label: ""  # Global-only; unused on Polymarket US
   chain_id: 137
 
   timeout_seconds: 30

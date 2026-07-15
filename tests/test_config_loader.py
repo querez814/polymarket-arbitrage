@@ -1,6 +1,14 @@
+import subprocess
+from unittest.mock import Mock
+
 import pytest
 
-from utils.config_loader import ConfigError, load_config, validate_config
+from utils.config_loader import (
+    ConfigError,
+    load_config,
+    resolve_runtime_secrets,
+    validate_config,
+)
 
 
 def test_aggressive_profile_applies_riskier_defaults(tmp_path):
@@ -138,3 +146,103 @@ mode:
         ConfigError, match="mode.simulate_fills must be false in live mode"
     ):
         load_config(str(config_path))
+
+
+def test_live_override_resolves_wallet_key_from_explicit_keychain_label(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  polymarket_private_key_keychain_label: test-wallet-label
+mode:
+  trading_mode: dry_run
+  data_mode: real
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+    config = load_config(str(config_path))
+    run = Mock(
+        return_value=subprocess.CompletedProcess([], 0, stdout="test-wallet-key\n")
+    )
+    monkeypatch.setattr("utils.config_loader.Path.exists", lambda self: True)
+    monkeypatch.setattr("utils.config_loader.subprocess.run", run)
+
+    config.mode.trading_mode = "live"
+    resolve_runtime_secrets(config)
+    validate_config(config)
+    resolve_runtime_secrets(config)
+
+    assert config.api.private_key == "test-wallet-key"
+    run.assert_called_once()
+    assert run.call_args.args[0] == [
+        "/usr/bin/security",
+        "find-generic-password",
+        "-w",
+        "-l",
+        "test-wallet-label",
+    ]
+
+
+def test_live_mode_rejects_ambiguous_wallet_key_sources(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-wallet-key
+  polymarket_private_key_keychain_label: test-wallet-label
+mode:
+  trading_mode: live
+  data_mode: real
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="exactly one Polymarket wallet-key source"):
+        load_config(str(config_path))
+
+
+def test_keychain_failure_is_actionable_without_exposing_subprocess_output(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  polymarket_private_key_keychain_label: test-wallet-label
+mode:
+  trading_mode: dry_run
+  data_mode: real
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+    config = load_config(str(config_path))
+    monkeypatch.setattr("utils.config_loader.Path.exists", lambda self: True)
+    monkeypatch.setattr(
+        "utils.config_loader.subprocess.run",
+        Mock(
+            side_effect=subprocess.CalledProcessError(
+                44, ["security"], stderr="secret-looking-subprocess-output"
+            )
+        ),
+    )
+
+    config.mode.trading_mode = "live"
+    with pytest.raises(ConfigError) as error:
+        resolve_runtime_secrets(config)
+
+    assert "verify the item exists and access is approved" in str(error.value)
+    assert "secret-looking-subprocess-output" not in str(error.value)

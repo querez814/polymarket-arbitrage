@@ -27,7 +27,12 @@ from core.arb_engine import ArbEngine, ArbConfig
 from core.execution import ExecutionEngine, ExecutionConfig
 from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
-from utils.config_loader import BotConfig, load_config, validate_config
+from utils.config_loader import (
+    BotConfig,
+    load_config,
+    resolve_runtime_secrets,
+    validate_config,
+)
 from utils.logging_utils import setup_logging, performance_logger
 from utils.paper_trade_store import PaperTradeStore
 
@@ -393,6 +398,7 @@ async def main_async(args: argparse.Namespace) -> None:
             config.mode.trading_mode = "live"
         elif args.dry_run:
             config.mode.trading_mode = "dry_run"
+        resolve_runtime_secrets(config)
         validate_config(config)
     except Exception as e:
         logger.error(f"Invalid effective config: {e}")

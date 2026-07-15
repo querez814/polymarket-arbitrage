@@ -31,6 +31,8 @@ api:
   
   # Wallet configuration (use POLYMARKET_PRIVATE_KEY env var for live)
   private_key: ""
+  # macOS alternative: set POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL instead of exporting the key
+  polymarket_private_key_keychain_label: ""
   chain_id: 137
   
   # Request settings

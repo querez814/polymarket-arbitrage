@@ -3,6 +3,8 @@
 # Copy to config.live.yaml and set credentials via environment variables:
 #
 #   export POLYMARKET_PRIVATE_KEY="0x..."
+#   # Or, on macOS, select the wallet item without exporting the key itself:
+#   export POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL="polymarket-trading-wallet"
 #   export POLYMARKET_API_KEY="..."
 #   export POLYMARKET_API_SECRET="..."
 #   export POLYMARKET_PASSPHRASE="..."
@@ -27,6 +29,7 @@ api:
   api_secret: ""
   passphrase: ""
   private_key: ""
+  polymarket_private_key_keychain_label: ""
 
   timeout_seconds: 30
   max_retries: 3

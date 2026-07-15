@@ -6,6 +6,7 @@ Loads and validates configuration from YAML files.
 """
 
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,7 @@ class ApiConfig:
     api_secret: str = ""
     passphrase: str = ""
     private_key: str = ""
+    polymarket_private_key_keychain_label: str = ""
     chain_id: int = 137
     polymarket_platform: str = "global"  # "global" or "us"
     polymarket_us_api_url: str = "https://api.polymarket.us"
@@ -194,6 +196,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         "api_secret": "POLYMARKET_API_SECRET",
         "passphrase": "POLYMARKET_PASSPHRASE",
         "private_key": "POLYMARKET_PRIVATE_KEY",
+        "polymarket_private_key_keychain_label": "POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL",
         "chain_id": "POLYMARKET_CHAIN_ID",
         "polymarket_platform": "POLYMARKET_PLATFORM",
         "polymarket_us_key_id": "POLYMARKET_US_KEY_ID",
@@ -218,6 +221,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     )
     
     # Validate
+    resolve_runtime_secrets(config)
     validate_config(config)
     
     return config
@@ -234,6 +238,67 @@ def _apply_env_overrides(data: dict, env_map: dict[str, str]) -> dict:
             else:
                 result[key] = env_value
     return result
+
+
+def resolve_runtime_secrets(config: BotConfig) -> None:
+    """Resolve explicitly configured runtime-only secrets for live startup."""
+    if not config.is_live or config.is_polymarket_us:
+        return
+
+    private_key = config.api.private_key.strip()
+    keychain_label = config.api.polymarket_private_key_keychain_label.strip()
+    resolved_from_keychain = getattr(
+        config.api, "_private_key_resolved_from_keychain", False
+    )
+
+    if private_key and keychain_label:
+        if resolved_from_keychain:
+            return
+        raise ConfigError(
+            "Configure exactly one Polymarket wallet-key source: "
+            "POLYMARKET_PRIVATE_KEY or POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL"
+        )
+
+    if not keychain_label:
+        return
+
+    security_path = Path("/usr/bin/security")
+    if not security_path.exists():
+        raise ConfigError(
+            "Polymarket wallet Keychain loading requires macOS /usr/bin/security; "
+            "use POLYMARKET_PRIVATE_KEY on this platform"
+        )
+
+    try:
+        result = subprocess.run(
+            [
+                str(security_path),
+                "find-generic-password",
+                "-w",
+                "-l",
+                keychain_label,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise ConfigError(
+            f"Unable to read Polymarket wallet key from Keychain label "
+            f"{keychain_label!r}; verify the item exists and access is approved"
+        ) from exc
+
+    resolved_key = result.stdout.strip()
+    if not resolved_key:
+        raise ConfigError(
+            f"Polymarket wallet Keychain label {keychain_label!r} returned an empty value"
+        )
+
+    config.api.private_key = resolved_key
+    # Keep this runtime-only marker out of dataclass serialization while making
+    # repeated startup validation idempotent.
+    setattr(config.api, "_private_key_resolved_from_keychain", True)
 
 
 def _build_dataclass(cls, data: dict):
