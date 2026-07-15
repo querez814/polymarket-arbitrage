@@ -10,11 +10,92 @@ from polymarket_client.models import (
     Order,
     OrderSide,
     OrderStatus,
+    Position,
     Signal,
     TokenType,
     Trade,
 )
 from utils.paper_trade_store import PaperTradeStore
+
+
+@pytest.mark.asyncio
+async def test_live_startup_fails_closed_when_venue_state_read_fails():
+    client = AsyncMock()
+    client.get_open_orders.side_effect = TimeoutError("venue unavailable")
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=RiskManager(RiskConfig(trade_only_high_volume=False)),
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+
+    with pytest.raises(RuntimeError, match="venue state could not be reconciled"):
+        await engine.start()
+
+    assert engine._running is False
+    assert engine._processing_task is None
+    client.get_positions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_live_startup_fails_closed_when_account_is_not_flat():
+    client = AsyncMock()
+    client.get_open_orders.return_value = [
+        Order(
+            order_id="orphan-order",
+            market_id="market-1",
+            token_type=TokenType.YES,
+            side=OrderSide.BUY,
+            price=0.50,
+            size=10.0,
+            status=OrderStatus.OPEN,
+        )
+    ]
+    client.get_positions.return_value = {
+        "market-2": {
+            TokenType.NO: Position(
+                market_id="market-2",
+                token_type=TokenType.NO,
+                size=3.0,
+                avg_entry_price=0.40,
+            )
+        }
+    }
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=RiskManager(RiskConfig(trade_only_high_volume=False)),
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"venue account is not flat \(1 open orders, 1 nonzero positions\)",
+    ):
+        await engine.start()
+
+    assert engine._running is False
+    assert engine._processing_task is None
+    client.cancel_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_live_state_preflight_accepts_authoritatively_flat_account():
+    client = AsyncMock()
+    client.get_open_orders.return_value = []
+    client.get_positions.return_value = {}
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=RiskManager(RiskConfig(trade_only_high_volume=False)),
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+
+    await engine._require_flat_live_start()
+
+    client.get_open_orders.assert_awaited_once_with()
+    client.get_positions.assert_awaited_once_with()
+    client.place_order.assert_not_awaited()
 
 
 @pytest.mark.asyncio

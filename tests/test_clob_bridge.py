@@ -1,5 +1,10 @@
 """Tests for Polymarket CLOB bridge parsing helpers."""
 
+from unittest.mock import AsyncMock
+
+import pytest
+
+from polymarket_client.api import PolymarketClient
 from polymarket_client.clob_bridge import (
     incremental_fill_trades,
     map_clob_order_status,
@@ -65,3 +70,20 @@ def test_incremental_fill_trades_emits_delta_only():
     assert trades[0].is_simulated is False
 
     assert incremental_fill_trades(order, previous_filled_size=3.0) == []
+
+
+@pytest.mark.asyncio
+async def test_live_open_order_read_fails_closed_without_trading_bridge():
+    client = PolymarketClient(dry_run=False)
+
+    with pytest.raises(RuntimeError, match="trading bridge is not initialized"):
+        await client.get_open_orders()
+
+
+@pytest.mark.asyncio
+async def test_live_position_read_does_not_convert_failure_to_empty_account():
+    client = PolymarketClient(dry_run=False)
+    client._request = AsyncMock(side_effect=TimeoutError("venue unavailable"))
+
+    with pytest.raises(RuntimeError, match="authoritative live positions"):
+        await client.get_positions()

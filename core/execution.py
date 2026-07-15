@@ -208,6 +208,9 @@ class ExecutionEngine:
         """Start the execution engine."""
         if self._running:
             return
+
+        if not self.config.dry_run:
+            await self._require_flat_live_start()
         
         self._running = True
         self._processing_task = asyncio.create_task(
@@ -222,6 +225,38 @@ class ExecutionEngine:
             asyncio.create_task(self._monitor_live_fills(), name="live_fill_monitor")
         
         logger.info("ExecutionEngine started")
+
+    async def _require_flat_live_start(self) -> None:
+        """Refuse live execution unless authoritative venue state is flat.
+
+        In-memory order and risk ledgers cannot safely reconstruct strategy
+        ownership or already-filled exposure after a process restart. Until a
+        durable reconciliation workflow exists, the conservative recovery
+        boundary is to require successful venue reads and an empty account.
+        This method never cancels or otherwise mutates venue state.
+        """
+        try:
+            open_orders = await self.client.get_open_orders()
+            positions = await self.client.get_positions()
+        except Exception as exc:
+            raise RuntimeError(
+                "Live execution startup blocked: venue state could not be "
+                "reconciled read-only"
+            ) from exc
+
+        nonzero_positions = [
+            position
+            for token_positions in positions.values()
+            for position in token_positions.values()
+            if position.size != 0
+        ]
+        if open_orders or nonzero_positions:
+            raise RuntimeError(
+                "Live execution startup blocked: venue account is not flat "
+                f"({len(open_orders)} open orders, "
+                f"{len(nonzero_positions)} nonzero positions); reconcile "
+                "externally before restart"
+            )
     
     async def stop(self) -> None:
         """Stop the execution engine."""

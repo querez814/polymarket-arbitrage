@@ -174,6 +174,12 @@ No finding is marked resolved on the strength of the source report alone.
 - If reconciliation fails or the refreshed order remains open or partially filled, cancellation returns failure and deliberately retains local order tracking plus pending and strategy exposure. The timeout monitor, shutdown cancellation, market cancellation, and strategy cancellation paths all use this same fail-closed boundary.
 - Mocked regression coverage proves both sides of the lifecycle: a non-terminal refresh retains the entire residual, while a terminal cancellation with a racing partial fill books the filled exposure before releasing only the cancelled residual. This narrows G7's optimistic-cancellation gap; it does not provide restart discovery, durable state, stable placement idempotency, cross-venue reconciliation, or two-leg residual hedging.
 
+### 2026-07-15 — Iteration 18 (07:04 EDT)
+
+- Added a read-only, fail-closed G7 live-startup gate before any execution task is created. The engine now requires successful venue open-order and position reads and refuses to start when either an orphan open order or any nonzero position exists. It never auto-cancels or mutates the account; the operator must reconcile non-flat state externally.
+- Live `PolymarketClient` open-order and position read failures no longer degrade to empty collections. Returning an empty account on timeout, missing bridge state, or another read error could falsely satisfy recovery checks, so these paths now raise explicit output-redacted errors.
+- This establishes a conservative flat-only restart boundary, not crash recovery. The current live positions reader remains a placeholder REST integration and therefore blocks live startup until an authoritative account-position implementation exists. Durable local state, stable placement idempotency, sustained reconciliation, cross-venue recovery, and two-leg residual hedging remain unresolved.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -353,13 +359,23 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS** before and after the documentation update.
 - Verification used `AsyncMock` exchange boundaries and internal unsigned order/trade models only. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, real exchange client, authenticated request, exchange-order construction/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
 
+### 2026-07-15 — Iteration 18 (07:04 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_execution_visibility.py tests/test_clob_bridge.py -q`: **PASS** — 17 focused offline tests passed, including unreadable-state rejection, non-flat-account rejection before task creation, flat-state acceptance at the isolated preflight boundary, and proof that live client read failures cannot masquerade as empty venue state.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 174 tests and 405 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m compileall -q core polymarket_client utils main.py run_with_dashboard.py`: **PASS**.
+- `uv run --with-requirements requirements.txt mypy --follow-imports=skip --ignore-missing-imports core/execution.py polymarket_client/api.py tests/test_execution_visibility.py tests/test_clob_bridge.py`: **PASS** — no issues in the changed execution, client, and regression-test slice.
+- `uv run --with-requirements requirements.txt black --check tests/test_execution_visibility.py tests/test_clob_bridge.py`: **PASS**. The legacy source files were not broadly reformatted.
+- `git diff --check`: **PASS** before the documentation update and repeated after it below.
+- Verification used only `AsyncMock`, internal unsigned order/position models, and a deliberately uninitialized local client. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, connected exchange client, authenticated request, order construction/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, and live cancellation retains residual exposure until one terminal refresh, but it still lacks stable idempotency keys, startup/open-order discovery, sustained reconciliation, two-leg residual-exposure handling, and crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, in-process open-order and distinct-position caps, and in-process rolling/daily placement-attempt caps, but remains open for cross-venue shared-ledger accounting and reconciliation-backed restart recovery.
+- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, live cancellation retains residual exposure until one terminal refresh, and live startup requires readable flat venue state before creating execution tasks. It still lacks stable idempotency keys, an authoritative implemented position reader, durable/sustained reconciliation, two-leg residual-exposure handling, and actual crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, in-process open-order and distinct-position caps, and in-process rolling/daily placement-attempt caps, but remains open for cross-venue shared-ledger accounting and reconciliation-backed restart recovery.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.

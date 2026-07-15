@@ -904,8 +904,8 @@ class PolymarketClient(BasePolymarketClient):
                 )
             return positions
         except Exception as e:
-            logger.warning(f"Failed to fetch positions: {e}")
-            return {}
+            logger.error(f"Failed to fetch positions: {e}")
+            raise RuntimeError("Failed to fetch authoritative live positions") from e
     
     async def place_order(
         self,
@@ -1018,7 +1018,7 @@ class PolymarketClient(BasePolymarketClient):
             return simulated_orders
 
         if not self._clob_bridge:
-            return []
+            raise RuntimeError("Live trading bridge is not initialized")
 
         try:
             raw_orders = await self._clob_bridge.get_open_orders()
@@ -1038,8 +1038,8 @@ class PolymarketClient(BasePolymarketClient):
                 )
             return orders
         except Exception as e:
-            logger.warning(f"Failed to fetch open orders: {e}")
-            return []
+            logger.error(f"Failed to fetch open orders: {e}")
+            raise RuntimeError("Failed to fetch authoritative live open orders") from e
     
     async def get_trades(self, market_id: Optional[str] = None, limit: int = 100) -> list[Trade]:
         """Get recent trades."""
