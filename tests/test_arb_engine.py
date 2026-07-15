@@ -109,6 +109,7 @@ class TestBundleArbitrage:
         assert len(bundle_signals) == 1
         
         signal = bundle_signals[0]
+        assert signal.opportunity is not None
         assert signal.opportunity.opportunity_type == OpportunityType.BUNDLE_LONG
         assert signal.opportunity.edge >= 0.04  # At least 4% edge
         assert len(signal.orders) == 2  # Both YES and NO orders
@@ -131,6 +132,7 @@ class TestBundleArbitrage:
         assert len(bundle_signals) == 1
         
         signal = bundle_signals[0]
+        assert signal.opportunity is not None
         assert signal.opportunity.opportunity_type == OpportunityType.BUNDLE_SHORT
         assert signal.opportunity.edge >= 0.04
     
@@ -423,4 +425,3 @@ class TestEdgeCases:
         # Should not crash
         signals = arb_engine.analyze(state)
         assert isinstance(signals, list)
-

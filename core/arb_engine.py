@@ -337,7 +337,12 @@ class ArbEngine:
         best_bid_no = order_book.best_bid_no
         
         # Need all prices to evaluate
-        if None in (best_ask_yes, best_ask_no, best_bid_yes, best_bid_no):
+        if (
+            best_ask_yes is None
+            or best_ask_no is None
+            or best_bid_yes is None
+            or best_bid_no is None
+        ):
             self._record_decision(
                 strategy="bundle_arb",
                 outcome=DecisionOutcome.SKIP,
