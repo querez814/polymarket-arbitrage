@@ -91,6 +91,7 @@ class TradingConfig:
 class RiskConfig:
     """Risk configuration."""
     max_order_notional: float = 15.0
+    max_open_orders: int = 4
     max_position_per_market: float = 200.0
     max_global_exposure: float = 5000.0
     max_daily_loss: float = 500.0
@@ -345,6 +346,7 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
             },
             "risk": {
                 "max_order_notional": 20.0,
+                "max_open_orders": 6,
                 "max_position_per_market": 25.0,
                 "max_global_exposure": 75.0,
                 "max_daily_loss": 15.0,
@@ -377,6 +379,7 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
             },
             "risk": {
                 "max_order_notional": 30.0,
+                "max_open_orders": 8,
                 "max_position_per_market": 35.0,
                 "max_global_exposure": 100.0,
                 "max_daily_loss": 20.0,
@@ -442,6 +445,13 @@ def validate_config(config: BotConfig) -> None:
 
     if config.risk.max_order_notional > config.risk.max_global_exposure:
         errors.append("risk.max_order_notional must be <= risk.max_global_exposure")
+
+    if (
+        not isinstance(config.risk.max_open_orders, int)
+        or isinstance(config.risk.max_open_orders, bool)
+        or config.risk.max_open_orders <= 0
+    ):
+        errors.append("risk.max_open_orders must be a positive integer")
 
     if config.risk.max_position_per_market <= 0:
         errors.append("risk.max_position_per_market must be positive")

@@ -135,13 +135,19 @@ No finding is marked resolved on the strength of the source report alone.
 
 - Began G5 by adding an explicit dollar-notional ceiling at `RiskManager.check_order()`, the final deterministic admission boundary before `ExecutionEngine` calls an exchange client. The existing `trading.max_order_size` limits shares/contracts and could not prevent an individually oversized dollar commitment when aggregate exposure remained available.
 - Added `risk.max_order_notional` to configuration, validation, both runtime entrypoints, and the offline backtest wiring. Non-finite/non-positive caps and caps above global exposure now fail configuration validation rather than silently creating a missing or ineffective per-order guard. Orders with non-finite or non-positive computed notionals also fail closed at admission.
-- Conservative defaults cap a single order at $15 notional; balanced and aggressive profile defaults are $20 and $30. Both tracked live templates use a stricter $10 cap. This resolves only G5's per-order-dollar-cap slice; open-order, order-rate, daily-order, and position-count caps remain unaudited and unresolved.
+- Conservative defaults cap a single order at $15 notional; balanced and aggressive profile defaults are $20 and $30. Both tracked live templates use a stricter $10 cap. This resolves only G5's per-order-dollar-cap slice; order-rate, daily-order, and position-count caps remain unaudited and unresolved.
 
 ### 2026-07-15 — Iteration 12 (06:45 EDT)
 
 - Hardened G5 admission accounting so acknowledged but unfilled orders reserve their remaining limit-price notional against both per-market and global exposure caps. Before this change, only filled positions consumed those caps, so multiple individually valid open orders could collectively commit more than the configured exposure limits.
 - Centralized reservation lifecycle in `ExecutionEngine` tracking: tracking an order idempotently establishes its remaining reservation, each partial fill releases the filled size at the order's limit price while actual fill exposure is recorded, and final untracking/cancellation releases any residual. Availability, utilization, limit-health, and risk-summary calculations now include filled plus pending committed exposure.
-- This closes G5's simultaneous-open-order dollar-exposure accounting gap for the existing single-venue execution engine. It does not supply an explicit open-order count cap, order-rate cap, daily-order cap, cross-venue shared ledger, or restart recovery; those remain unresolved.
+- This closes G5's simultaneous-open-order dollar-exposure accounting gap for the existing single-venue execution engine. It does not supply an order-rate cap, daily-order cap, cross-venue shared ledger, or restart recovery; those remain unresolved.
+
+### 2026-07-15 — Iteration 13 (06:48 EDT)
+
+- Added an explicit fail-closed `risk.max_open_orders` admission limit before any exchange-client placement call. It counts the existing idempotent residual-exposure reservations, so repeated tracking cannot inflate the count, partial fills retain the slot, and full fill, cancellation, or final untracking releases it.
+- Configuration now rejects non-integer, Boolean, zero, and negative caps. Conservative, balanced, and aggressive defaults are 4, 6, and 8; the tracked aggressive dry-run config uses 8, while both live templates use a stricter cap of 3. Both runtime entrypoints and offline backtest construction carry the validated cap into `RiskManager`.
+- Risk summaries expose current and maximum open-order counts, and risk health fails if reconciled state ever contains more orders than the configured cap. This resolves G5's explicit in-process open-order-count slice only; it does not claim restart reconciliation, cross-venue accounting, atomic venue execution, or rate/daily-order controls.
 
 ## Verification evidence
 
@@ -267,13 +273,25 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS**.
 - Verification exercised only offline unit tests, including the repository's existing in-memory dry-run client tests. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, authenticated request, signing flow, external order submission/cancellation, network request, credential access, or account mutation was started or performed. No background process was created.
 
+### 2026-07-15 — Iteration 13 (06:48 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_risk_manager.py tests/test_config_loader.py tests/test_execution_visibility.py -q`: **PASS** — 60 focused tests passed, including exact-boundary rejection, idempotent reservation counting, partial-residual slot retention, full-release slot recovery, over-cap health detection, profile wiring, and invalid-cap configuration failures.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 149 tests and 314 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m py_compile $(git ls-files '*.py')`: **PASS**.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports --explicit-package-bases core/risk_manager.py utils/config_loader.py tests/test_risk_manager.py tests/test_config_loader.py`: **PASS** — no issues in the changed risk/configuration implementation and test slice.
+- Broader targeted mypy including `main.py` and `run_with_dashboard.py`: **PARTIAL / PRE-EXISTING TYPE BASELINE** — traversed known cross-platform/dashboard/runtime entrypoint debt and reported 65 errors in four files. No broad mypy cleanup was attempted, per the priority correction.
+- `uv run --with-requirements requirements.txt python -c 'from utils.config_loader import load_config; c=load_config("config.yaml"); assert c.risk.max_open_orders == 8; print("configured open-order cap validation: PASS")'`: **PASS** — the tracked aggressive dry-run configuration resolves to its intended eight-order ceiling.
+- `uv run --with-requirements requirements.txt black --check utils/config_loader.py tests/test_config_loader.py`: **PARTIAL / PRE-EXISTING FORMAT BASELINE** — `tests/test_config_loader.py` passes, while legacy `utils/config_loader.py` would be reformatted wholesale. No broad formatting cleanup was applied.
+- `git diff --check`: **PASS**.
+- Verification was entirely offline and mocked/in-memory. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, exchange client, authenticated request, order construction/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G3 and G6–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional and single-venue pending-order exposure accounting, but remains open for explicit open-order-count, order-rate, daily-order, position-count, cross-venue shared-ledger, and restart-recovery caps.
+- G1–G3 and G6–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, and an in-process open-order-count cap, but remains open for order-rate, daily-order, position-count, cross-venue shared-ledger, and restart-recovery controls.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.

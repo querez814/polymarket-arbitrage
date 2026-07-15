@@ -168,6 +168,33 @@ class TestOrderValidation:
         manager.release_open_order("open-1")
         assert manager.get_open_order_exposure() == 0.0
 
+    def test_open_order_count_cap_tracks_reservation_lifecycle(self):
+        manager = RiskManager(RiskConfig(
+            max_open_orders=2,
+            trade_only_high_volume=False,
+        ))
+        manager.reserve_open_order("open-1", "test_market", 5.0)
+        manager.reserve_open_order("open-1", "test_market", 5.0)
+        manager.reserve_open_order("open-2", "other_market", 5.0)
+
+        assert manager.get_open_order_count() == 2
+        assert manager.get_summary()["max_open_orders"] == 2
+        assert manager.get_summary()["open_order_count"] == 2
+        assert manager.check_order(create_order(size=10.0, price=0.50)) is False
+
+        manager.release_open_order("open-1", 2.0)
+        assert manager.get_open_order_count() == 2
+        assert manager.check_order(create_order(size=10.0, price=0.50)) is False
+
+        manager.release_open_order("open-1", 3.0)
+        assert manager.get_open_order_count() == 1
+        assert manager.check_order(create_order(size=10.0, price=0.50)) is True
+
+        manager.reserve_open_order("open-3", "third_market", 5.0)
+        assert manager.within_global_limits() is True
+        manager.reserve_open_order("open-4", "fourth_market", 5.0)
+        assert manager.within_global_limits() is False
+
 
 class TestKillSwitch:
     """Tests for kill switch functionality."""

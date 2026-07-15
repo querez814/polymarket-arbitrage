@@ -22,6 +22,7 @@ class RiskConfig:
     """Configuration for risk management."""
     # Position limits
     max_order_notional: float = 15.0  # Max dollars committed by one order
+    max_open_orders: int = 4  # Max acknowledged orders with residual exposure
     max_position_per_market: float = 200.0  # Max notional per market
     max_global_exposure: float = 5000.0  # Max total exposure
     
@@ -82,6 +83,7 @@ class RiskManager:
         logger.info(
             f"RiskManager initialized | "
             f"max_order={config.max_order_notional} | "
+            f"max_open_orders={config.max_open_orders} | "
             f"max_per_market={config.max_position_per_market} | "
             f"max_global={config.max_global_exposure} | "
             f"max_daily_loss={config.max_daily_loss}"
@@ -119,6 +121,17 @@ class RiskManager:
             logger.warning(
                 f"Order rejected: notional {order.notional:.2f} exceeds "
                 f"per-order limit {self.config.max_order_notional:.2f}"
+            )
+            return False
+
+        # Count only acknowledged orders with residual exposure. The
+        # reservation ledger is idempotent and is released on cancellation or
+        # full fill, so it is the authoritative in-process open-order count.
+        if self.get_open_order_count() >= self.config.max_open_orders:
+            logger.warning(
+                f"Order rejected: open-order limit reached | "
+                f"open_orders={self.get_open_order_count()} >= "
+                f"{self.config.max_open_orders}"
             )
             return False
         
@@ -281,6 +294,10 @@ class RiskManager:
             for reserved_market_id, notional in self._open_order_exposure.values()
             if market_id is None or reserved_market_id == market_id
         )
+
+    def get_open_order_count(self) -> int:
+        """Return acknowledged orders that still reserve exposure."""
+        return len(self._open_order_exposure)
     
     def update_pnl(self, realized_pnl: float, unrealized_pnl: float) -> None:
         """Update PnL tracking."""
@@ -333,6 +350,8 @@ class RiskManager:
             return False
         if self.state.current_drawdown > self.config.max_drawdown_pct:
             return False
+        if self.get_open_order_count() > self.config.max_open_orders:
+            return False
         if (
             self.state.global_exposure + self.get_open_order_exposure()
             > self.config.max_global_exposure
@@ -367,6 +386,7 @@ class RiskManager:
     def get_summary(self) -> dict:
         """Get a summary of current risk state."""
         open_order_exposure = self.get_open_order_exposure()
+        open_order_count = self.get_open_order_count()
         committed_exposure = self.state.global_exposure + open_order_exposure
         return {
             "global_exposure": self.state.global_exposure,
@@ -383,6 +403,8 @@ class RiskManager:
             "kill_switch_reason": self.state.kill_switch_reason,
             "markets_with_exposure": len([m for m, e in self._market_exposure.items() if e > 0]),
             "open_order_exposure": open_order_exposure,
+            "open_order_count": open_order_count,
+            "max_open_orders": self.config.max_open_orders,
             "strategy_exposure": self._strategy_exposure.copy(),
             "session_trade_count": len(self._session_trades),
             "within_limits": self.within_global_limits(),

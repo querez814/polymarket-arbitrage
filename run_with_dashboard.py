@@ -152,6 +152,7 @@ class TradingBotWithDashboard:
         # Initialize risk manager
         self.risk_manager = RiskManager(RiskConfig(
             max_order_notional=self.config.risk.max_order_notional,
+            max_open_orders=self.config.risk.max_open_orders,
             max_position_per_market=self.config.risk.max_position_per_market,
             max_global_exposure=self.config.risk.max_global_exposure,
             max_daily_loss=self.config.risk.max_daily_loss,

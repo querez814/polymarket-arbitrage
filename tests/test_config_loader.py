@@ -33,6 +33,7 @@ mode:
     assert config.trading.bundle_cooldown_seconds == 0.5
     assert config.risk.max_position_per_market == 35.0
     assert config.risk.max_order_notional == 30.0
+    assert config.risk.max_open_orders == 8
     assert config.risk.strategy_exposure_limits["market_making"] == 35.0
 
 
@@ -90,6 +91,25 @@ mode:
     )
 
     with pytest.raises(ConfigError, match="must be <= risk.max_global_exposure"):
+        load_config(str(config_path))
+
+
+@pytest.mark.parametrize("max_open_orders", ["0", "-1", "1.5", "true"])
+def test_rejects_invalid_open_order_cap(tmp_path, max_open_orders):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+risk:
+  max_open_orders: {max_open_orders}
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError, match="risk.max_open_orders must be a positive integer"
+    ):
         load_config(str(config_path))
 
 
