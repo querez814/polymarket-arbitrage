@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 from core.execution import ExecutionConfig, ExecutionEngine
@@ -6,6 +8,30 @@ from core.risk_manager import RiskConfig, RiskManager
 from polymarket_client import PolymarketClient
 from polymarket_client.models import Order, OrderSide, OrderStatus, TokenType, Trade
 from utils.paper_trade_store import PaperTradeStore
+
+
+@pytest.mark.asyncio
+async def test_placement_error_is_not_blindly_retried():
+    client = AsyncMock()
+    client.place_order.side_effect = TimeoutError("acceptance state unknown")
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=RiskManager(RiskConfig(trade_only_high_volume=False)),
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+
+    order = await engine._place_order(
+        market_id="market-1",
+        token_type=TokenType.YES,
+        side=OrderSide.BUY,
+        price=0.50,
+        size=10.0,
+        strategy_tag="bundle_arb",
+    )
+
+    assert order is None
+    client.place_order.assert_awaited_once()
 
 
 @pytest.mark.asyncio

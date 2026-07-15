@@ -43,8 +43,6 @@ class ExecutionConfig:
     strategy_slippage_tolerances: dict[str, float] = field(default_factory=dict)
     strategy_order_timeouts: dict[str, float] = field(default_factory=dict)
     high_edge_slippage_multiplier: float = 1.5
-    max_retries: int = 3
-    retry_delay: float = 0.5
     enable_slippage_check: bool = True
     dry_run: bool = True
 
@@ -457,7 +455,7 @@ class ExecutionEngine:
                         notional=price * size,
                         strategy_tag=strategy_tag,
                         reason_code="order_error",
-                        reason_detail="Order placement failed after retries.",
+                        reason_detail="Order placement failed without a blind retry.",
                     )
                     
             except Exception as e:
@@ -544,35 +542,38 @@ class ExecutionEngine:
         size: float,
         strategy_tag: str = "",
     ) -> Optional[Order]:
-        """Place an order through the API with retry logic."""
-        last_error = None
-        
-        for attempt in range(self.config.max_retries):
-            try:
-                order = await self.client.place_order(
-                    market_id=market_id,
-                    token_type=token_type,
-                    side=side,
-                    price=price,
-                    size=size,
-                    strategy_tag=strategy_tag,
-                )
-                
-                logger.info(
-                    f"Order placed: {order.order_id} | "
-                    f"{side.value} {size:.2f} {token_type.value} @ {price:.4f}"
-                )
-                
-                return order
-                
-            except Exception as e:
-                last_error = e
-                logger.warning(f"Order placement attempt {attempt + 1} failed: {e}")
-                if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay)
-        
-        logger.error(f"Order placement failed after {self.config.max_retries} attempts: {last_error}")
-        return None
+        """Place an order once, failing closed when acceptance is ambiguous.
+
+        A timeout or transport error can occur after an exchange accepted the
+        order. Retrying without first reconciling by a stable client/server
+        order id can duplicate exposure, so this boundary deliberately makes
+        exactly one client call. A later reconciliation implementation may
+        safely decide whether a retry is possible.
+        """
+        try:
+            order = await self.client.place_order(
+                market_id=market_id,
+                token_type=token_type,
+                side=side,
+                price=price,
+                size=size,
+                strategy_tag=strategy_tag,
+            )
+
+            logger.info(
+                f"Order placed: {order.order_id} | "
+                f"{side.value} {size:.2f} {token_type.value} @ {price:.4f}"
+            )
+
+            return order
+
+        except Exception as error:
+            logger.error(
+                "Order placement failed; refusing blind retry until exchange "
+                "state is reconciled: %s",
+                error,
+            )
+            return None
     
     def _track_order(self, order: Order) -> None:
         """Add order to tracking structures."""

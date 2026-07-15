@@ -149,6 +149,12 @@ No finding is marked resolved on the strength of the source report alone.
 - Configuration now rejects non-integer, Boolean, zero, and negative caps. Conservative, balanced, and aggressive defaults are 4, 6, and 8; the tracked aggressive dry-run config uses 8, while both live templates use a stricter cap of 3. Both runtime entrypoints and offline backtest construction carry the validated cap into `RiskManager`.
 - Risk summaries expose current and maximum open-order counts, and risk health fails if reconciled state ever contains more orders than the configured cap. This resolves G5's explicit in-process open-order-count slice only; it does not claim restart reconciliation, cross-venue accounting, atomic venue execution, or rate/daily-order controls.
 
+### 2026-07-15 — Iteration 14 (06:51 EDT)
+
+- Removed `ExecutionEngine._place_order()`'s unconditional three-attempt retry loop. A timeout or transport error may occur after venue acceptance, so repeating the request without first reconciling a stable client/server order id could create duplicate exposure.
+- Placement now makes exactly one exchange-client call and fails closed on every exception. The unused retry configuration was removed, and the offline regression test injects an ambiguous timeout through a mock and proves only one client call occurs.
+- This closes the known blind-placement-retry gap only. It does not provide a client-generated idempotency key, ambiguous-result reconciliation, crash recovery, or a safe retry path; those remain required before G3/G7 can be resolved.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -285,13 +291,23 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS**.
 - Verification was entirely offline and mocked/in-memory. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, exchange client, authenticated request, order construction/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
 
+### 2026-07-15 — Iteration 14 (06:51 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_execution_visibility.py -q`: **PASS** — 5 focused offline tests passed, including proof that an ambiguous timeout produces exactly one awaited client call.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports --explicit-package-bases core/execution.py tests/test_execution_visibility.py`: **PASS** — no issues in the changed implementation and regression-test slice.
+- `uv run --with-requirements requirements.txt black --check tests/test_execution_visibility.py`: **PASS**.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 150 tests and 316 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m py_compile $(git ls-files '*.py')`: **PASS**.
+- `git diff --check`: **PASS** before the documentation update and repeated after it below.
+- Verification used an `AsyncMock` only. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, real exchange client, authenticated request, signing, external submission/cancellation, network request, credential access, account mutation, or background process was started or performed.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G3 and G6–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, and an in-process open-order-count cap, but remains open for order-rate, daily-order, position-count, cross-venue shared-ledger, and restart-recovery controls.
+- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, but still lacks stable idempotency keys, reconciliation, two-leg residual-exposure handling, and crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, and an in-process open-order-count cap, but remains open for order-rate, daily-order, position-count, cross-venue shared-ledger, and restart-recovery controls.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
