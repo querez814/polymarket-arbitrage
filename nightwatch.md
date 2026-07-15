@@ -34,7 +34,19 @@ Completed at 2026-07-14 21:51 EDT using redacted checks only:
 - [Polymarket CLOB Authentication](https://docs.polymarket.com/api-reference/authentication) — consulted 2026-07-14. The official documentation defines L1 wallet authentication and L2 HMAC authentication; L2 uses API key, secret, passphrase, signer address, timestamp, and request signature. It explicitly includes querying open orders and balances/allowances among L2 operations.
 - [Polymarket Order Overview](https://docs.polymarket.com/trading/orders/overview) — consulted 2026-07-14. The official documentation states that order queries require L2 authentication and shows the Python client query flow. Only the read-only open-order query was exercised here.
 
-Broader current Polymarket and Kalshi protocol research remains pending; these two sources were consulted narrowly to select and verify the credential probe.
+### Polymarket CLOB protocol research — 2026-07-14
+
+The following current official primary sources were reviewed at 2026-07-14 21:53 EDT. No trading endpoint was invoked during this research.
+
+- [Authentication](https://docs.polymarket.com/api-reference/authentication) — public market-data endpoints require no authentication. L1 uses an EIP-712 wallet signature to create or derive API credentials and to sign orders locally. L2 requires five `POLY_*` headers and an HMAC-SHA256 request signature using the API secret. L2 authentication alone is insufficient to create an order: the order payload also requires the user's EIP-712 signature. The client must use the correct signer, funder, and signature type; current types include EOA `0`, legacy proxy `1`, Gnosis Safe `2`, and deposit-wallet `POLY_1271` `3`. Secrets belong in environment variables or secure key management and authenticated signing must remain server-side.
+- [CLOB V2 production migration](https://docs.polymarket.com/changelog#clob-v2-is-live-on-production) — CLOB V2 replaced V1 in production on 2026-04-28 at the unchanged `https://clob.polymarket.com` host with no V1 compatibility. V2 replaced USDC.e collateral with pUSD, removed `nonce`, `feeRateBps`, and `taker` from the signed order struct, added millisecond `timestamp`, `metadata`, and `builder`, and moved fee selection to match time. Any legacy SDK, signing schema, USDC.e assumption, or order-supplied fee is a production blocker.
+- [Order lifecycle](https://docs.polymarket.com/concepts/order-lifecycle) and [order overview](https://docs.polymarket.com/trading/orders/overview) — all orders are limit orders; a "market" order is a marketable limit order. Supported time-in-force behavior is GTC, GTD, FOK, and FAK; post-only is valid only for resting GTC/GTD orders. Placement results may be `live`, `matched`, `delayed`, or `unmatched`, while resulting trades progress independently through `MATCHED`, `MINED`, `CONFIRMED`, `RETRYING`, or terminal `FAILED`. Partial fills leave only the remainder cancellable. Selected crypto/finance markets impose a 250 ms taker delay and configured sports markets may impose a longer delay; an order is pending and cannot be cancelled during either delay. Therefore an accepted response is not proof of final settlement, and timeout/recovery logic must handle a temporarily uncancellable order plus post-match chain finality.
+- [Order book schema](https://docs.polymarket.com/api-reference/market-data/get-order-book) — `GET /book?token_id=...` returns string-valued `timestamp`, price, and size fields plus `market` condition ID, `asset_id`, state `hash`, sorted bids (descending), sorted asks (ascending), `min_order_size`, `tick_size`, `neg_risk`, and `last_trade_price`. Code must preserve decimal precision, enforce the returned tick and minimum size, distinguish token ID from condition ID, consume the correct best-price ends, and use timestamp/hash for freshness and change detection rather than treating a successful fetch as fresh indefinitely.
+- [Fees](https://docs.polymarket.com/trading/fees) — the source audit's assumed flat 1.5% taker fee is not a valid production model. Fees are per-market, applied at match time, and discoverable through `getClobMarketInfo(conditionID)` / `feesEnabled`. Makers currently pay zero platform fee; enabled taker fees follow `shares × feeRate × price × (1 - price)`, with category-specific rates and five-decimal USDC rounding, while geopolitics is currently fee-free. Profitability checks must fetch and cache authoritative per-market fee parameters with bounded staleness and fail closed when unavailable or incompatible; maker rebates must not be counted as guaranteed execution proceeds.
+- [Rate limits](https://docs.polymarket.com/api-reference/rate-limits) — limits are endpoint-specific and subject to change. Current CLOB market-data limits include `/book` 1,500/10s and `/books` 500/10s. Ledger `/trades`, `/orders`, `/notifications`, and `/order` is 900/10s; API-key endpoints are 100/10s. Trading has both burst and sustained limits, including `POST /order` and `DELETE /order` at 5,000/10s burst and 120,000/10min sustained. These exchange ceilings are not safe application defaults: the bot still needs much lower local risk/order caps, bounded retries, jittered exponential backoff, and idempotency.
+- [CLOB error codes](https://docs.polymarket.com/resources/error-codes) — errors are structured JSON with an `error` field and include 401 authentication failures, 429 throttling, malformed/oversized payloads, invalid token/order/signature/owner/signer, insufficient balance or allowance, tick/minimum-size violations, duplicate orders, unavailable order books, and 503 exchange modes. Trading-disabled can reject both orders and cancels; cancel-only permits cancels but no new orders; post-only mode permits cancels and post-only orders and supplies retry timing. Error handling must classify terminal validation failures separately from retryable throttling/service modes and must never blindly retry an ambiguous placement without reconciling by order ID/state first.
+
+Polymarket documentation coverage for authentication, lifecycle, limits, schemas, fees, errors, and safety-relevant exchange modes is complete for the audit phase. Kalshi official protocol research remains pending. These conclusions are audit inputs only; the current implementation has not yet been proven to satisfy them.
 
 ## Findings by severity
 
@@ -59,6 +71,11 @@ No finding is marked resolved on the strength of the source report alone.
 - Tightened the ignored production credential file to owner-only permissions.
 - Completed the mandatory redacted Polymarket credential/config validation and recorded its limits without changing application implementation.
 
+### 2026-07-14 — Iteration 3
+
+- Completed the current official Polymarket CLOB documentation review across authentication, CLOB V2 migration, order and trade lifecycle, order-book schema, per-market fees, rate limits, and error/service modes.
+- Converted protocol facts into explicit implementation-audit obligations, including V2-only signing/collateral, dynamic fee discovery, decimal/tick/minimum-size enforcement, delayed-order handling, settlement-state reconciliation, freshness checks, and classified/idempotent retry behavior.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -80,13 +97,19 @@ No finding is marked resolved on the strength of the source report alone.
 - `uv run python -c 'import yaml'`: **FAIL** — the repository's default uv environment does not currently contain declared dependency PyYAML. The probe used ephemeral `uv run --with pyyaml --with py-clob-client-v2`; dependency/environment reconciliation remains for later verification.
 - No implementation tests were run because this iteration changed only the durable record and local permissions on an ignored credential file. No live workflow was run.
 
+### 2026-07-14 — Iteration 3
+
+- Official documentation review: **PASS** — direct current Polymarket sources were opened for all seven required protocol areas and their URLs and conclusions were recorded above.
+- Documentation cross-check: **PASS** — the current rate-limit page agrees with the 2026-06-01 changelog increase; the 2026-04-28 changelog confirms CLOB V2 production cutover and no V1 compatibility.
+- Implementation tests were not run because this bounded iteration changed documentation only. No bot, dashboard, scanner, websocket, collector, signing flow, order construction/submission, cancellation, or balance/allowance mutation was run.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- Broader official Polymarket and Kalshi documentation research has not yet been completed or recorded.
+- Kalshi official authentication, lifecycle, rate-limit, schema, fee, error, and safety research has not yet been completed or recorded. The equivalent Polymarket research is complete.
 - G1–G14 have not yet been audited against current code or current official protocol behavior.
 - G4 remains open: the authenticated Keychain-backed arrangement is not integrated with the application config loader, and production startup safety has not yet been reconciled.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
@@ -102,4 +125,4 @@ Not evaluated yet. The source audit reports snapshot-building and collection cod
 
 **NOT YET ASSESSED**
 
-The mandatory audit conversion is complete, but technical validation has not started. This is an interim state, not a production-readiness verdict.
+The mandatory audit conversion, redacted Polymarket credential check, and Polymarket protocol research are complete, but implementation auditing and full verification are not. This is an interim state, not a production-readiness verdict.
