@@ -131,6 +131,12 @@ No finding is marked resolved on the strength of the source report alone.
 - Cleared all 14 mypy errors in the arbitrage-engine implementation and its tests. The missing-price guard now explicitly narrows each optional YES/NO bid/ask before price arithmetic and sizing; runtime skip behavior is unchanged.
 - Bundle-opportunity tests now prove the optional opportunity is present before inspecting it, matching the model contract without suppressing static checks.
 
+### 2026-07-15 — Iteration 11 (06:40 EDT)
+
+- Began G5 by adding an explicit dollar-notional ceiling at `RiskManager.check_order()`, the final deterministic admission boundary before `ExecutionEngine` calls an exchange client. The existing `trading.max_order_size` limits shares/contracts and could not prevent an individually oversized dollar commitment when aggregate exposure remained available.
+- Added `risk.max_order_notional` to configuration, validation, both runtime entrypoints, and the offline backtest wiring. Non-finite/non-positive caps and caps above global exposure now fail configuration validation rather than silently creating a missing or ineffective per-order guard. Orders with non-finite or non-positive computed notionals also fail closed at admission.
+- Conservative defaults cap a single order at $15 notional; balanced and aggressive profile defaults are $20 and $30. Both tracked live templates use a stricter $10 cap. This resolves only G5's per-order-dollar-cap slice; open-order, order-rate, daily-order, and position-count caps remain unaudited and unresolved.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -234,13 +240,24 @@ No finding is marked resolved on the strength of the source report alone.
 - `uv run --with-requirements requirements.txt black --check core/arb_engine.py tests/test_arb_engine.py`: **PARTIAL / PRE-EXISTING FORMAT BASELINE** — both legacy files would be reformatted wholesale. The bounded type-safety edits were kept in their existing local style rather than creating unrelated formatting churn.
 - No bot, dashboard, scanner, websocket, collector, exchange client, connectivity diagnostic, authenticated request, order/signing flow, or network request was started. No background process was created.
 
+### 2026-07-15 — Iteration 11 (06:40 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_risk_manager.py tests/test_config_loader.py -q`: **PASS** — 49 focused tests passed, including rejection above the configured notional ceiling, acceptance exactly at the ceiling, fail-closed non-finite/non-positive values, profile wiring, and invalid-cap configuration failures.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 141 tests and 290 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m py_compile $(git ls-files '*.py')`: **PASS**.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports --explicit-package-bases core/risk_manager.py utils/config_loader.py`: **PASS** — no issues in the changed risk/configuration source slice.
+- `uv run --with-requirements requirements.txt python -c 'from utils.config_loader import load_config; c=load_config("config.yaml"); assert c.risk.max_order_notional == 30.0; print("configured notional cap validation: PASS")'`: **PASS** — the tracked dry-run aggressive profile resolves to its intended $30 single-order ceiling.
+- `uv run --with-requirements requirements.txt black --check tests/test_risk_manager.py tests/test_config_loader.py`: **PARTIAL / PRE-EXISTING FORMAT BASELINE** — `tests/test_config_loader.py` passes, while the legacy `tests/test_risk_manager.py` would require whole-file whitespace and wrapping churn unrelated to this bounded safety slice. The diff was inspected and not applied.
+- `git diff --check`: **PASS**.
+- No bot, dashboard, scanner, websocket, collector, exchange client, authenticated request, order construction/signing/submission/cancellation, simulated submission, or account mutation was started or performed. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G3 and G5–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete.
+- G1–G3 and G6–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has a verified per-order notional cap but remains open for simultaneous-open-order, order-rate, daily-order, and position-count caps and their lifecycle-safe accounting.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.

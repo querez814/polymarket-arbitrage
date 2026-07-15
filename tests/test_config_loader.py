@@ -32,6 +32,7 @@ mode:
     assert config.trading.mm_enabled is True
     assert config.trading.bundle_cooldown_seconds == 0.5
     assert config.risk.max_position_per_market == 35.0
+    assert config.risk.max_order_notional == 30.0
     assert config.risk.strategy_exposure_limits["market_making"] == 35.0
 
 
@@ -54,6 +55,42 @@ mode:
 
     assert config.trading.min_edge == 0.02
     assert config.risk.max_global_exposure == 250
+
+
+@pytest.mark.parametrize("max_order_notional", ["0", "-1", ".nan", ".inf"])
+def test_rejects_non_positive_order_notional_cap(tmp_path, max_order_notional):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+risk:
+  max_order_notional: {max_order_notional}
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError, match="risk.max_order_notional must be finite and positive"
+    ):
+        load_config(str(config_path))
+
+
+def test_rejects_order_notional_cap_above_global_exposure(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+risk:
+  max_order_notional: 51
+  max_global_exposure: 50
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must be <= risk.max_global_exposure"):
+        load_config(str(config_path))
 
 
 def test_dry_run_does_not_simulate_fills_by_default(tmp_path):

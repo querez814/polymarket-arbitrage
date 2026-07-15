@@ -87,6 +87,7 @@ trading:
 
 risk:
   # Position limits - aggressive profile
+  max_order_notional: 30         # Max $30 committed by any single order
   max_position_per_market: 35    # Max $35 per market
   max_global_exposure: 100       # Max $100 total exposure
   

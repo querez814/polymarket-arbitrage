@@ -72,6 +72,7 @@ trading:
   estimated_gas_per_order: 0.02
 
 risk:
+  max_order_notional: 10
   max_position_per_market: 10
   max_global_exposure: 25
   max_daily_loss: 5

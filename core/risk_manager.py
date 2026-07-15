@@ -6,6 +6,7 @@ Enforces position limits, loss limits, and other risk constraints.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Set
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 class RiskConfig:
     """Configuration for risk management."""
     # Position limits
+    max_order_notional: float = 15.0  # Max dollars committed by one order
     max_position_per_market: float = 200.0  # Max notional per market
     max_global_exposure: float = 5000.0  # Max total exposure
     
@@ -78,6 +80,7 @@ class RiskManager:
         
         logger.info(
             f"RiskManager initialized | "
+            f"max_order={config.max_order_notional} | "
             f"max_per_market={config.max_position_per_market} | "
             f"max_global={config.max_global_exposure} | "
             f"max_daily_loss={config.max_daily_loss}"
@@ -102,6 +105,20 @@ class RiskManager:
         # Whitelist check (if whitelist is non-empty)
         if self.config.whitelist and order.market_id not in self.config.whitelist:
             logger.warning(f"Order rejected: market {order.market_id} not in whitelist")
+            return False
+
+        # A share/contract-size limit is not a dollar-risk limit because prices
+        # vary. Enforce the configured notional ceiling at the final admission
+        # boundary before any exchange client is called.
+        if not math.isfinite(order.notional) or order.notional <= 0:
+            logger.warning("Order rejected: notional must be finite and positive")
+            return False
+
+        if order.notional > self.config.max_order_notional:
+            logger.warning(
+                f"Order rejected: notional {order.notional:.2f} exceeds "
+                f"per-order limit {self.config.max_order_notional:.2f}"
+            )
             return False
         
         # Volume check
@@ -330,4 +347,3 @@ class RiskManager:
         if market_id in self.config.blacklist:
             self.config.blacklist.remove(market_id)
             logger.info(f"Market {market_id} removed from blacklist")
-

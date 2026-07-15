@@ -5,6 +5,7 @@ Configuration Loader
 Loads and validates configuration from YAML files.
 """
 
+import math
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -89,6 +90,7 @@ class TradingConfig:
 @dataclass
 class RiskConfig:
     """Risk configuration."""
+    max_order_notional: float = 15.0
     max_position_per_market: float = 200.0
     max_global_exposure: float = 5000.0
     max_daily_loss: float = 500.0
@@ -342,6 +344,7 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
                 "max_liquidity_fraction": 0.75,
             },
             "risk": {
+                "max_order_notional": 20.0,
                 "max_position_per_market": 25.0,
                 "max_global_exposure": 75.0,
                 "max_daily_loss": 15.0,
@@ -373,6 +376,7 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
                 "cross_platform_max_liquidity_fraction": 0.85,
             },
             "risk": {
+                "max_order_notional": 30.0,
                 "max_position_per_market": 35.0,
                 "max_global_exposure": 100.0,
                 "max_daily_loss": 20.0,
@@ -433,6 +437,12 @@ def validate_config(config: BotConfig) -> None:
         errors.append("trading.cross_platform_max_liquidity_fraction must be between 0 and 1")
     
     # Risk validation
+    if not math.isfinite(config.risk.max_order_notional) or config.risk.max_order_notional <= 0:
+        errors.append("risk.max_order_notional must be finite and positive")
+
+    if config.risk.max_order_notional > config.risk.max_global_exposure:
+        errors.append("risk.max_order_notional must be <= risk.max_global_exposure")
+
     if config.risk.max_position_per_market <= 0:
         errors.append("risk.max_position_per_market must be positive")
     

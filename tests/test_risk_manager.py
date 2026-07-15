@@ -12,6 +12,7 @@ from core.risk_manager import RiskManager, RiskConfig
 def risk_config() -> RiskConfig:
     """Default risk configuration for tests."""
     return RiskConfig(
+        max_order_notional=100.0,
         max_position_per_market=200.0,
         max_global_exposure=1000.0,
         max_daily_loss=100.0,
@@ -79,6 +80,26 @@ class TestOrderValidation:
         
         # Try to add more - would exceed $200 limit
         order = create_order(size=100.0, price=0.50)  # Additional $50
+        assert risk_manager.check_order(order) is False
+
+    def test_reject_exceeds_per_order_notional_limit(self, risk_manager: RiskManager):
+        """Reject one oversized order even when aggregate capacity is available."""
+        order = create_order(size=202.0, price=0.50)  # $101 > $100 per-order cap
+
+        assert risk_manager.state.global_exposure == 0.0
+        assert risk_manager.check_order(order) is False
+
+    def test_accept_order_at_per_order_notional_limit(self, risk_manager: RiskManager):
+        order = create_order(size=200.0, price=0.50)  # Exactly $100
+
+        assert risk_manager.check_order(order) is True
+
+    @pytest.mark.parametrize("price", [0.0, -0.5, float("nan"), float("inf")])
+    def test_rejects_non_finite_or_non_positive_notional(
+        self, risk_manager: RiskManager, price: float
+    ):
+        order = create_order(size=1.0, price=price)
+
         assert risk_manager.check_order(order) is False
     
     def test_reject_exceeds_global_limit(self, risk_manager: RiskManager):
@@ -217,4 +238,3 @@ class TestBlacklistManagement:
         
         order = create_order(market_id="blocked_market")
         assert risk_manager.check_order(order) is True
-
