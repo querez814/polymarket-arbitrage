@@ -135,6 +135,39 @@ class TestOrderValidation:
 
         assert manager.get_strategy_exposure("bundle_arb") == 15.0
 
+    def test_open_orders_reserve_global_and_market_capacity(self):
+        manager = RiskManager(RiskConfig(
+            max_order_notional=100.0,
+            max_position_per_market=100.0,
+            max_global_exposure=120.0,
+            trade_only_high_volume=False,
+        ))
+        manager.reserve_open_order("open-1", "test_market", 80.0)
+
+        assert manager.get_available_exposure("test_market") == 20.0
+        assert manager.get_global_available() == 40.0
+        assert manager.get_summary()["committed_exposure"] == 80.0
+
+        assert manager.check_order(create_order(size=50.0, price=0.50)) is False
+        assert manager.check_order(
+            create_order(market_id="other_market", size=100.0, price=0.50)
+        ) is False
+
+        manager.release_open_order("open-1", 20.0)
+        assert manager.check_order(create_order(size=80.0, price=0.50)) is True
+
+    def test_open_order_reservation_is_idempotent_and_releasable(self):
+        manager = RiskManager(RiskConfig(trade_only_high_volume=False))
+
+        manager.reserve_open_order("open-1", "test_market", 25.0)
+        manager.reserve_open_order("open-1", "test_market", 25.0)
+        assert manager.get_open_order_exposure() == 25.0
+
+        manager.release_open_order("open-1", 10.0)
+        assert manager.get_open_order_exposure("test_market") == 15.0
+        manager.release_open_order("open-1")
+        assert manager.get_open_order_exposure() == 0.0
+
 
 class TestKillSwitch:
     """Tests for kill switch functionality."""

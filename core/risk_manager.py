@@ -70,6 +70,7 @@ class RiskManager:
         # Per-market exposure tracking
         self._market_exposure: dict[str, float] = {}
         self._strategy_exposure: dict[str, float] = {}
+        self._open_order_exposure: dict[str, tuple[str, float]] = {}
         
         # Volume cache
         self._market_volumes: dict[str, float] = {}
@@ -133,23 +134,31 @@ class RiskManager:
         
         # Per-market exposure check
         current_market_exposure = self._market_exposure.get(order.market_id, 0)
+        pending_market_exposure = sum(
+            notional
+            for market_id, notional in self._open_order_exposure.values()
+            if market_id == order.market_id
+        )
         new_exposure = order.notional if order.side == OrderSide.BUY else -order.notional
-        projected_exposure = abs(current_market_exposure + new_exposure)
+        projected_exposure = abs(current_market_exposure + new_exposure) + pending_market_exposure
         
         if projected_exposure > self.config.max_position_per_market:
             logger.warning(
                 f"Order rejected: would exceed market limit | "
-                f"current={current_market_exposure:.2f} + order={new_exposure:.2f} = "
+                f"current={current_market_exposure:.2f} + pending={pending_market_exposure:.2f} "
+                f"+ order={new_exposure:.2f} = "
                 f"{projected_exposure:.2f} > {self.config.max_position_per_market}"
             )
             return False
         
         # Global exposure check
-        projected_global = self.state.global_exposure + abs(new_exposure)
+        pending_global_exposure = self.get_open_order_exposure()
+        projected_global = self.state.global_exposure + pending_global_exposure + abs(new_exposure)
         if projected_global > self.config.max_global_exposure:
             logger.warning(
                 f"Order rejected: would exceed global limit | "
-                f"current={self.state.global_exposure:.2f} + order={abs(new_exposure):.2f} = "
+                f"current={self.state.global_exposure:.2f} + "
+                f"pending={pending_global_exposure:.2f} + order={abs(new_exposure):.2f} = "
                 f"{projected_global:.2f} > {self.config.max_global_exposure}"
             )
             return False
@@ -238,6 +247,40 @@ class RiskManager:
     def get_strategy_exposure(self, strategy_tag: str) -> float:
         """Get currently reserved strategy exposure."""
         return self._strategy_exposure.get(strategy_tag, 0.0)
+
+    def reserve_open_order(self, order_id: str, market_id: str, notional: float) -> None:
+        """Idempotently reserve remaining exposure for an acknowledged open order."""
+        if not math.isfinite(notional) or notional < 0:
+            raise ValueError("Open-order reservation must be finite and non-negative")
+        if notional == 0:
+            self._open_order_exposure.pop(order_id, None)
+            return
+        self._open_order_exposure[order_id] = (market_id, notional)
+
+    def release_open_order(self, order_id: str, notional: Optional[float] = None) -> None:
+        """Release all or part of an open-order reservation without going negative."""
+        reservation = self._open_order_exposure.get(order_id)
+        if reservation is None:
+            return
+        if notional is None:
+            del self._open_order_exposure[order_id]
+            return
+        if not math.isfinite(notional) or notional < 0:
+            raise ValueError("Open-order release must be finite and non-negative")
+        market_id, current = reservation
+        remaining = max(0.0, current - notional)
+        if remaining == 0:
+            del self._open_order_exposure[order_id]
+        else:
+            self._open_order_exposure[order_id] = (market_id, remaining)
+
+    def get_open_order_exposure(self, market_id: Optional[str] = None) -> float:
+        """Return reserved notional globally or for one market."""
+        return sum(
+            notional
+            for reserved_market_id, notional in self._open_order_exposure.values()
+            if market_id is None or reserved_market_id == market_id
+        )
     
     def update_pnl(self, realized_pnl: float, unrealized_pnl: float) -> None:
         """Update PnL tracking."""
@@ -290,7 +333,10 @@ class RiskManager:
             return False
         if self.state.current_drawdown > self.config.max_drawdown_pct:
             return False
-        if self.state.global_exposure > self.config.max_global_exposure:
+        if (
+            self.state.global_exposure + self.get_open_order_exposure()
+            > self.config.max_global_exposure
+        ):
             return False
         return True
     
@@ -301,11 +347,13 @@ class RiskManager:
     def get_available_exposure(self, market_id: str) -> float:
         """Get remaining available exposure for a market."""
         current = self._market_exposure.get(market_id, 0.0)
+        current += self.get_open_order_exposure(market_id)
         return max(0, self.config.max_position_per_market - current)
     
     def get_global_available(self) -> float:
         """Get remaining global exposure capacity."""
-        return max(0, self.config.max_global_exposure - self.state.global_exposure)
+        committed = self.state.global_exposure + self.get_open_order_exposure()
+        return max(0, self.config.max_global_exposure - committed)
     
     def reset_daily_stats(self) -> None:
         """Reset daily statistics (call at start of trading day)."""
@@ -318,10 +366,13 @@ class RiskManager:
     
     def get_summary(self) -> dict:
         """Get a summary of current risk state."""
+        open_order_exposure = self.get_open_order_exposure()
+        committed_exposure = self.state.global_exposure + open_order_exposure
         return {
             "global_exposure": self.state.global_exposure,
+            "committed_exposure": committed_exposure,
             "max_global_exposure": self.config.max_global_exposure,
-            "utilization_pct": (self.state.global_exposure / self.config.max_global_exposure * 100
+            "utilization_pct": (committed_exposure / self.config.max_global_exposure * 100
                                if self.config.max_global_exposure > 0 else 0),
             "daily_pnl": self.state.daily_pnl,
             "max_daily_loss": self.config.max_daily_loss,
@@ -331,6 +382,7 @@ class RiskManager:
             "kill_switch_triggered": self.state.kill_switch_triggered,
             "kill_switch_reason": self.state.kill_switch_reason,
             "markets_with_exposure": len([m for m, e in self._market_exposure.items() if e > 0]),
+            "open_order_exposure": open_order_exposure,
             "strategy_exposure": self._strategy_exposure.copy(),
             "session_trade_count": len(self._session_trades),
             "within_limits": self.within_global_limits(),

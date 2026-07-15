@@ -576,6 +576,11 @@ class ExecutionEngine:
     
     def _track_order(self, order: Order) -> None:
         """Add order to tracking structures."""
+        self.risk_manager.reserve_open_order(
+            order.order_id,
+            order.market_id,
+            order.remaining_size * order.price,
+        )
         self._open_orders[order.order_id] = order
         self._order_timestamps[order.order_id] = utc_now()
         self._order_history.append(order)
@@ -602,6 +607,7 @@ class ExecutionEngine:
         if order_id in self._open_orders:
             order = self._open_orders[order_id]
             del self._open_orders[order_id]
+            self.risk_manager.release_open_order(order_id)
             
             if order_id in self._order_timestamps:
                 del self._order_timestamps[order_id]
@@ -756,6 +762,7 @@ class ExecutionEngine:
         if order:
             order.filled_size += trade.size
             order.updated_at = utc_now()
+            self.risk_manager.release_open_order(order_id, trade.size * order.price)
             
             if order.remaining_size <= 0:
                 order.status = OrderStatus.FILLED

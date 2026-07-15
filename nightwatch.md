@@ -137,6 +137,12 @@ No finding is marked resolved on the strength of the source report alone.
 - Added `risk.max_order_notional` to configuration, validation, both runtime entrypoints, and the offline backtest wiring. Non-finite/non-positive caps and caps above global exposure now fail configuration validation rather than silently creating a missing or ineffective per-order guard. Orders with non-finite or non-positive computed notionals also fail closed at admission.
 - Conservative defaults cap a single order at $15 notional; balanced and aggressive profile defaults are $20 and $30. Both tracked live templates use a stricter $10 cap. This resolves only G5's per-order-dollar-cap slice; open-order, order-rate, daily-order, and position-count caps remain unaudited and unresolved.
 
+### 2026-07-15 — Iteration 12 (06:45 EDT)
+
+- Hardened G5 admission accounting so acknowledged but unfilled orders reserve their remaining limit-price notional against both per-market and global exposure caps. Before this change, only filled positions consumed those caps, so multiple individually valid open orders could collectively commit more than the configured exposure limits.
+- Centralized reservation lifecycle in `ExecutionEngine` tracking: tracking an order idempotently establishes its remaining reservation, each partial fill releases the filled size at the order's limit price while actual fill exposure is recorded, and final untracking/cancellation releases any residual. Availability, utilization, limit-health, and risk-summary calculations now include filled plus pending committed exposure.
+- This closes G5's simultaneous-open-order dollar-exposure accounting gap for the existing single-venue execution engine. It does not supply an explicit open-order count cap, order-rate cap, daily-order cap, cross-venue shared ledger, or restart recovery; those remain unresolved.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -251,13 +257,23 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS**.
 - No bot, dashboard, scanner, websocket, collector, exchange client, authenticated request, order construction/signing/submission/cancellation, simulated submission, or account mutation was started or performed. No background process was created.
 
+### 2026-07-15 — Iteration 12 (06:45 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_risk_manager.py tests/test_execution_visibility.py -q`: **PASS** — 29 focused tests passed, including idempotent reservations, market/global admission rejection with pending commitments, partial-fill transfer from pending to filled exposure, and residual release on untracking.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports --explicit-package-bases core/risk_manager.py core/execution.py tests/test_execution_visibility.py`: **PASS** — no issues in the changed source and lifecycle-test slice.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 144 tests and 306 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m py_compile $(git ls-files '*.py')`: **PASS**.
+- `uv run --with-requirements requirements.txt black --check core/risk_manager.py core/execution.py tests/test_risk_manager.py tests/test_execution_visibility.py`: **PARTIAL / PRE-EXISTING FORMAT BASELINE** — `tests/test_execution_visibility.py` passes; the three legacy files would be reformatted wholesale. No broad formatting cleanup was applied, per the priority correction.
+- `git diff --check`: **PASS**.
+- Verification exercised only offline unit tests, including the repository's existing in-memory dry-run client tests. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, authenticated request, signing flow, external order submission/cancellation, network request, credential access, or account mutation was started or performed. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G3 and G6–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has a verified per-order notional cap but remains open for simultaneous-open-order, order-rate, daily-order, and position-count caps and their lifecycle-safe accounting.
+- G1–G3 and G6–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional and single-venue pending-order exposure accounting, but remains open for explicit open-order-count, order-rate, daily-order, position-count, cross-venue shared-ledger, and restart-recovery caps.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
