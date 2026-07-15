@@ -197,6 +197,52 @@ class TestOrderValidation:
         manager.reserve_open_order("open-4", "fourth_market", 5.0)
         assert manager.within_global_limits() is False
 
+    def test_open_position_cap_counts_distinct_filled_and_pending_markets(self):
+        manager = RiskManager(RiskConfig(
+            max_open_orders=10,
+            max_open_positions=2,
+            max_order_notional=100.0,
+            max_position_per_market=1000.0,
+            max_global_exposure=1000.0,
+            trade_only_high_volume=False,
+        ))
+        manager.update_position("filled-market", TokenType.YES, 10.0, 0.50)
+        manager.reserve_open_order("open-1", "pending-market", 5.0)
+        manager.reserve_open_order("open-2", "pending-market", 5.0)
+
+        assert manager.get_committed_markets() == {
+            "filled-market",
+            "pending-market",
+        }
+        assert manager.get_summary()["open_position_count"] == 2
+        assert manager.get_summary()["max_open_positions"] == 2
+        assert manager.check_order(
+            create_order(market_id="third-market", size=10.0, price=0.50)
+        ) is False
+
+        # Existing committed markets do not consume another position slot.
+        assert manager.check_order(
+            create_order(market_id="pending-market", size=10.0, price=0.50)
+        ) is True
+
+        manager.release_open_order("open-1")
+        assert len(manager.get_committed_markets()) == 2
+        manager.release_open_order("open-2")
+        assert len(manager.get_committed_markets()) == 1
+        assert manager.check_order(
+            create_order(market_id="third-market", size=10.0, price=0.50)
+        ) is True
+
+    def test_open_position_cap_health_detects_reconciled_overage(self):
+        manager = RiskManager(RiskConfig(
+            max_open_positions=1,
+            trade_only_high_volume=False,
+        ))
+        manager.update_position("market-1", TokenType.YES, 1.0, 0.50)
+        manager.update_position("market-2", TokenType.YES, 1.0, 0.50)
+
+        assert manager.within_global_limits() is False
+
     def test_rolling_order_attempt_cap_charges_ambiguous_attempts(self):
         manager = RiskManager(RiskConfig(
             max_order_attempts_per_minute=2,

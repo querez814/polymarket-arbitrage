@@ -161,6 +161,13 @@ No finding is marked resolved on the strength of the source report alone.
 - Configuration now validates both limits as positive non-Boolean integers and carries them through the main runtime, dashboard runtime, and offline backtest construction. Conservative defaults are 10 attempts/minute and 100/day; balanced and aggressive profiles use 20/250 and 30/500; both tracked live templates use stricter 6/minute and 50/day limits.
 - Risk summaries expose current and maximum attempt counts, and mocked execution coverage proves that after an ambiguous first placement reaches the client, the exhausted local cap rejects the next placement before a second client call. This closes the in-process order-rate and daily-order-count slice only; the counters are not crash-durable or shared across processes/venues, so G5/G7 remain open for reconciliation-backed restart recovery, a shared cross-venue ledger, and position-count policy.
 
+### 2026-07-15 — Iteration 16 (06:58 EDT)
+
+- Added a fail-closed `risk.max_open_positions` policy at the final deterministic admission boundary. It counts distinct markets carrying either filled exposure or acknowledged pending residual exposure, so multiple orders in one market consume one position slot and a new market is rejected once portfolio breadth reaches the cap.
+- Orders in an already-committed market continue through the remaining dollar, volume, strategy, loss, and drawdown checks; clearing the last residual reservation for a market releases its slot. Risk health also fails if reconciled state is already above the configured limit, and summaries expose current and maximum position counts.
+- Configuration now rejects non-integer, Boolean, zero, and negative caps. Conservative, balanced, and aggressive defaults are 4, 6, and 8; the tracked aggressive dry-run config uses 8, while both live templates use a stricter cap of 3. Both runtime entrypoints and offline backtest construction carry the validated cap into `RiskManager`.
+- This closes G5's in-process position-count policy only. It does not make the ledger crash-durable or cross-process/cross-venue, prove venue reconciliation, or provide two-leg atomicity; those remain unresolved G3/G5/G7 requirements.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -319,13 +326,24 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS** before the documentation update and repeated after it below.
 - Verification was entirely offline and used deterministic timestamps plus `AsyncMock`; the mock never constructed, signed, serialized, or submitted an exchange order. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, real exchange client, authenticated request, external submission/cancellation, network request, credential access, account mutation, or background process was started or performed.
 
+### 2026-07-15 — Iteration 16 (06:58 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_risk_manager.py tests/test_config_loader.py tests/test_execution_visibility.py -q`: **PASS** — 78 focused offline tests passed, including distinct filled/pending market counting, same-market admission at the cap, slot release after the last residual reservation, reconciled overage health failure, profile wiring, and invalid-cap configuration failures.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 167 tests and 378 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m compileall -q core utils main.py run_with_dashboard.py polymarket_client kalshi_client polymarket_us_client`: **PASS**.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports --explicit-package-bases core/risk_manager.py utils/config_loader.py tests/test_risk_manager.py tests/test_config_loader.py`: **PASS** — no issues in the changed risk/configuration implementation and test slice.
+- `uv run --with-requirements requirements.txt python -c 'from utils.config_loader import load_config; c=load_config("config.yaml"); assert c.risk.max_open_positions == 8; print("configured open-position cap: PASS")'`: **PASS** — the tracked aggressive dry-run configuration resolves to its intended eight-market ceiling.
+- `uv run --with-requirements requirements.txt black --check core/risk_manager.py utils/config_loader.py tests/test_risk_manager.py tests/test_config_loader.py`: **PARTIAL / PRE-EXISTING FORMAT BASELINE** — all four legacy files would be reformatted wholesale. No broad formatting cleanup was applied, per the priority correction.
+- `git diff --check`: **PASS** before the documentation update and repeated after it below.
+- Verification was entirely offline. Unit tests instantiated only internal unsigned order models and in-memory risk state; no bot, dashboard, scanner, websocket, collector, connectivity diagnostic, real exchange client, authenticated request, exchange-order payload/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, but still lacks stable idempotency keys, reconciliation, two-leg residual-exposure handling, and crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, an in-process open-order-count cap, and in-process rolling/daily placement-attempt caps, but remains open for position-count policy, cross-venue shared-ledger accounting, and reconciliation-backed restart recovery.
+- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, but still lacks stable idempotency keys, reconciliation, two-leg residual-exposure handling, and crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, in-process open-order and distinct-position caps, and in-process rolling/daily placement-attempt caps, but remains open for cross-venue shared-ledger accounting and reconciliation-backed restart recovery.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.

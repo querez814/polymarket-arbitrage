@@ -24,6 +24,7 @@ class RiskConfig:
     # Position limits
     max_order_notional: float = 15.0  # Max dollars committed by one order
     max_open_orders: int = 4  # Max acknowledged orders with residual exposure
+    max_open_positions: int = 4  # Max markets with filled or pending exposure
     max_order_attempts_per_minute: int = 10
     max_daily_order_attempts: int = 100
     max_position_per_market: float = 200.0  # Max notional per market
@@ -90,6 +91,7 @@ class RiskManager:
             f"RiskManager initialized | "
             f"max_order={config.max_order_notional} | "
             f"max_open_orders={config.max_open_orders} | "
+            f"max_open_positions={config.max_open_positions} | "
             f"max_attempts_per_minute={config.max_order_attempts_per_minute} | "
             f"max_daily_attempts={config.max_daily_order_attempts} | "
             f"max_per_market={config.max_position_per_market} | "
@@ -140,6 +142,22 @@ class RiskManager:
                 f"Order rejected: open-order limit reached | "
                 f"open_orders={self.get_open_order_count()} >= "
                 f"{self.config.max_open_orders}"
+            )
+            return False
+
+        # Bound portfolio breadth as well as order count and dollar exposure.
+        # Filled exposure and acknowledged residual orders both commit a market
+        # slot. Orders in an already-committed market remain eligible for the
+        # remaining risk checks so this cap does not block lifecycle activity.
+        committed_markets = self.get_committed_markets()
+        if (
+            order.market_id not in committed_markets
+            and len(committed_markets) >= self.config.max_open_positions
+        ):
+            logger.warning(
+                f"Order rejected: open-position limit reached | "
+                f"committed_markets={len(committed_markets)} >= "
+                f"{self.config.max_open_positions}"
             )
             return False
         
@@ -342,6 +360,20 @@ class RiskManager:
     def get_open_order_count(self) -> int:
         """Return acknowledged orders that still reserve exposure."""
         return len(self._open_order_exposure)
+
+    def get_committed_markets(self) -> Set[str]:
+        """Return markets carrying filled or acknowledged pending exposure."""
+        markets = {
+            market_id
+            for market_id, exposure in self._market_exposure.items()
+            if exposure > 0
+        }
+        markets.update(
+            market_id
+            for market_id, notional in self._open_order_exposure.values()
+            if notional > 0
+        )
+        return markets
     
     def update_pnl(self, realized_pnl: float, unrealized_pnl: float) -> None:
         """Update PnL tracking."""
@@ -396,6 +428,8 @@ class RiskManager:
             return False
         if self.get_open_order_count() > self.config.max_open_orders:
             return False
+        if len(self.get_committed_markets()) > self.config.max_open_positions:
+            return False
         if (
             self.state.global_exposure + self.get_open_order_exposure()
             > self.config.max_global_exposure
@@ -431,6 +465,7 @@ class RiskManager:
         """Get a summary of current risk state."""
         open_order_exposure = self.get_open_order_exposure()
         open_order_count = self.get_open_order_count()
+        open_position_count = len(self.get_committed_markets())
         committed_exposure = self.state.global_exposure + open_order_exposure
         return {
             "global_exposure": self.state.global_exposure,
@@ -449,6 +484,8 @@ class RiskManager:
             "open_order_exposure": open_order_exposure,
             "open_order_count": open_order_count,
             "max_open_orders": self.config.max_open_orders,
+            "open_position_count": open_position_count,
+            "max_open_positions": self.config.max_open_positions,
             "order_attempts_last_minute": len(self._order_attempt_times),
             "max_order_attempts_per_minute": self.config.max_order_attempts_per_minute,
             "daily_order_attempts": self._daily_order_attempts,

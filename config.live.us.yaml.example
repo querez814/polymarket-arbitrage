@@ -73,6 +73,7 @@ trading:
 risk:
   max_order_notional: 10
   max_open_orders: 3
+  max_open_positions: 3
   max_order_attempts_per_minute: 6
   max_daily_order_attempts: 50
   max_position_per_market: 10

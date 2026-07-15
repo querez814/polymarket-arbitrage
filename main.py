@@ -104,6 +104,7 @@ class TradingBot:
         self.risk_manager = RiskManager(RiskConfig(
             max_order_notional=self.config.risk.max_order_notional,
             max_open_orders=self.config.risk.max_open_orders,
+            max_open_positions=self.config.risk.max_open_positions,
             max_order_attempts_per_minute=self.config.risk.max_order_attempts_per_minute,
             max_daily_order_attempts=self.config.risk.max_daily_order_attempts,
             max_position_per_market=self.config.risk.max_position_per_market,
@@ -326,6 +327,7 @@ async def run_backtest(config: BotConfig, duration: float = 300.0) -> None:
     risk_manager = RiskManager(RiskConfig(
         max_order_notional=config.risk.max_order_notional,
         max_open_orders=config.risk.max_open_orders,
+        max_open_positions=config.risk.max_open_positions,
         max_order_attempts_per_minute=config.risk.max_order_attempts_per_minute,
         max_daily_order_attempts=config.risk.max_daily_order_attempts,
         max_position_per_market=config.risk.max_position_per_market,

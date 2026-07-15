@@ -89,6 +89,7 @@ risk:
   # Position limits - aggressive profile
   max_order_notional: 30         # Max $30 committed by any single order
   max_open_orders: 8             # Max acknowledged orders with residual exposure
+  max_open_positions: 8          # Max markets with filled or pending exposure
   max_order_attempts_per_minute: 30  # Local rolling placement-attempt cap
   max_daily_order_attempts: 500      # UTC-day placement-attempt cap
   max_position_per_market: 35    # Max $35 per market
