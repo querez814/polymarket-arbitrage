@@ -1,4 +1,6 @@
-from utils.config_loader import load_config
+import pytest
+
+from utils.config_loader import ConfigError, load_config, validate_config
 
 
 def test_aggressive_profile_applies_riskier_defaults(tmp_path):
@@ -76,3 +78,63 @@ mode:
 
     assert config.monitoring.paper_trade_db_path == "data/paper_trades.db"
     assert config.monitoring.display_timezone == "America/New_York"
+
+
+def test_live_cli_override_must_be_revalidated(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+    config = load_config(str(config_path))
+
+    config.mode.trading_mode = "live"
+
+    with pytest.raises(ConfigError, match="api.api_key is required"):
+        validate_config(config)
+
+
+def test_live_mode_rejects_simulation_data_even_with_credentials(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-private-key
+mode:
+  trading_mode: live
+  data_mode: simulation
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="mode.data_mode must be 'real' in live mode"):
+        load_config(str(config_path))
+
+
+def test_live_mode_rejects_hypothetical_fills(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-private-key
+mode:
+  trading_mode: live
+  data_mode: real
+  simulate_fills: true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError, match="mode.simulate_fills must be false in live mode"
+    ):
+        load_config(str(config_path))

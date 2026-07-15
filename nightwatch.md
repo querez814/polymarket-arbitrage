@@ -94,6 +94,13 @@ No finding is marked resolved on the strength of the source report alone.
 - Completed the current official Kalshi Trade API documentation review across authentication/environments, V2 order lifecycle and direction, fixed-point order books, dynamic fees and rounding, token-bucket limits, structured errors, and exchange/market pause and settlement states.
 - Replaced source-audit assumptions with explicit implementation-audit obligations: V2 bid/ask orders, client-order idempotency and reconciliation, fixed-point precision, complementary-book depth, metadata-driven fees, bounded local throttling, and fail-closed exchange/market-state gates.
 
+### 2026-07-14 — Iteration 5
+
+- Began the implementation audit with G4's effective live-startup boundary. Both `main.py` and `run_with_dashboard.py` previously validated the file while it was still configured for dry-run, applied `--live` afterward, and did not revalidate before constructing the bot. The CLI override could therefore bypass loader-level live credential checks until later client initialization.
+- Exposed `validate_config()` as the single reusable validation boundary and made both entrypoints revalidate after CLI mode overrides, before bot or exchange-client construction.
+- Made live configuration fail closed when `mode.data_mode` is `simulation` or `mode.simulate_fills` is true. This prevents a live-labelled process from consuming generated market data or hypothetical fill behavior.
+- This is a partial G4 hardening, not resolution of G4: application-level Keychain retrieval, credential-source policy, platform/host consistency, Kalshi credential completeness, and safe production defaults still require later slices.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -129,16 +136,31 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS**.
 - Implementation tests were not run because this bounded iteration changed documentation only. No authenticated Kalshi request, bot, dashboard, scanner, websocket, collector, signing flow, order construction/submission, cancellation, or account mutation was run.
 
+### 2026-07-14 — Iteration 5
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_config_loader.py -q`: **PASS** — 7 tests passed, including regressions for post-CLI live revalidation and rejection of simulation data and hypothetical fills in live mode.
+- `uv run --with-requirements requirements.txt python -m pytest tests test_real_data.py -q`: **PASS** — 114 tests passed with 266 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PARTIAL / PRE-EXISTING COLLECTION DEFECT** — 114 tests passed and the manually oriented root-level `test_kalshi_connection.py::test_kalshi_connection` failed collection because its async function has no pytest async marker. This file was not changed in this iteration; correcting the canonical test boundary remains later work.
+- `uv run --with pyyaml python -m py_compile utils/config_loader.py utils/__init__.py main.py run_with_dashboard.py`: **PASS**.
+- `uv run --with-requirements requirements.txt python -m compileall -q core dashboard kalshi_client polymarket_client polymarket_us_client scripts utils main.py run_with_dashboard.py`: **PASS**.
+- Narrow in-process fail-closed probe that changed a default `BotConfig` from dry-run to live and called `validate_config()`: **PASS** — validation rejected all four missing Polymarket Global credential fields. No client was constructed and no network request occurred.
+- `uv run --with-requirements requirements.txt black --check tests/test_config_loader.py utils/__init__.py`: **PASS** after formatting the changed test file. A broader check reports that the pre-existing `main.py`, `run_with_dashboard.py`, and `utils/config_loader.py` files would be reformatted wholesale; they were not mechanically rewritten in this bounded safety fix.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports utils/config_loader.py`: **PASS**. A broader ad hoc mypy invocation found 101 existing errors across ten transitively imported files and missing third-party stubs; the repository has no mypy configuration or clean baseline yet.
+- `git diff --check`: **PASS**.
+- Environment discovery: no repository `.venv` exists; Homebrew `python3` lacks both PyYAML and pytest; `/Users/zaki/.local/bin/uv` successfully created an ephemeral environment for the focused checks. Canonical dependency installation remains unresolved.
+- No bot, dashboard, scanner, websocket, collector, exchange client, order/signing flow, or network probe was started. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G14 have not yet been audited against current code or current official protocol behavior.
+- G1–G3 and G5–G14 have not yet been audited against current code or current official protocol behavior. G4 has only the partial live-override and simulation-mode hardening recorded in iteration 5.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
-- G4 remains open: the authenticated Keychain-backed arrangement is not integrated with the application config loader, and production startup safety has not yet been reconciled.
+- G4 remains open: the authenticated Keychain-backed arrangement is not integrated with the application config loader, and credential sources, venue/host consistency, Kalshi credential fragments, and conservative production defaults have not yet been fully reconciled.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
+- The unfiltered root-level pytest command collects an unmarked async function in `test_kalshi_connection.py` and therefore reports one failure even though the 114-test maintained suite plus `test_real_data.py` passes.
 - Full static, test, configuration, offline matched-data, ML, and dependency/security verification remains outstanding.
 - Live-only evidence is prohibited during this run and must never be implied.
 

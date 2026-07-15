@@ -31,7 +31,7 @@ from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketMatcher
 from core.decision_journal import DecisionJournal, DecisionOutcome
-from utils.config_loader import load_config, BotConfig
+from utils.config_loader import BotConfig, load_config, validate_config
 from utils.logging_utils import setup_logging
 from utils.paper_trade_store import PaperTradeStore
 from dashboard.server import app, dashboard_state, configure_dashboard_runtime
@@ -659,11 +659,17 @@ async def main_async(args: argparse.Namespace) -> None:
         logger.error(f"Failed to load config: {e}")
         sys.exit(1)
     
-    # Override mode
-    if args.live:
-        config.mode.trading_mode = "live"
-    elif args.dry_run:
-        config.mode.trading_mode = "dry_run"
+    # Override mode and revalidate the effective config so --live cannot bypass
+    # live-only credential and real-data checks performed during initial load.
+    try:
+        if args.live:
+            config.mode.trading_mode = "live"
+        elif args.dry_run:
+            config.mode.trading_mode = "dry_run"
+        validate_config(config)
+    except Exception as e:
+        logger.error(f"Invalid effective config: {e}")
+        sys.exit(1)
     
     # Create and run bot with dashboard
     bot = TradingBotWithDashboard(config, port=args.port)
@@ -747,4 +753,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

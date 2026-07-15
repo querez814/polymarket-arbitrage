@@ -27,7 +27,7 @@ from core.arb_engine import ArbEngine, ArbConfig
 from core.execution import ExecutionEngine, ExecutionConfig
 from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
-from utils.config_loader import load_config, BotConfig
+from utils.config_loader import BotConfig, load_config, validate_config
 from utils.logging_utils import setup_logging, performance_logger
 from utils.paper_trade_store import PaperTradeStore
 
@@ -386,11 +386,17 @@ async def main_async(args: argparse.Namespace) -> None:
         logger.error(f"Failed to load config: {e}")
         sys.exit(1)
     
-    # Override mode from command line
-    if args.live:
-        config.mode.trading_mode = "live"
-    elif args.dry_run:
-        config.mode.trading_mode = "dry_run"
+    # Override mode from command line and revalidate the effective config. This
+    # prevents --live from bypassing the live-only checks performed at load time.
+    try:
+        if args.live:
+            config.mode.trading_mode = "live"
+        elif args.dry_run:
+            config.mode.trading_mode = "dry_run"
+        validate_config(config)
+    except Exception as e:
+        logger.error(f"Invalid effective config: {e}")
+        sys.exit(1)
     
     # Run backtest if requested
     if args.backtest:
@@ -493,4 +499,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

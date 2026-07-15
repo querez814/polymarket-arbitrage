@@ -218,7 +218,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     )
     
     # Validate
-    _validate_config(config)
+    validate_config(config)
     
     return config
 
@@ -317,8 +317,8 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
         risk_data.setdefault(key, value)
 
 
-def _validate_config(config: BotConfig) -> None:
-    """Validate configuration values."""
+def validate_config(config: BotConfig) -> None:
+    """Validate a configuration, including mutations applied after loading."""
     errors = []
     
     # Trading validation
@@ -375,9 +375,16 @@ def _validate_config(config: BotConfig) -> None:
     # Mode validation
     if config.mode.trading_mode.lower() not in ("live", "dry_run"):
         errors.append("mode.trading_mode must be 'live' or 'dry_run'")
+
+    if config.mode.data_mode.lower() not in ("real", "simulation"):
+        errors.append("mode.data_mode must be 'real' or 'simulation'")
     
     # Live mode checks
     if config.is_live:
+        if config.use_simulation:
+            errors.append("mode.data_mode must be 'real' in live mode")
+        if config.mode.simulate_fills:
+            errors.append("mode.simulate_fills must be false in live mode")
         if config.is_polymarket_us:
             if not config.api.polymarket_us_key_id:
                 errors.append("api.polymarket_us_key_id is required for live Polymarket US trading")
