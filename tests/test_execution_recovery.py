@@ -8,6 +8,7 @@ from core.execution_journal import ExecutionJournal
 from core.execution_recovery import (
     AuthoritativeOrder,
     AuthoritativePosition,
+    ExecutionStartupGate,
     OrderLookup,
     RecoveryBlockedError,
     reconcile_restart,
@@ -105,6 +106,113 @@ async def test_restart_reconciles_orders_then_proves_positions_match_journal(tmp
     assert report.reconciled_execution_ids == ("exec-42",)
     assert recovered.phase is ExecutionPhase.COMPLETE
     assert recovered.realized_residual_size == 0.0
+
+
+@pytest.mark.asyncio
+async def test_startup_gate_admits_plan_only_after_safe_authoritative_recovery(
+    tmp_path,
+):
+    with ExecutionJournal(tmp_path / "executions.sqlite3") as journal:
+        gate = await ExecutionStartupGate.establish(
+            journal,
+            {
+                "polymarket": StubReader({}, {}),
+                "kalshi": StubReader({}, {}),
+            },
+            required_venues=VENUES,
+        )
+
+        persisted = gate.persist_execution_plan(_execution())
+
+        assert persisted.execution_id == "exec-42"
+        assert journal.load_execution("exec-42").phase is ExecutionPhase.PLANNED
+
+
+@pytest.mark.asyncio
+async def test_startup_gate_refuses_unsafe_recovery_report(tmp_path):
+    orphan = AuthoritativeOrder(
+        "polymarket",
+        "external-market",
+        None,
+        "external-order",
+        LegPhase.OPEN,
+        0.0,
+    )
+    with ExecutionJournal(tmp_path / "executions.sqlite3") as journal:
+        with pytest.raises(
+            RecoveryBlockedError,
+            match="startup blocked by authoritative recovery",
+        ):
+            await ExecutionStartupGate.establish(
+                journal,
+                {
+                    "polymarket": StubReader({}, {}, account_orders=(orphan,)),
+                    "kalshi": StubReader({}, {}),
+                },
+                required_venues=VENUES,
+            )
+
+        assert journal.load_all() == ()
+
+
+@pytest.mark.asyncio
+async def test_startup_gate_invalidates_stale_recovery_proof(tmp_path):
+    with ExecutionJournal(tmp_path / "executions.sqlite3") as journal:
+        gate = await ExecutionStartupGate.establish(
+            journal,
+            {
+                "polymarket": StubReader({}, {}),
+                "kalshi": StubReader({}, {}),
+            },
+            required_venues=VENUES,
+        )
+        journal.create_execution(_execution("external-change"))
+
+        with pytest.raises(
+            RecoveryBlockedError,
+            match="journal changed after authoritative recovery",
+        ):
+            gate.persist_execution_plan(_execution())
+
+
+@pytest.mark.asyncio
+async def test_startup_gate_requires_plan_to_match_recovered_venues(tmp_path):
+    with ExecutionJournal(tmp_path / "executions.sqlite3") as journal:
+        gate = await ExecutionStartupGate.establish(
+            journal,
+            {
+                "polymarket": StubReader({}, {}),
+                "kalshi": StubReader({}, {}),
+            },
+            required_venues=VENUES,
+        )
+        wrong_venues = TwoLegExecution(
+            "exec-other",
+            LegIntent(
+                "poly",
+                "polymarket",
+                "condition-1",
+                LegSide.BUY,
+                0.40,
+                10.0,
+            ),
+            LegIntent(
+                "other",
+                "other-venue",
+                "ticker-1",
+                LegSide.SELL,
+                0.65,
+                10.0,
+            ),
+        )
+
+        with pytest.raises(
+            RecoveryBlockedError,
+            match="venues do not exactly match recovered venues",
+        ):
+            gate.persist_execution_plan(wrong_venues)
+
+        assert journal.load_all() == ()
 
 
 @pytest.mark.asyncio

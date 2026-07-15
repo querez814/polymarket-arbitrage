@@ -14,7 +14,12 @@ from dataclasses import dataclass
 from typing import Mapping, Protocol
 
 from core.execution_journal import ExecutionJournal
-from core.two_leg_execution import ExecutionPhase, LegPhase, LegState
+from core.two_leg_execution import (
+    ExecutionPhase,
+    LegPhase,
+    LegState,
+    TwoLegExecution,
+)
 
 _POSITION_TOLERANCE = 1e-9
 
@@ -96,6 +101,71 @@ class RecoveryReport:
     reconciled_execution_ids: tuple[str, ...]
     blockers: tuple[str, ...]
     journal_token: str
+
+
+class ExecutionStartupGate:
+    """Admit new two-leg plans only after a current safe recovery proof.
+
+    The gate deliberately does not place, retry, cancel, or hedge orders.  It
+    closes the startup-to-journal seam by requiring authoritative recovery and
+    an unchanged, exclusively owned journal before a new immutable plan can be
+    persisted.  Venue adapters must still provide a separate, durable
+    submission integration before live mutation is possible.
+    """
+
+    def __init__(
+        self,
+        journal: ExecutionJournal,
+        report: RecoveryReport,
+        required_venues: frozenset[str],
+    ) -> None:
+        if not report.safe_to_resume or report.blockers:
+            raise RecoveryBlockedError(
+                "execution startup blocked by authoritative recovery"
+            )
+        if journal.snapshot_token() != report.journal_token:
+            raise RecoveryBlockedError(
+                "execution journal changed after authoritative recovery"
+            )
+        self._journal = journal
+        self._journal_token = report.journal_token
+        self._required_venues = frozenset(_normalize_required_venues(required_venues))
+
+    @classmethod
+    async def establish(
+        cls,
+        journal: ExecutionJournal,
+        readers: Mapping[str, AuthoritativeVenueReader],
+        *,
+        required_venues: frozenset[str],
+    ) -> "ExecutionStartupGate":
+        """Run authoritative recovery and return a gate only when it is safe."""
+        report = await reconcile_restart(
+            journal,
+            readers,
+            required_venues=required_venues,
+        )
+        return cls(journal, report, required_venues)
+
+    def persist_execution_plan(self, execution: TwoLegExecution) -> TwoLegExecution:
+        """Persist a pristine plan if the recovery proof is still current."""
+        self._require_current_proof()
+        execution_venues = {
+            leg.intent.venue.strip().lower() for leg in execution.legs.values()
+        }
+        if execution_venues != self._required_venues:
+            raise RecoveryBlockedError(
+                "execution venues do not exactly match recovered venues"
+            )
+        persisted = self._journal.create_execution(execution)
+        self._journal_token = self._journal.snapshot_token()
+        return persisted
+
+    def _require_current_proof(self) -> None:
+        if self._journal.snapshot_token() != self._journal_token:
+            raise RecoveryBlockedError(
+                "execution journal changed after authoritative recovery"
+            )
 
 
 async def reconcile_restart(
