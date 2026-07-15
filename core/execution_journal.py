@@ -159,17 +159,50 @@ class ExecutionJournal:
 
     def load_unfinished(self) -> tuple[TwoLegExecution, ...]:
         """Return all non-complete executions or fail on any corrupt chain."""
-        rows = self._connection.execute(
-            "SELECT DISTINCT execution_id FROM execution_events ORDER BY execution_id"
-        ).fetchall()
-        executions = tuple(
-            self._load_from_connection(str(row["execution_id"])) for row in rows
-        )
+        executions = self.load_all()
         return tuple(
             execution
             for execution in executions
             if execution.phase is not ExecutionPhase.COMPLETE
         )
+
+    def load_all(self) -> tuple[TwoLegExecution, ...]:
+        """Return every execution after validating every complete hash chain."""
+        rows = self._connection.execute(
+            "SELECT DISTINCT execution_id FROM execution_events ORDER BY execution_id"
+        ).fetchall()
+        return tuple(
+            self._load_from_connection(str(row["execution_id"])) for row in rows
+        )
+
+    def load_all_with_token(self) -> tuple[tuple[TwoLegExecution, ...], str]:
+        """Load a consistent replay snapshot and its journal generation token."""
+        self._connection.execute("BEGIN")
+        try:
+            executions = self.load_all()
+            token = self.snapshot_token()
+            self._connection.commit()
+            return executions, token
+        except BaseException:
+            self._connection.rollback()
+            raise
+
+    def snapshot_token(self) -> str:
+        """Return a digest that changes when any execution event is appended."""
+        rows = self._connection.execute("""
+            SELECT execution_id, sequence, event_sha256
+            FROM execution_events
+            ORDER BY execution_id, sequence
+            """).fetchall()
+        digest = hashlib.sha256()
+        for row in rows:
+            digest.update(str(row["execution_id"]).encode("utf-8"))
+            digest.update(b"\x1f")
+            digest.update(str(row["sequence"]).encode("ascii"))
+            digest.update(b"\x1f")
+            digest.update(str(row["event_sha256"]).encode("ascii"))
+            digest.update(b"\x1e")
+        return digest.hexdigest()
 
     def event_count(self, execution_id: str) -> int:
         row = self._connection.execute(
