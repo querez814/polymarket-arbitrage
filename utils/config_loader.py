@@ -25,6 +25,15 @@ POLYMARKET_US_PRODUCTION_URLS = {
     "api.polymarket_us_gateway_url": "https://gateway.polymarket.us",
 }
 KALSHI_PRODUCTION_URL = "https://external-api.kalshi.com/trade-api/v2"
+LIVE_SECRET_CONFIG_FIELDS = frozenset(
+    {
+        "api_key",
+        "api_secret",
+        "passphrase",
+        "private_key",
+        "polymarket_us_secret_key",
+    }
+)
 
 
 class ConfigError(Exception):
@@ -239,10 +248,69 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     )
     
     # Validate
+    _reject_tracked_live_secrets(
+        path, api_data=raw_config.get("api", {}), config=config
+    )
     resolve_runtime_secrets(config)
     validate_config(config)
     
     return config
+
+
+def _reject_tracked_live_secrets(
+    config_path: Path, *, api_data: Any, config: BotConfig
+) -> None:
+    """Keep live secret values out of configuration files tracked by Git."""
+    if not config.is_live or not isinstance(api_data, dict):
+        return
+
+    embedded_fields = sorted(
+        field_name
+        for field_name in LIVE_SECRET_CONFIG_FIELDS
+        if str(api_data.get(field_name, "")).strip()
+    )
+    if not embedded_fields or not _is_git_tracked(config_path):
+        return
+
+    qualified_fields = ", ".join(f"api.{name}" for name in embedded_fields)
+    raise ConfigError(
+        "Live configuration files tracked by Git must not contain secret values "
+        f"({qualified_fields}); inject them through environment variables, macOS "
+        "Keychain, or an ignored local configuration file"
+    )
+
+
+def _is_git_tracked(path: Path) -> bool:
+    """Return whether path is tracked in its containing Git worktree."""
+    resolved_path = path.resolve()
+    try:
+        root_result = subprocess.run(
+            ["git", "-C", str(resolved_path.parent), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        root = Path(root_result.stdout.strip()).resolve()
+        relative_path = resolved_path.relative_to(root)
+        tracked_result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                str(relative_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return tracked_result.returncode == 0
 
 
 def _apply_env_overrides(data: dict, env_map: dict[str, str]) -> dict:

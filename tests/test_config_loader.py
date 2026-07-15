@@ -310,6 +310,54 @@ mode:
         load_config(str(config_path))
 
 
+def test_live_mode_rejects_secrets_embedded_in_tracked_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "tracked-live.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-wallet-key
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: false
+  kalshi_enabled: false
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("utils.config_loader._is_git_tracked", lambda path: True)
+
+    with pytest.raises(ConfigError, match="tracked by Git must not contain secret"):
+        load_config(str(config_path))
+
+
+def test_live_mode_accepts_runtime_secrets_with_tracked_config(tmp_path, monkeypatch):
+    config_path = tmp_path / "tracked-live.yaml"
+    config_path.write_text(
+        """
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: false
+  kalshi_enabled: false
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("utils.config_loader._is_git_tracked", lambda path: True)
+    monkeypatch.setenv("POLYMARKET_API_KEY", "test-key")
+    monkeypatch.setenv("POLYMARKET_API_SECRET", "test-secret")
+    monkeypatch.setenv("POLYMARKET_PASSPHRASE", "test-passphrase")
+    monkeypatch.setenv("POLYMARKET_PRIVATE_KEY", "test-wallet-key")
+
+    config = load_config(str(config_path))
+
+    assert config.is_live
+
+
 def test_keychain_failure_is_actionable_without_exposing_subprocess_output(
     tmp_path, monkeypatch
 ):
