@@ -29,6 +29,10 @@ from kalshi_client import KalshiClient
 from utils.config_loader import load_config
 from utils.logging_utils import setup_logging
 
+# This is an explicitly invoked network diagnostic, not an automated pytest test.
+# Keep its public function name for callers while preventing accidental collection.
+__test__ = False
+
 
 async def test_kalshi_connection(config_path: str = "config.yaml") -> bool:
     print("=" * 60)
@@ -44,7 +48,9 @@ async def test_kalshi_connection(config_path: str = "config.yaml") -> bool:
 
     api = config.api
     print(f"   API URL: {api.kalshi_api_url}")
-    print(f"   Auth configured: {bool(api.kalshi_api_key_id and api.kalshi_private_key_path)}")
+    print(
+        f"   Auth configured: {bool(api.kalshi_api_key_id and api.kalshi_private_key_path)}"
+    )
 
     client = KalshiClient(
         base_url=api.kalshi_api_url,
@@ -87,7 +93,9 @@ async def test_kalshi_connection(config_path: str = "config.yaml") -> bool:
             print()
             print("To enable live Kalshi trading:")
             print("1. Kalshi → Account & security → API Keys → Create Key")
-            print("2. Save the API Key ID and download the .key / .pem file immediately")
+            print(
+                "2. Save the API Key ID and download the .key / .pem file immediately"
+            )
             print("3. export KALSHI_API_KEY_ID='...'")
             print("4. export KALSHI_PRIVATE_KEY_PATH='/path/to/kalshi-key.pem'")
             print("5. Re-run this script")
@@ -107,7 +115,9 @@ async def test_kalshi_connection(config_path: str = "config.yaml") -> bool:
                 print("⚠️  Balance endpoint returned no data")
         except Exception as e:
             print(f"❌ Auth failed: {e}")
-            print("   Check API Key ID, private key path, and that URL matches your key (prod vs demo)")
+            print(
+                "   Check API Key ID, private key path, and that URL matches your key (prod vs demo)"
+            )
             return False
 
         try:

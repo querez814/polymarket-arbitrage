@@ -115,6 +115,11 @@ No finding is marked resolved on the strength of the source report alone.
 - Kalshi authentication remains optional for public-only monitoring, which is the only Kalshi behavior currently wired into the dashboard. If either credential fragment is supplied, configuration now requires both the API key ID and RSA private-key path and verifies that the referenced path is an existing regular file. No key content is read by configuration validation.
 - G4 remains open only for tracked-versus-ignored credential-source enforcement and a final conservative-default audit; Kalshi order capability and authenticated credential validation remain correctly assigned to G2 rather than being represented as complete here.
 
+### 2026-07-14 — Iteration 8 (22:09 EDT)
+
+- Corrected the automated-test boundary for the explicitly invoked, networked `test_kalshi_connection.py` diagnostic. The module now declares `__test__ = False`, so pytest does not mistake its async connectivity helper for an offline unit test; its existing importable function and standalone CLI behavior are unchanged.
+- Formatted the touched diagnostic with the repository's configured Black version. No connectivity check, exchange client, or network request was run.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -187,6 +192,15 @@ No finding is marked resolved on the strength of the source report alone.
 - `git check-ignore -v config.polymarket.yaml`: **PASS** — still ignored by `.gitignore:71`; `git diff --check`: **PASS**.
 - No bot, dashboard, scanner, websocket, collector, exchange client, authenticated request, key parsing, order/signing flow, or network request was started. No background process was created.
 
+### 2026-07-14 — Iteration 8 (22:09 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered suite passed with 129 tests and 266 pre-existing deprecation warnings; the manual Kalshi connectivity diagnostic was not executed.
+- `uv run --with-requirements requirements.txt python -m py_compile test_kalshi_connection.py`: **PASS**.
+- `uv run --with-requirements requirements.txt black --check test_kalshi_connection.py`: **PASS** after formatting the touched file.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports test_kalshi_connection.py`: **PARTIAL / PRE-EXISTING TYPE BASELINE** — traversing the diagnostic's imported exchange clients found 23 existing errors across `polymarket_client/clob_bridge.py`, `polymarket_client/api.py`, `kalshi_client/api.py`, and `polymarket_us_client/api.py`; none points to this iteration's pytest-boundary declaration.
+- `git diff --check`: **PASS**.
+- No bot, dashboard, scanner, websocket, collector, exchange client, connectivity diagnostic, order/signing flow, or network request was started. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
@@ -197,7 +211,6 @@ Not evaluated yet. The source audit reports snapshot-building and collection cod
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
-- The unfiltered root-level pytest command collects an unmarked async function in `test_kalshi_connection.py` and therefore reports one failure even though the 114-test maintained suite plus `test_real_data.py` passes.
 - Full static, test, configuration, offline matched-data, ML, and dependency/security verification remains outstanding.
 - Live-only evidence is prohibited during this run and must never be implied.
 
