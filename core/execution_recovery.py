@@ -130,6 +130,7 @@ class ExecutionStartupGate:
         self._journal = journal
         self._journal_token = report.journal_token
         self._required_venues = frozenset(_normalize_required_venues(required_venues))
+        self._consumed = False
 
     @classmethod
     async def establish(
@@ -148,7 +149,16 @@ class ExecutionStartupGate:
         return cls(journal, report, required_venues)
 
     def persist_execution_plan(self, execution: TwoLegExecution) -> TwoLegExecution:
-        """Persist a pristine plan if the recovery proof is still current."""
+        """Persist one pristine plan from one current recovery proof.
+
+        A journal generation token cannot detect venue state that changes out of
+        band.  Consuming the proof after one admission forces every later plan
+        through a fresh authoritative account reconciliation.
+        """
+        if self._consumed:
+            raise RecoveryBlockedError(
+                "authoritative recovery proof has already been consumed"
+            )
         self._require_current_proof()
         execution_venues = {
             leg.intent.venue.strip().lower() for leg in execution.legs.values()
@@ -158,7 +168,7 @@ class ExecutionStartupGate:
                 "execution venues do not exactly match recovered venues"
             )
         persisted = self._journal.create_execution(execution)
-        self._journal_token = self._journal.snapshot_token()
+        self._consumed = True
         return persisted
 
     def _require_current_proof(self) -> None:

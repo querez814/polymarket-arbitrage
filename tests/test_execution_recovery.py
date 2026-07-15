@@ -216,6 +216,42 @@ async def test_startup_gate_requires_plan_to_match_recovered_venues(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_startup_gate_consumes_recovery_proof_after_one_plan(tmp_path):
+    polymarket = StubReader({}, {})
+    readers = {
+        "polymarket": polymarket,
+        "kalshi": StubReader({}, {}),
+    }
+    with ExecutionJournal(tmp_path / "executions.sqlite3") as journal:
+        gate = await ExecutionStartupGate.establish(
+            journal,
+            readers,
+            required_venues=VENUES,
+        )
+        gate.persist_execution_plan(_execution())
+
+        # Venue state can drift without changing the local journal.  Reusing the
+        # old proof must fail, while a fresh reconciliation observes the drift.
+        polymarket.positions["external-market"] = 1.0
+        with pytest.raises(
+            RecoveryBlockedError,
+            match="recovery proof has already been consumed",
+        ):
+            gate.persist_execution_plan(_execution("exec-second"))
+        with pytest.raises(
+            RecoveryBlockedError,
+            match="startup blocked by authoritative recovery",
+        ):
+            await ExecutionStartupGate.establish(
+                journal,
+                readers,
+                required_venues=VENUES,
+            )
+
+        assert tuple(item.execution_id for item in journal.load_all()) == ("exec-42",)
+
+
+@pytest.mark.asyncio
 async def test_unresolved_ambiguous_order_blocks_without_appending(tmp_path):
     execution = _execution()
     with ExecutionJournal(tmp_path / "executions.sqlite3") as journal:
