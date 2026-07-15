@@ -2,21 +2,36 @@
 # ========================================
 
 api:
-  # Polymarket API endpoints
+  # Platform: "global" (MetaMask/CLOB) or "us" (Polymarket US app API keys)
+  polymarket_platform: "global"
+  polymarket_us_api_url: "https://api.polymarket.us"
+  polymarket_us_gateway_url: "https://gateway.polymarket.us"
+  polymarket_us_key_id: ""
+  polymarket_us_secret_key: ""
+
+  # Polymarket Global API endpoints (used when polymarket_platform: global)
   polymarket_rest_url: "https://clob.polymarket.com"
   polymarket_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
   gamma_api_url: "https://gamma-api.polymarket.com"
   
-  # Kalshi API endpoint (public, no auth needed for market data)
+  # Kalshi API
+  # - Public endpoints (markets, orderbooks, /exchange/status): no credentials needed
+  # - Portfolio, orders, balance: require BOTH kalshi_api_key_id AND the RSA private key
+  #   file you downloaded when the key was created (Kalshi never stores it for you).
+  #   "Optional" in Kalshi docs means you may supply your own key pair (Create Key)
+  #   or let Kalshi generate one (Generate Key) — not that you can skip the private key.
   kalshi_api_url: "https://api.elections.kalshi.com/trade-api/v2"
+  kalshi_api_key_id: ""
+  kalshi_private_key_path: ""
   
   # Authentication (replace with your credentials)
-  api_key: "YOUR_API_KEY_HERE"
-  api_secret: "YOUR_API_SECRET_HERE"
-  passphrase: "YOUR_PASSPHRASE_HERE"
+  api_key: ""
+  api_secret: ""
+  passphrase: ""
   
-  # Wallet configuration
-  private_key: "YOUR_PRIVATE_KEY_HERE"
+  # Wallet configuration (use POLYMARKET_PRIVATE_KEY env var for live)
+  private_key: ""
+  chain_id: 137
   
   # Request settings
   timeout_seconds: 30
@@ -24,26 +39,44 @@ api:
   retry_delay_seconds: 1
 
 trading:
+  # Risk profile: conservative, balanced, aggressive
+  risk_profile: "aggressive"
+
   # Markets to trade (empty list = auto-discover active markets)
   markets: []
   
   # Arbitrage settings
-  min_edge: 0.01           # 1% edge required for bundle arbitrage
+  min_edge: 0.005          # 0.5% edge required for aggressive bundle arbitrage
   bundle_arb_enabled: true
+  bundle_cooldown_seconds: 0.5
   
   # Market-making settings
-  min_spread: 0.05         # 5c spread to act as market maker
+  min_spread: 0.025        # 2.5c spread to act as market maker
   tick_size: 0.01          # Minimum price increment
-  mm_enabled: false        # Disabled for real data (markets too efficient)
+  mm_enabled: true
+  mm_cooldown_seconds: 1.0
+  mm_one_sided_enabled: true
   
-  # Order sizing - SMALL for $50 budget
-  default_order_size: 5    # $5 per order
+  # Order sizing - aggressive for higher trade frequency
+  default_order_size: 15   # $15 target notional per order
   min_order_size: 2        # $2 minimum
-  max_order_size: 10       # $10 max per order
+  max_order_size: 30       # $30 max per order
+  edge_size_multiplier: 7.5
+  max_liquidity_fraction: 0.85
   
   # Execution settings
   slippage_tolerance: 0.02  # Max allowed slippage from signal to execution
   order_timeout_seconds: 60 # Cancel unfilled orders after this time
+  arb_slippage_tolerance: 0.03
+  market_making_slippage_tolerance: 0.015
+  high_edge_slippage_multiplier: 1.5
+  arb_order_timeout_seconds: 8
+  market_making_order_timeout_seconds: 12
+
+  # Cross-platform arbitrage sizing
+  cross_platform_max_order_size: 30
+  cross_platform_edge_size_multiplier: 7.5
+  cross_platform_max_liquidity_fraction: 0.85
   
   # Fees (Polymarket rates - conservative estimates)
   maker_fee_bps: 0          # 0% for maker (limit orders adding liquidity)
@@ -51,12 +84,12 @@ trading:
   estimated_gas_per_order: 0.02  # ~$0.02 gas on Polygon
 
 risk:
-  # Position limits - CONSERVATIVE for $50 budget
-  max_position_per_market: 15    # Max $15 per market
-  max_global_exposure: 50        # Max $50 total (your starting amount!)
+  # Position limits - aggressive profile
+  max_position_per_market: 35    # Max $35 per market
+  max_global_exposure: 100       # Max $100 total exposure
   
-  # Loss limits - tight stops
-  max_daily_loss: 10             # Stop if losing $10/day
+  # Loss limits
+  max_daily_loss: 20             # Stop if losing $20/day
   max_drawdown_pct: 0.15         # 15% max drawdown from peak
   
   # Market filters - DISABLED for testing (volume data comes from Gamma API)
@@ -66,6 +99,10 @@ risk:
   # Market whitelist/blacklist (optional)
   whitelist: []                  # If non-empty, only trade these markets
   blacklist: []                  # Never trade these markets
+  strategy_exposure_limits:
+    bundle_arb: 70
+    market_making: 35
+    cross_platform_arb: 70
   
   # Kill switch
   kill_switch_enabled: true
@@ -86,9 +123,9 @@ mode:
   min_match_similarity: 0.6       # Minimum similarity score for market matching (0-1)
   
   # Dry run settings
-  dry_run_initial_balance: 10000
-  simulate_fills: true
-  fill_probability: 0.8          # Probability of order being filled in dry run
+  dry_run_initial_balance: 500
+  simulate_fills: true          # Hypothetical paper fills for strategy evaluation only
+  fill_probability: 0.8         # Probability of open paper order being hypothetically filled
 
 logging:
   # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -116,3 +153,6 @@ monitoring:
   track_latency: true
   track_fill_rates: true
 
+  # Paper trade audit ledger (dry run)
+  paper_trade_db_path: "data/paper_trades.db"
+  display_timezone: "America/New_York"

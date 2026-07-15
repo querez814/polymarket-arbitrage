@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 from polymarket_client.models import OrderSide, Position, TokenType, Trade
+from utils.time_utils import to_utc_iso
 
 
 logger = logging.getLogger(__name__)
@@ -318,10 +319,64 @@ class Portfolio:
     def get_all_positions(self) -> dict[str, dict[TokenType, PortfolioPosition]]:
         """Get all positions."""
         return self._positions.copy()
+
+    def get_position_snapshots(self, include_flat: bool = False) -> list[dict]:
+        """Return dashboard-ready snapshots for filled positions."""
+        snapshots = []
+        for market_id, tokens in self._positions.items():
+            current_prices = self._current_prices.get(market_id, {})
+            for token_type, position in tokens.items():
+                if not include_flat and position.size == 0:
+                    continue
+                current_price = current_prices.get(token_type)
+                unrealized_pnl = (
+                    position.unrealized_pnl(current_price)
+                    if current_price is not None
+                    else 0.0
+                )
+                snapshots.append({
+                    "type": "position",
+                    "market_id": market_id,
+                    "token_type": token_type.value,
+                    "side": "long" if position.size > 0 else "short" if position.size < 0 else "flat",
+                    "size": position.size,
+                    "avg_entry_price": position.avg_entry_price,
+                    "notional": position.notional,
+                    "current_price": current_price,
+                    "unrealized_pnl": unrealized_pnl,
+                    "realized_pnl": position.realized_pnl,
+                    "cost_basis": position.cost_basis,
+                    "total_bought": position.total_bought,
+                    "total_sold": position.total_sold,
+                    "trade_count": position.trade_count,
+                })
+        return snapshots
     
     def get_recent_trades(self, limit: int = 50) -> list[Trade]:
         """Get recent trades."""
         return self._trades[-limit:]
+
+    def get_recent_trade_snapshots(self, limit: int = 50) -> list[dict]:
+        """Return dashboard-ready snapshots for recent fills."""
+        return [
+            {
+                "type": "recent_trade",
+                "trade_id": trade.trade_id,
+                "order_id": trade.order_id,
+                "market_id": trade.market_id,
+                "token_type": trade.token_type.value,
+                "side": trade.side.value,
+                "price": trade.price,
+                "size": trade.size,
+                "notional": trade.notional,
+                "fee": trade.fee,
+                "timestamp": to_utc_iso(trade.timestamp),
+                "is_simulated": trade.is_simulated,
+                "simulation_label": trade.simulation_label,
+                "pnl_source": "hypothetical_paper" if trade.is_simulated else "live",
+            }
+            for trade in self.get_recent_trades(limit)
+        ]
     
     def reset(self) -> None:
         """Reset portfolio to initial state."""

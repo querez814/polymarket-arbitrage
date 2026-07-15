@@ -16,6 +16,7 @@ from polymarket_client.models import (
     OpportunityType,
 )
 from core.arb_engine import ArbEngine, ArbConfig
+from core.decision_journal import DecisionJournal
 
 
 @pytest.fixture
@@ -39,6 +40,11 @@ def arb_config() -> ArbConfig:
 def arb_engine(arb_config: ArbConfig) -> ArbEngine:
     """Create arbitrage engine for tests."""
     return ArbEngine(arb_config)
+
+
+@pytest.fixture
+def decision_journal() -> DecisionJournal:
+    return DecisionJournal(max_records=20)
 
 
 def create_order_book(
@@ -162,6 +168,110 @@ class TestBundleArbitrage:
         bundle_signals = [s for s in signals if s.opportunity and s.opportunity.is_bundle_arb]
         assert len(bundle_signals) == 0
 
+    def test_aggressive_config_detects_lower_edge_and_scales_size(self):
+        """Aggressive settings trade smaller edges and size by edge/liquidity."""
+        engine = ArbEngine(ArbConfig(
+            min_edge=0.005,
+            bundle_arb_enabled=True,
+            mm_enabled=False,
+            default_order_size=5.0,
+            min_order_size=2.0,
+            max_order_size=30.0,
+            edge_size_multiplier=7.5,
+            max_liquidity_fraction=0.85,
+            maker_fee_bps=0,
+            taker_fee_bps=0,
+            gas_cost_per_order=0,
+        ))
+        order_book = create_order_book(
+            market_id="test_market",
+            yes_bid=0.48,
+            yes_ask=0.50,
+            no_bid=0.48,
+            no_ask=0.492,
+            size=20.0,
+        )
+
+        signals = engine.analyze(create_market_state(order_book))
+
+        bundle_signal = [s for s in signals if s.opportunity and s.opportunity.is_bundle_arb][0]
+        assert bundle_signal.opportunity.edge == pytest.approx(0.008)
+        assert bundle_signal.opportunity.suggested_size <= 17.0
+
+    def test_bundle_rejects_thin_book_below_minimum_size(self):
+        """Do not force minimum size when top-of-book liquidity is too thin."""
+        engine = ArbEngine(ArbConfig(
+            min_edge=0.005,
+            bundle_arb_enabled=True,
+            mm_enabled=False,
+            default_order_size=5.0,
+            min_order_size=2.0,
+            max_order_size=30.0,
+            maker_fee_bps=0,
+            taker_fee_bps=0,
+            gas_cost_per_order=0,
+        ))
+        order_book = create_order_book(
+            market_id="thin_market",
+            yes_bid=0.40,
+            yes_ask=0.45,
+            no_bid=0.45,
+            no_ask=0.50,
+            size=1.0,
+        )
+
+        signals = engine.analyze(create_market_state(order_book))
+
+        assert [s for s in signals if s.opportunity and s.opportunity.is_bundle_arb] == []
+    
+    def test_records_skip_reason_when_edge_below_threshold(
+        self,
+        arb_config: ArbConfig,
+        decision_journal: DecisionJournal,
+    ):
+        engine = ArbEngine(arb_config, decision_journal=decision_journal)
+        order_book = create_order_book(
+            market_id="test_market",
+            yes_bid=0.48,
+            yes_ask=0.50,
+            no_bid=0.48,
+            no_ask=0.495,
+        )
+        
+        engine.analyze(create_market_state(order_book))
+        
+        decisions = decision_journal.to_dicts()
+        assert decisions[-1]["strategy"] == "market_making" or decisions[-1]["strategy"] == "bundle_arb"
+        assert any(
+            d["strategy"] == "bundle_arb"
+            and d["outcome"] == "skip"
+            and d["reason_code"] == "edge_below_threshold"
+            for d in decisions
+        )
+    
+    def test_records_trade_reason_for_bundle_signal(
+        self,
+        arb_config: ArbConfig,
+        decision_journal: DecisionJournal,
+    ):
+        engine = ArbEngine(arb_config, decision_journal=decision_journal)
+        order_book = create_order_book(
+            market_id="test_market",
+            yes_bid=0.43,
+            yes_ask=0.45,
+            no_bid=0.48,
+            no_ask=0.50,
+        )
+        
+        engine.analyze(create_market_state(order_book))
+        
+        assert any(
+            d["strategy"] == "bundle_arb"
+            and d["outcome"] == "trade"
+            and d["reason_code"] == "net_edge_above_threshold"
+            for d in decision_journal.to_dicts()
+        )
+
 
 class TestMarketMaking:
     """Tests for market-making opportunity detection."""
@@ -200,6 +310,29 @@ class TestMarketMaking:
         # Filter out any bundle opportunities (they might exist due to mispricing)
         mm_signals = [s for s in signals if s.opportunity and s.opportunity.is_market_making]
         assert len(mm_signals) == 0
+    
+    def test_records_market_making_skip_reason(
+        self,
+        arb_config: ArbConfig,
+        decision_journal: DecisionJournal,
+    ):
+        engine = ArbEngine(arb_config, decision_journal=decision_journal)
+        order_book = create_order_book(
+            market_id="test_market",
+            yes_bid=0.49,
+            yes_ask=0.51,
+            no_bid=0.48,
+            no_ask=0.50,
+        )
+        
+        engine.analyze(create_market_state(order_book))
+        
+        assert any(
+            d["strategy"] == "market_making"
+            and d["outcome"] == "skip"
+            and d["reason_code"] == "spread_below_threshold"
+            for d in decision_journal.to_dicts()
+        )
 
 
 class TestSignalGeneration:

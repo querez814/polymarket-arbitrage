@@ -2,7 +2,12 @@
 """Quick test to verify we can fetch REAL Polymarket data."""
 
 import asyncio
+
+import pytest
+
 from polymarket_client import PolymarketClient
+
+pytestmark = pytest.mark.asyncio
 
 
 async def test():
@@ -12,6 +17,7 @@ async def test():
     
     client = PolymarketClient(dry_run=True)
     await client.connect()
+    markets = []
     
     print("\n1. Fetching markets from Gamma API...")
     try:
@@ -56,4 +62,3 @@ async def test():
 
 if __name__ == "__main__":
     asyncio.run(test())
-

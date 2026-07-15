@@ -34,6 +34,7 @@ class RiskConfig:
     # Whitelist/blacklist
     whitelist: list[str] = field(default_factory=list)
     blacklist: list[str] = field(default_factory=list)
+    strategy_exposure_limits: dict[str, float] = field(default_factory=dict)
     
     # Kill switch
     kill_switch_enabled: bool = True
@@ -66,6 +67,7 @@ class RiskManager:
         
         # Per-market exposure tracking
         self._market_exposure: dict[str, float] = {}
+        self._strategy_exposure: dict[str, float] = {}
         
         # Volume cache
         self._market_volumes: dict[str, float] = {}
@@ -134,6 +136,20 @@ class RiskManager:
                 f"{projected_global:.2f} > {self.config.max_global_exposure}"
             )
             return False
+
+        # Strategy budget check. Empty strategy tags use only global/market limits.
+        if order.strategy_tag:
+            strategy_limit = self.config.strategy_exposure_limits.get(order.strategy_tag)
+            if strategy_limit is not None:
+                current_strategy_exposure = self._strategy_exposure.get(order.strategy_tag, 0.0)
+                projected_strategy_exposure = current_strategy_exposure + abs(new_exposure)
+                if projected_strategy_exposure > strategy_limit:
+                    logger.warning(
+                        f"Order rejected: would exceed {order.strategy_tag} strategy limit | "
+                        f"current={current_strategy_exposure:.2f} + order={abs(new_exposure):.2f} = "
+                        f"{projected_strategy_exposure:.2f} > {strategy_limit}"
+                    )
+                    return False
         
         # Daily loss check
         if self.state.daily_pnl < -self.config.max_daily_loss:
@@ -188,6 +204,23 @@ class RiskManager:
         size_delta = trade.size if trade.side == OrderSide.BUY else -trade.size
         self.update_position(trade.market_id, trade.token_type, size_delta, trade.price)
         self._session_trades.append(trade)
+
+    def reserve_strategy_exposure(self, strategy_tag: str, notional: float) -> None:
+        """Reserve strategy budget for an accepted open order."""
+        if not strategy_tag:
+            return
+        self._strategy_exposure[strategy_tag] = self._strategy_exposure.get(strategy_tag, 0.0) + abs(notional)
+
+    def release_strategy_exposure(self, strategy_tag: str, notional: float) -> None:
+        """Release strategy budget when an open order is cancelled or fully filled."""
+        if not strategy_tag:
+            return
+        current = self._strategy_exposure.get(strategy_tag, 0.0)
+        self._strategy_exposure[strategy_tag] = max(0.0, current - abs(notional))
+
+    def get_strategy_exposure(self, strategy_tag: str) -> float:
+        """Get currently reserved strategy exposure."""
+        return self._strategy_exposure.get(strategy_tag, 0.0)
     
     def update_pnl(self, realized_pnl: float, unrealized_pnl: float) -> None:
         """Update PnL tracking."""
@@ -281,6 +314,7 @@ class RiskManager:
             "kill_switch_triggered": self.state.kill_switch_triggered,
             "kill_switch_reason": self.state.kill_switch_reason,
             "markets_with_exposure": len([m for m, e in self._market_exposure.items() if e > 0]),
+            "strategy_exposure": self._strategy_exposure.copy(),
             "session_trade_count": len(self._session_trades),
             "within_limits": self.within_global_limits(),
         }

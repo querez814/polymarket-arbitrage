@@ -91,6 +91,29 @@ class TestOrderValidation:
         order = create_order(size=200.0, price=0.50)  # Additional $100
         assert risk_manager.check_order(order) is False
 
+    def test_reject_exceeds_strategy_limit(self):
+        """Test rejection when a strategy-specific budget is exhausted."""
+        manager = RiskManager(RiskConfig(
+            max_position_per_market=1000.0,
+            max_global_exposure=1000.0,
+            trade_only_high_volume=False,
+            strategy_exposure_limits={"market_making": 60.0},
+        ))
+        manager.reserve_strategy_exposure("market_making", 50.0)
+
+        order = create_order(size=40.0, price=0.50)
+        order.strategy_tag = "market_making"
+
+        assert manager.check_order(order) is False
+
+    def test_strategy_exposure_reserve_and_release(self):
+        manager = RiskManager(RiskConfig(trade_only_high_volume=False))
+
+        manager.reserve_strategy_exposure("bundle_arb", 25.0)
+        manager.release_strategy_exposure("bundle_arb", 10.0)
+
+        assert manager.get_strategy_exposure("bundle_arb") == 15.0
+
 
 class TestKillSwitch:
     """Tests for kill switch functionality."""

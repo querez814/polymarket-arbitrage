@@ -67,4 +67,9 @@ coverage.xml
 
 # Sensitive config (use config.yaml.example for template)
 config.live.yaml
+config.live.us.yaml
+config.polymarket.yaml
 
+# Kalshi RSA private keys (download once from Kalshi — never commit)
+kalshi*.pem
+kalshi*.key

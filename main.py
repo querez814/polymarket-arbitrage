@@ -20,7 +20,8 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from polymarket_client import PolymarketClient
+from polymarket_client import create_polymarket_client
+from polymarket_client.api import BasePolymarketClient
 from core.data_feed import DataFeed
 from core.arb_engine import ArbEngine, ArbConfig
 from core.execution import ExecutionEngine, ExecutionConfig
@@ -28,6 +29,7 @@ from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
 from utils.config_loader import load_config, BotConfig
 from utils.logging_utils import setup_logging, performance_logger
+from utils.paper_trade_store import PaperTradeStore
 
 
 logger = logging.getLogger(__name__)
@@ -46,12 +48,13 @@ class TradingBot:
         self._shutdown_event = asyncio.Event()
         
         # Components (initialized in start())
-        self.client: Optional[PolymarketClient] = None
+        self.client: Optional[BasePolymarketClient] = None
         self.data_feed: Optional[DataFeed] = None
         self.arb_engine: Optional[ArbEngine] = None
         self.execution_engine: Optional[ExecutionEngine] = None
         self.risk_manager: Optional[RiskManager] = None
         self.portfolio: Optional[Portfolio] = None
+        self.paper_trade_store: Optional[PaperTradeStore] = None
         
         # Statistics
         self._start_time: Optional[datetime] = None
@@ -68,20 +71,14 @@ class TradingBot:
         
         self._start_time = datetime.utcnow()
         self._running = True
+
+        if self.config.is_dry_run:
+            self.paper_trade_store = PaperTradeStore(
+                self.config.monitoring.paper_trade_db_path
+            )
         
         # Initialize API client
-        self.client = PolymarketClient(
-            rest_url=self.config.api.polymarket_rest_url,
-            ws_url=self.config.api.polymarket_ws_url,
-            gamma_url=self.config.api.gamma_api_url,
-            api_key=self.config.api.api_key,
-            api_secret=self.config.api.api_secret,
-            private_key=self.config.api.private_key,
-            timeout=self.config.api.timeout_seconds,
-            max_retries=self.config.api.max_retries,
-            retry_delay=self.config.api.retry_delay_seconds,
-            dry_run=self.config.is_dry_run,
-        )
+        self.client = create_polymarket_client(self.config)
         await self.client.connect()
         
         # Initialize portfolio
@@ -91,6 +88,12 @@ class TradingBot:
             else 0.0
         )
         self.portfolio = Portfolio(initial_balance=initial_balance)
+        if self.config.is_live:
+            live_balance = await self.client.get_usdc_balance()
+            if live_balance is not None:
+                self.portfolio.cash_balance = live_balance
+                self.portfolio.initial_balance = live_balance
+                logger.info(f"Live USDC balance synced: ${live_balance:.2f}")
         
         # Initialize risk manager
         self.risk_manager = RiskManager(RiskConfig(
@@ -104,6 +107,7 @@ class TradingBot:
             blacklist=self.config.risk.blacklist,
             kill_switch_enabled=self.config.risk.kill_switch_enabled,
             auto_unwind_on_breach=self.config.risk.auto_unwind_on_breach,
+            strategy_exposure_limits=self.config.risk.strategy_exposure_limits,
         ))
         
         # Initialize execution engine
@@ -114,8 +118,18 @@ class TradingBot:
             config=ExecutionConfig(
                 slippage_tolerance=self.config.trading.slippage_tolerance,
                 order_timeout_seconds=self.config.trading.order_timeout_seconds,
+                strategy_slippage_tolerances={
+                    "bundle_arb": self.config.trading.arb_slippage_tolerance,
+                    "market_making": self.config.trading.market_making_slippage_tolerance,
+                },
+                strategy_order_timeouts={
+                    "bundle_arb": self.config.trading.arb_order_timeout_seconds,
+                    "market_making": self.config.trading.market_making_order_timeout_seconds,
+                },
+                high_edge_slippage_multiplier=self.config.trading.high_edge_slippage_multiplier,
                 dry_run=self.config.is_dry_run,
             ),
+            paper_trade_store=self.paper_trade_store,
         )
         await self.execution_engine.start()
         
@@ -126,9 +140,14 @@ class TradingBot:
             min_spread=self.config.trading.min_spread,
             mm_enabled=self.config.trading.mm_enabled,
             tick_size=self.config.trading.tick_size,
+            mm_one_sided_enabled=self.config.trading.mm_one_sided_enabled,
             default_order_size=self.config.trading.default_order_size,
             min_order_size=self.config.trading.min_order_size,
             max_order_size=self.config.trading.max_order_size,
+            edge_size_multiplier=self.config.trading.edge_size_multiplier,
+            max_liquidity_fraction=self.config.trading.max_liquidity_fraction,
+            bundle_cooldown_seconds=self.config.trading.bundle_cooldown_seconds,
+            mm_cooldown_seconds=self.config.trading.mm_cooldown_seconds,
         ))
         
         # Initialize data feed
@@ -252,6 +271,9 @@ class TradingBot:
         
         if self.client:
             await self.client.disconnect()
+
+        if self.paper_trade_store:
+            self.paper_trade_store.close()
         
         # Final summary
         if self.portfolio:
@@ -297,6 +319,7 @@ async def run_backtest(config: BotConfig, duration: float = 300.0) -> None:
         max_global_exposure=config.risk.max_global_exposure,
         max_daily_loss=config.risk.max_daily_loss,
         max_drawdown_pct=config.risk.max_drawdown_pct,
+        strategy_exposure_limits=config.risk.strategy_exposure_limits,
     ))
     
     arb_engine = ArbEngine(ArbConfig(
@@ -306,10 +329,18 @@ async def run_backtest(config: BotConfig, duration: float = 300.0) -> None:
         mm_enabled=config.trading.mm_enabled,
         tick_size=config.trading.tick_size,
         default_order_size=config.trading.default_order_size,
+        min_order_size=config.trading.min_order_size,
+        max_order_size=config.trading.max_order_size,
+        edge_size_multiplier=config.trading.edge_size_multiplier,
+        max_liquidity_fraction=config.trading.max_liquidity_fraction,
+        bundle_cooldown_seconds=config.trading.bundle_cooldown_seconds,
+        mm_cooldown_seconds=config.trading.mm_cooldown_seconds,
     ))
     
     # Use placeholder client for execution
-    client = PolymarketClient(dry_run=True)
+    from utils.config_loader import get_default_config
+    demo_config = get_default_config()
+    client = create_polymarket_client(demo_config)
     await client.connect()
     
     execution_engine = ExecutionEngine(

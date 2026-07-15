@@ -15,10 +15,13 @@ from polymarket_client.models import (
     Trade,
     PriceLevel,
 )
-from polymarket_client.api import PolymarketClient
+from polymarket_client.api import PolymarketClient, BasePolymarketClient
+from polymarket_client.factory import create_polymarket_client
 
 __all__ = [
     "PolymarketClient",
+    "BasePolymarketClient",
+    "create_polymarket_client",
     "Market",
     "OrderBook",
     "Order",

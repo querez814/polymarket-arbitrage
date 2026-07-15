@@ -169,6 +169,19 @@ risk:
   max_daily_loss: 10
 ```
 
+#### Generate Polymarket API credentials
+
+If you already have a wallet private key and want to generate the Polymarket CLOB API values, run:
+
+```bash
+uv run --with py-clob-client-v2 python scripts/generate_polymarket_credentials.py \
+  --private-key "$POLYMARKET_PRIVATE_KEY" \
+  --output config.polymarket.yaml
+```
+
+That writes a small YAML fragment containing `api_key`, `api_secret`, and `passphrase`.
+Keep the wallet private key in an environment variable or secret manager instead of committing it.
+
 ### 3. Run with Dashboard
 
 ```bash

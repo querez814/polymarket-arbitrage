@@ -10,13 +10,33 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from utils.time_utils import to_utc_iso, utc_now, utc_now_iso
+from dashboard.trade_history import build_trade_history_payload, get_trade_history_html
+
+if TYPE_CHECKING:
+    from utils.paper_trade_store import PaperTradeStore
+
 logger = logging.getLogger(__name__)
+
+paper_trade_store: Optional["PaperTradeStore"] = None
+display_timezone: str = "America/New_York"
+
+
+def configure_dashboard_runtime(
+    *,
+    store: Optional["PaperTradeStore"] = None,
+    timezone: str = "America/New_York",
+) -> None:
+    """Wire runtime dependencies for dashboard API routes."""
+    global paper_trade_store, display_timezone
+    paper_trade_store = store
+    display_timezone = timezone
 
 
 class DashboardState:
@@ -27,7 +47,14 @@ class DashboardState:
         self.opportunities: list = []
         self.signals: list = []
         self.orders: list = []
+        self.paper_orders: list = []
+        self.paper_history: list = []
         self.trades: list = []
+        self.positions: list = []
+        self.active_trades: list = []
+        self.exposure_breakdown: dict = {}
+        self.decisions: list = []
+        self.decision_summary: dict = {}
         self.portfolio: dict = {}
         self.risk: dict = {}
         self.stats: dict = {}
@@ -35,8 +62,8 @@ class DashboardState:
         self.operational: dict = {}  # Operational stats
         self.is_running: bool = False
         self.mode: str = "dry_run"
-        self.last_update: datetime = datetime.utcnow()
-        self.started_at: datetime = datetime.utcnow()
+        self.last_update: datetime = utc_now()
+        self.started_at: datetime = utc_now()
         
         # Cross-platform (Polymarket + Kalshi)
         self.cross_platform: dict = {
@@ -58,13 +85,20 @@ class DashboardState:
     
     def to_dict(self) -> dict:
         """Convert state to dictionary for JSON serialization."""
-        uptime = (datetime.utcnow() - self.started_at).total_seconds()
+        uptime = (utc_now() - self.started_at).total_seconds()
         return {
             "markets": self.markets,
             "opportunities": self.opportunities[-50:],  # Last 50
             "signals": self.signals[-50:],
             "orders": self.orders,
+            "paper_orders": self.paper_orders[-100:],
+            "paper_history": self.paper_history[-200:],
             "trades": self.trades[-100:],  # Last 100
+            "positions": self.positions,
+            "active_trades": self.active_trades,
+            "exposure_breakdown": self.exposure_breakdown,
+            "decisions": self.decisions[-200:],
+            "decision_summary": self.decision_summary,
             "portfolio": self.portfolio,
             "risk": self.risk,
             "stats": self.stats,
@@ -73,8 +107,9 @@ class DashboardState:
             "cross_platform": self.cross_platform,  # Cross-platform arbitrage stats
             "is_running": self.is_running,
             "mode": self.mode,
-            "last_update": self.last_update.isoformat(),
-            "started_at": self.started_at.isoformat(),
+            "last_update": to_utc_iso(self.last_update),
+            "started_at": to_utc_iso(self.started_at),
+            "display_timezone": display_timezone,
             "uptime_seconds": uptime,
         }
     
@@ -97,31 +132,37 @@ class DashboardState:
     
     def add_opportunity(self, opportunity: dict) -> None:
         """Add a new opportunity."""
-        opportunity["timestamp"] = datetime.utcnow().isoformat()
+        opportunity.setdefault("timestamp", utc_now_iso())
         self.opportunities.append(opportunity)
         if len(self.opportunities) > 200:
             self.opportunities = self.opportunities[-100:]
     
     def add_signal(self, signal: dict) -> None:
         """Add a new signal."""
-        signal["timestamp"] = datetime.utcnow().isoformat()
+        signal.setdefault("timestamp", utc_now_iso())
         self.signals.append(signal)
         if len(self.signals) > 200:
             self.signals = self.signals[-100:]
     
     def add_trade(self, trade: dict) -> None:
         """Add a new trade."""
-        trade["timestamp"] = datetime.utcnow().isoformat()
+        trade.setdefault("timestamp", utc_now_iso())
         self.trades.append(trade)
         if len(self.trades) > 500:
             self.trades = self.trades[-250:]
     
     def add_cross_platform_opportunity(self, opportunity: dict) -> None:
         """Add a cross-platform arbitrage opportunity."""
-        opportunity["timestamp"] = datetime.utcnow().isoformat()
+        opportunity.setdefault("timestamp", utc_now_iso())
         self.cross_platform["cross_opportunities"].append(opportunity)
         if len(self.cross_platform["cross_opportunities"]) > 100:
             self.cross_platform["cross_opportunities"] = self.cross_platform["cross_opportunities"][-50:]
+    
+    def add_decision(self, decision: dict) -> None:
+        """Add a decision journal record."""
+        self.decisions.append(decision)
+        if len(self.decisions) > 1000:
+            self.decisions = self.decisions[-500:]
     
     def update_cross_platform_stats(
         self,
@@ -165,6 +206,39 @@ def create_app() -> FastAPI:
             return html_path.read_text()
         return get_embedded_html()
     
+    @app.get("/history", response_class=HTMLResponse)
+    async def trade_history_page():
+        """Dedicated trade history page with expandable detail view."""
+        return get_trade_history_html()
+
+    @app.get("/api/trade-history")
+    async def get_trade_history(
+        limit: int = Query(default=500, ge=1, le=1000),
+        event_type: Optional[str] = Query(default=None),
+    ):
+        """Enriched trade history for the history page."""
+        if paper_trade_store is None:
+            events = dashboard_state.paper_history[-limit:]
+            if event_type:
+                events = [event for event in events if event.get("event_type") == event_type]
+            timeline_for_order = lambda _order_id: []
+        else:
+            events = [
+                event.to_dict()
+                for event in paper_trade_store.recent_events(limit=limit, event_type=event_type)
+            ]
+            timeline_for_order = lambda order_id: [
+                event.to_dict() for event in paper_trade_store.events_for_order(order_id)
+            ]
+
+        return build_trade_history_payload(
+            events=events,
+            decisions=dashboard_state.decisions[-1000:],
+            display_timezone=display_timezone,
+            mode=dashboard_state.mode,
+            timeline_for_order=timeline_for_order,
+        )
+
     @app.get("/api/state")
     async def get_state():
         """Get current dashboard state."""
@@ -190,10 +264,36 @@ def create_app() -> FastAPI:
         """Get risk metrics."""
         return dashboard_state.risk
     
+    @app.get("/api/decisions")
+    async def get_decisions():
+        """Get recent decision journal records."""
+        return {
+            "decisions": dashboard_state.decisions[-200:],
+            "summary": dashboard_state.decision_summary,
+        }
+    
     @app.get("/api/timing")
     async def get_timing():
         """Get opportunity timing statistics."""
         return dashboard_state.timing
+
+    @app.get("/api/paper-history")
+    async def get_paper_history(
+        limit: int = Query(default=200, ge=1, le=1000),
+        event_type: Optional[str] = Query(default=None),
+    ):
+        """Get persisted paper trade lifecycle events."""
+        if paper_trade_store is None:
+            return {
+                "events": dashboard_state.paper_history[-limit:],
+                "display_timezone": display_timezone,
+            }
+
+        events = paper_trade_store.recent_events(limit=limit, event_type=event_type)
+        return {
+            "events": [event.to_dict() for event in events],
+            "display_timezone": display_timezone,
+        }
     
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -624,6 +724,165 @@ def get_embedded_html() -> str:
         .activity-time {
             color: var(--text-secondary);
             font-size: 0.7rem;
+        }
+
+        /* Paper Trade History */
+        .paper-history-card {
+            grid-column: span 4;
+        }
+
+        .paper-history-toolbar {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .paper-history-filter {
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-radius: 999px;
+            padding: 0.25rem 0.65rem;
+            font-size: 0.7rem;
+            cursor: pointer;
+        }
+
+        .paper-history-filter.active {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .paper-history-table-wrap {
+            max-height: 420px;
+            overflow: auto;
+        }
+
+        .paper-history-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.72rem;
+        }
+
+        .paper-history-table th,
+        .paper-history-table td {
+            padding: 0.45rem 0.5rem;
+            border-bottom: 1px solid var(--border-color);
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .paper-history-table th {
+            position: sticky;
+            top: 0;
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            z-index: 1;
+        }
+
+        .event-badge {
+            display: inline-block;
+            padding: 0.1rem 0.45rem;
+            border-radius: 999px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .event-badge.placed { background: rgba(68, 136, 255, 0.18); color: var(--accent-blue); }
+        .event-badge.filled { background: rgba(0, 255, 136, 0.18); color: var(--accent-green); }
+        .event-badge.rejected { background: rgba(255, 68, 102, 0.18); color: var(--accent-red); }
+        .event-badge.cancelled { background: rgba(255, 170, 0, 0.18); color: #ffaa00; }
+        .event-badge.expired { background: rgba(170, 102, 255, 0.18); color: var(--accent-purple); }
+        
+        /* Decision Journal */
+        .decision-card {
+            grid-column: span 4;
+        }
+        
+        .decision-toolbar {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .decision-filter {
+            border: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            border-radius: 999px;
+            padding: 0.25rem 0.65rem;
+            font-size: 0.7rem;
+            cursor: pointer;
+        }
+        
+        .decision-filter.active {
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+        }
+        
+        .decision-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+            gap: 0.75rem;
+            max-height: 520px;
+            overflow-y: auto;
+        }
+        
+        .decision-item {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-left: 4px solid var(--accent-blue);
+            border-radius: 10px;
+            padding: 0.85rem;
+        }
+        
+        .decision-item.trade { border-left-color: var(--accent-green); }
+        .decision-item.skip { border-left-color: var(--accent-yellow); }
+        .decision-item.reject, .decision-item.error { border-left-color: var(--accent-red); }
+        
+        .decision-topline {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .decision-badge {
+            text-transform: uppercase;
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            background: var(--bg-primary);
+            border-radius: 4px;
+            padding: 0.2rem 0.45rem;
+        }
+        
+        .decision-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            line-height: 1.35;
+            margin-bottom: 0.45rem;
+        }
+        
+        .decision-explanation {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            line-height: 1.4;
+            margin-bottom: 0.55rem;
+        }
+        
+        .decision-evidence {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.35rem;
+            font-size: 0.68rem;
+            color: var(--text-secondary);
+        }
+        
+        .decision-evidence span {
+            background: var(--bg-primary);
+            border-radius: 4px;
+            padding: 0.25rem;
         }
         
         /* Operational Stats Card */
@@ -1303,6 +1562,7 @@ def get_embedded_html() -> str:
     <header class="header">
         <div class="logo">⚡ Polymarket Arbitrage</div>
         <div class="status">
+            <a href="/history" style="color: var(--text-secondary); text-decoration:none; font-size:0.85rem; padding:0.45rem 0.75rem; border:1px solid var(--border-color); border-radius:8px;">Trade History</a>
             <div class="status-indicator">
                 <span class="status-dot" id="statusDot"></span>
                 <span id="statusText">Connecting...</span>
@@ -1366,6 +1626,71 @@ def get_embedded_html() -> str:
                     <div class="empty-state">
                         <div class="empty-icon">📝</div>
                         <div>No activity yet...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Paper Trade History -->
+        <section class="card paper-history-card">
+            <div class="card-header">
+                <span class="card-title">Paper Trade History · <a href="/history" style="color:var(--accent-blue); text-decoration:none; font-size:0.75rem;">Open full page</a></span>
+                <div class="paper-history-toolbar">
+                    <button class="paper-history-filter active" data-paper-filter="all">All</button>
+                    <button class="paper-history-filter" data-paper-filter="placed">Placed</button>
+                    <button class="paper-history-filter" data-paper-filter="filled">Filled</button>
+                    <button class="paper-history-filter" data-paper-filter="rejected">Rejected</button>
+                    <button class="paper-history-filter" data-paper-filter="cancelled">Cancelled</button>
+                    <button class="paper-history-filter" data-paper-filter="expired">Expired</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="paper-history-table-wrap">
+                    <table class="paper-history-table">
+                        <thead>
+                            <tr>
+                                <th>Date/Time (ET)</th>
+                                <th>Event</th>
+                                <th>Market</th>
+                                <th>Side</th>
+                                <th>Token</th>
+                                <th>Price</th>
+                                <th>Size</th>
+                                <th>Notional</th>
+                                <th>Strategy</th>
+                                <th>Order ID</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="paperHistoryBody">
+                            <tr>
+                                <td colspan="11">Waiting for paper trade events...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        
+        <!-- Decision Journal -->
+        <section class="card decision-card">
+            <div class="card-header">
+                <span class="card-title">Decision Journal</span>
+                <div class="decision-toolbar">
+                    <button class="decision-filter active" data-filter="all">All</button>
+                    <button class="decision-filter" data-filter="trade">Trade</button>
+                    <button class="decision-filter" data-filter="skip">Skip</button>
+                    <button class="decision-filter" data-filter="reject">Reject</button>
+                    <button class="decision-filter" data-filter="cross_platform">Cross-platform</button>
+                    <button class="decision-filter" data-filter="bundle_arb">Bundle</button>
+                    <button class="decision-filter" data-filter="market_making">Market-making</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="decision-list" id="decisionList">
+                    <div class="empty-state">
+                        <div class="empty-icon">Log</div>
+                        <div>Waiting for decision records...</div>
                     </div>
                 </div>
             </div>
@@ -1486,7 +1811,7 @@ def get_embedded_html() -> str:
                     </div>
                 </div>
                 
-                <div class="platform-stats" style="grid-template-columns: repeat(4, 1fr);">
+                <div class="platform-stats" style="grid-template-columns: repeat(5, 1fr);">
                     <div class="platform-stat">
                         <div class="platform-stat-value polymarket" id="polymarketMarkets">0</div>
                         <div class="platform-stat-label">Polymarket</div>
@@ -1507,7 +1832,13 @@ def get_embedded_html() -> str:
                         <div class="platform-stat-label">Arb Found</div>
                         <div class="platform-stat-status" id="arbStatus">Scanning...</div>
                     </div>
+                    <div class="platform-stat">
+                        <div class="platform-stat-value kalshi" id="kalshiOrderbooks">0</div>
+                        <div class="platform-stat-label">Kalshi Books</div>
+                        <div class="platform-stat-status" id="kalshiObStatus">Waiting...</div>
+                    </div>
                 </div>
+                <div class="matched-pairs-grid" id="matchedPairsGrid"></div>
             </div>
         </section>
         
@@ -1608,7 +1939,10 @@ def get_embedded_html() -> str:
         let ws = null;
         let state = {};
         let reconnectAttempts = 0;
-        
+        let decisionFilter = 'all';
+        let paperHistoryFilter = 'all';
+        const displayTimezone = 'America/New_York';
+
         function connect() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
@@ -1681,6 +2015,12 @@ def get_embedded_html() -> str:
             
             // Activity
             updateActivity();
+
+            // Paper trade history
+            updatePaperHistory();
+            
+            // Decision Journal
+            updateDecisions();
             
             // Risk
             updateRisk();
@@ -1754,11 +2094,13 @@ def get_embedded_html() -> str:
         function updateActivity() {
             const list = document.getElementById('activityList');
             const signals = state.signals || [];
+            const paperOrders = state.paper_orders || [];
             const trades = state.trades || [];
             
             // Combine and sort by timestamp
             const activities = [
                 ...signals.map(s => ({...s, activityType: 'signal'})),
+                ...paperOrders.map(o => ({...o, activityType: 'paper_order', timestamp: o.created_at || o.updated_at})),
                 ...trades.map(t => ({...t, activityType: 'trade'}))
             ].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 30);
             
@@ -1775,7 +2117,12 @@ def get_embedded_html() -> str:
                 if (act.activityType === 'trade') {
                     icon = '✓';
                     iconClass = 'fill';
-                    message = `${act.side} ${(act.size || 0).toFixed(2)} @ ${(act.price || 0).toFixed(4)}`;
+                    const fillLabel = act.is_simulated ? 'HYPOTHETICAL FILL' : 'FILL';
+                    message = `${fillLabel} ${act.side?.toUpperCase() || ''} ${act.token_type?.toUpperCase() || ''} ${(act.size || 0).toFixed(2)} @ ${(act.price || 0).toFixed(4)} (${formatCurrency(act.notional || 0)})`;
+                } else if (act.activityType === 'paper_order') {
+                    icon = 'P';
+                    iconClass = 'signal';
+                    message = `PAPER ${act.status?.toUpperCase() || 'ORDER'} ${act.side?.toUpperCase() || ''} ${act.token_type?.toUpperCase() || ''} ${(act.size || 0).toFixed(2)} @ ${(act.price || 0).toFixed(4)} (${formatCurrency(act.notional || 0)})`;
                 } else {
                     icon = '→';
                     iconClass = 'signal';
@@ -1787,11 +2134,106 @@ def get_embedded_html() -> str:
                         <div class="activity-icon ${iconClass}">${icon}</div>
                         <div class="activity-content">
                             <div class="activity-message">${message}</div>
-                            <div class="activity-time">${formatTime(act.timestamp)}</div>
+                            <div class="activity-time">
+                                ${act.market_id || ''}
+                                ${act.strategy_tag ? ` · ${act.strategy_tag}` : ''}
+                                ${act.order_id ? ` · ${act.order_id}` : ''}
+                                · ${formatTime(act.timestamp)}
+                            </div>
                         </div>
                     </div>
                 `;
             }).join('');
+        }
+        
+        function updatePaperHistory() {
+            const body = document.getElementById('paperHistoryBody');
+            if (!body) return;
+
+            const events = (state.paper_history || []).filter(event => {
+                if (paperHistoryFilter === 'all') return true;
+                return event.event_type === paperHistoryFilter;
+            }).slice(0, 200);
+
+            if (events.length === 0) {
+                body.innerHTML = '<tr><td colspan="11">No paper trade events yet...</td></tr>';
+                return;
+            }
+
+            body.innerHTML = events.map(event => {
+                const badgeClass = event.event_type || 'placed';
+                const reason = event.reason_code || event.reason_detail || '';
+                return `
+                    <tr>
+                        <td>${formatDateTime(event.event_at_utc || event.timestamp)}</td>
+                        <td><span class="event-badge ${badgeClass}">${badgeClass}</span></td>
+                        <td>${truncate(event.market_id || '', 18)}</td>
+                        <td>${(event.side || '').toUpperCase()}</td>
+                        <td>${(event.token_type || '').toUpperCase()}</td>
+                        <td>${event.price != null ? Number(event.price).toFixed(4) : '--'}</td>
+                        <td>${event.size != null ? Number(event.size).toFixed(2) : '--'}</td>
+                        <td>${event.notional != null ? formatCurrency(event.notional) : '--'}</td>
+                        <td>${event.strategy_tag || '--'}</td>
+                        <td>${truncate(event.order_id || '', 16)}</td>
+                        <td>${reason}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function updateDecisions() {
+            const list = document.getElementById('decisionList');
+            const decisions = state.decisions || [];
+            
+            if (!list) return;
+            
+            const filtered = decisions.filter(dec => {
+                if (decisionFilter === 'all') return true;
+                return dec.outcome === decisionFilter || dec.strategy === decisionFilter;
+            }).slice(-60).reverse();
+            
+            if (filtered.length === 0) {
+                list.innerHTML = '<div class="empty-state"><div class="empty-icon">Log</div><div>No matching decisions yet...</div></div>';
+                return;
+            }
+            
+            list.innerHTML = filtered.map(dec => {
+                const evidence = dec.evidence || {};
+                const evidenceItems = [
+                    ['YES bid/ask', formatPair(evidence.best_bid_yes || evidence.polymarket_yes_bid, evidence.best_ask_yes || evidence.polymarket_yes_ask)],
+                    ['NO bid/ask', formatPair(evidence.best_bid_no || evidence.polymarket_no_bid, evidence.best_ask_no || evidence.polymarket_no_ask)],
+                    ['Net edge', formatMaybePct(evidence.net_edge_long ?? evidence.net_edge_short ?? evidence.edge_pct)],
+                    ['Required', formatMaybePct(evidence.required_net_edge || evidence.required_spread)],
+                    ['Spread', formatMaybePct(evidence.spread)],
+                    ['Similarity', formatMaybePct(evidence.similarity)]
+                ].filter(item => item[1] !== '--');
+                
+                return `
+                    <div class="decision-item ${dec.outcome || ''}">
+                        <div class="decision-topline">
+                            <span class="decision-badge">${dec.outcome || 'decision'} · ${dec.strategy || 'unknown'}</span>
+                            <span class="activity-time">${formatTime(dec.timestamp)}</span>
+                        </div>
+                        <div class="decision-title">${truncate(dec.market_question || dec.market_id || dec.platform || 'Trading decision', 110)}</div>
+                        <div class="decision-explanation">${dec.explanation || dec.reason_code || ''}</div>
+                        <div class="decision-evidence">
+                            ${evidenceItems.map(([label, value]) => `<span>${label}: <strong>${value}</strong></span>`).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+        
+        function formatPair(bid, ask) {
+            if ((bid === undefined || bid === null) && (ask === undefined || ask === null)) return '--';
+            const bidText = bid === undefined || bid === null ? '?' : Number(bid).toFixed(3);
+            const askText = ask === undefined || ask === null ? '?' : Number(ask).toFixed(3);
+            return `${bidText}/${askText}`;
+        }
+        
+        function formatMaybePct(value) {
+            if (value === undefined || value === null) return '--';
+            return `${(Number(value) * 100).toFixed(2)}%`;
         }
         
         function updateRisk() {
@@ -2384,9 +2826,22 @@ def get_embedded_html() -> str:
         }
         
         function formatTime(timestamp) {
+            return formatDateTime(timestamp);
+        }
+
+        function formatDateTime(timestamp) {
             if (!timestamp) return '';
             const date = new Date(timestamp);
-            return date.toLocaleTimeString();
+            if (Number.isNaN(date.getTime())) return '';
+            const tz = state.display_timezone || displayTimezone;
+            return `${date.toLocaleString('en-US', {
+                timeZone: tz,
+                month: 'numeric',
+                day: 'numeric',
+                hour: 'numeric',
+                minute: '2-digit',
+                second: '2-digit',
+            })} ET`;
         }
         
         function addOpportunity(opp) {
@@ -2407,6 +2862,25 @@ def get_embedded_html() -> str:
                 ws.send(JSON.stringify({type: 'ping'}));
             }
         }, 25000);
+        
+        document.addEventListener('click', (event) => {
+            const button = event.target.closest('.decision-filter');
+            if (button) {
+                decisionFilter = button.dataset.filter || 'all';
+                document.querySelectorAll('.decision-filter').forEach(el => el.classList.remove('active'));
+                button.classList.add('active');
+                updateDecisions();
+                return;
+            }
+
+            const paperButton = event.target.closest('.paper-history-filter');
+            if (paperButton) {
+                paperHistoryFilter = paperButton.dataset.paperFilter || 'all';
+                document.querySelectorAll('.paper-history-filter').forEach(el => el.classList.remove('active'));
+                paperButton.classList.add('active');
+                updatePaperHistory();
+            }
+        });
         
         // Fetch initial state via REST as backup
         async function fetchState() {

@@ -593,6 +593,9 @@ class CrossPlatformArbEngine:
         polymarket_taker_fee: float = 0.015,  # 1.5%
         kalshi_taker_fee: float = 0.01,  # ~1% estimate
         gas_cost: float = 0.02,  # Gas cost per order
+        max_order_size: float = 100.0,
+        edge_size_multiplier: float = 4.0,
+        max_liquidity_fraction: float = 1.0,
     ):
         """
         Initialize cross-platform arb engine.
@@ -607,6 +610,9 @@ class CrossPlatformArbEngine:
         self.polymarket_taker_fee = polymarket_taker_fee
         self.kalshi_taker_fee = kalshi_taker_fee
         self.gas_cost = gas_cost
+        self.max_order_size = max_order_size
+        self.edge_size_multiplier = edge_size_multiplier
+        self.max_liquidity_fraction = max_liquidity_fraction
         
         self.matcher = MarketMatcher()
         self._opportunities: list[CrossPlatformOpportunity] = []
@@ -629,6 +635,16 @@ class CrossPlatformArbEngine:
         Returns:
             CrossPlatformOpportunity if found, None otherwise
         """
+        opportunities = self.check_arbitrages(market_pair, polymarket_ob, kalshi_ob)
+        return max(opportunities, key=lambda opportunity: opportunity.net_edge, default=None)
+
+    def check_arbitrages(
+        self,
+        market_pair: MarketPair,
+        polymarket_ob: OrderBook,
+        kalshi_ob: OrderBook,
+    ) -> list[CrossPlatformOpportunity]:
+        """Return every qualifying cross-platform opportunity for a matched market pair."""
         # Get best prices from both platforms
         poly_yes_ask = polymarket_ob.best_ask_yes
         poly_yes_bid = polymarket_ob.best_bid_yes
@@ -642,10 +658,9 @@ class CrossPlatformArbEngine:
         
         # Check for valid prices
         if not all([poly_yes_ask, poly_yes_bid, kalshi_yes_ask, kalshi_yes_bid]):
-            return None
+            return []
         
-        best_opp = None
-        best_net_edge = 0.0
+        opportunities: list[CrossPlatformOpportunity] = []
         
         # Check all possible arbitrage directions:
         
@@ -656,9 +671,8 @@ class CrossPlatformArbEngine:
                     kalshi_yes_bid * self.kalshi_taker_fee + 
                     self.gas_cost * 2)
             net = gross - fees
-            if net > best_net_edge and net >= self.min_edge:
-                best_net_edge = net
-                best_opp = self._create_opportunity(
+            if net >= self.min_edge:
+                opportunities.append(self._create_opportunity(
                     market_pair=market_pair,
                     buy_platform="polymarket",
                     sell_platform="kalshi",
@@ -669,7 +683,7 @@ class CrossPlatformArbEngine:
                     net_edge=net,
                     buy_liquidity=polymarket_ob.yes.asks.best_size or 0,
                     sell_liquidity=kalshi_ob.yes.bids.best_size or 0,
-                )
+                ))
         
         # 2. Buy YES on Kalshi, sell YES on Polymarket
         if kalshi_yes_ask and poly_yes_bid:
@@ -678,9 +692,8 @@ class CrossPlatformArbEngine:
                     poly_yes_bid * self.polymarket_taker_fee + 
                     self.gas_cost * 2)
             net = gross - fees
-            if net > best_net_edge and net >= self.min_edge:
-                best_net_edge = net
-                best_opp = self._create_opportunity(
+            if net >= self.min_edge:
+                opportunities.append(self._create_opportunity(
                     market_pair=market_pair,
                     buy_platform="kalshi",
                     sell_platform="polymarket",
@@ -691,7 +704,7 @@ class CrossPlatformArbEngine:
                     net_edge=net,
                     buy_liquidity=kalshi_ob.yes.asks.best_size or 0,
                     sell_liquidity=polymarket_ob.yes.bids.best_size or 0,
-                )
+                ))
         
         # 3. Buy NO on Polymarket, sell NO on Kalshi
         if poly_no_ask and kalshi_no_bid:
@@ -700,9 +713,8 @@ class CrossPlatformArbEngine:
                     kalshi_no_bid * self.kalshi_taker_fee + 
                     self.gas_cost * 2)
             net = gross - fees
-            if net > best_net_edge and net >= self.min_edge:
-                best_net_edge = net
-                best_opp = self._create_opportunity(
+            if net >= self.min_edge:
+                opportunities.append(self._create_opportunity(
                     market_pair=market_pair,
                     buy_platform="polymarket",
                     sell_platform="kalshi",
@@ -713,7 +725,7 @@ class CrossPlatformArbEngine:
                     net_edge=net,
                     buy_liquidity=polymarket_ob.no.asks.best_size or 0,
                     sell_liquidity=kalshi_ob.no.bids.best_size or 0,
-                )
+                ))
         
         # 4. Buy NO on Kalshi, sell NO on Polymarket
         if kalshi_no_ask and poly_no_bid:
@@ -722,9 +734,8 @@ class CrossPlatformArbEngine:
                     poly_no_bid * self.polymarket_taker_fee + 
                     self.gas_cost * 2)
             net = gross - fees
-            if net > best_net_edge and net >= self.min_edge:
-                best_net_edge = net
-                best_opp = self._create_opportunity(
+            if net >= self.min_edge:
+                opportunities.append(self._create_opportunity(
                     market_pair=market_pair,
                     buy_platform="kalshi",
                     sell_platform="polymarket",
@@ -735,13 +746,14 @@ class CrossPlatformArbEngine:
                     net_edge=net,
                     buy_liquidity=kalshi_ob.no.asks.best_size or 0,
                     sell_liquidity=polymarket_ob.no.bids.best_size or 0,
-                )
+                ))
         
-        if best_opp:
-            self._opportunities.append(best_opp)
-            logger.info(f"🎯 CROSS-PLATFORM ARB: {best_opp}")
+        if opportunities:
+            self._opportunities.extend(opportunities)
+            for opportunity in opportunities:
+                logger.info(f"CROSS-PLATFORM ARB: {opportunity}")
         
-        return best_opp
+        return opportunities
     
     def _create_opportunity(
         self,
@@ -759,11 +771,14 @@ class CrossPlatformArbEngine:
         """Create a cross-platform opportunity object."""
         self._opportunity_count += 1
         
-        # Calculate max size based on available liquidity
         max_size = min(buy_liquidity, sell_liquidity)
-        
-        # Suggested size: smaller of max_size or $100 for safety
-        suggested_size = min(max_size, 100.0)
+        liquidity_cap = max_size * self.max_liquidity_fraction
+        edge_ratio = max(0.0, net_edge / max(self.min_edge, 0.0001))
+        suggested_size = min(
+            liquidity_cap,
+            self.max_order_size,
+            max_size * min(1.0, edge_ratio / max(self.edge_size_multiplier, 1.0)),
+        )
         
         return CrossPlatformOpportunity(
             opportunity_id=f"xplat_{self._opportunity_count}",

@@ -10,9 +10,13 @@ API Documentation: https://docs.kalshi.com/getting_started/quick_start_market_da
 
 import asyncio
 import logging
-from datetime import datetime
-from typing import Optional, AsyncIterator
+import time
+from collections.abc import Callable
+from datetime import datetime, timezone
+from typing import Any, Optional, AsyncIterator
 import httpx
+
+from kalshi_client.auth import auth_headers, load_private_key, sign_path_for_url
 
 from kalshi_client.models import (
     KalshiMarket,
@@ -37,6 +41,9 @@ class KalshiClient:
     
     def __init__(
         self,
+        base_url: Optional[str] = None,
+        api_key_id: Optional[str] = None,
+        private_key_path: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = 3,
         dry_run: bool = True,
@@ -45,15 +52,28 @@ class KalshiClient:
         Initialize Kalshi client.
         
         Args:
+            base_url: Kalshi trade API base URL (includes /trade-api/v2)
+            api_key_id: Kalshi API key UUID (KALSHI-ACCESS-KEY)
+            private_key_path: Path to RSA private key PEM from Kalshi key creation
             timeout: Request timeout in seconds
             max_retries: Maximum number of retry attempts
-            dry_run: If True, don't place real orders (read-only mode)
+            dry_run: If True, don't place real orders
         """
+        self.base_url = (base_url or self.BASE_URL).rstrip("/")
+        self.api_key_id = api_key_id or ""
+        self.private_key_path = private_key_path or ""
+        self._private_key = None
+        if private_key_path:
+            self._private_key = load_private_key(private_key_path)
         self.timeout = timeout
         self.max_retries = max_retries
         self.dry_run = dry_run
         self._client: Optional[httpx.AsyncClient] = None
         self._markets_cache: dict[str, KalshiMarket] = {}
+
+    @property
+    def is_authenticated(self) -> bool:
+        return bool(self.api_key_id and self._private_key)
         
     async def __aenter__(self) -> "KalshiClient":
         """Async context manager entry."""
@@ -83,7 +103,7 @@ class KalshiClient:
         if not self._client:
             raise RuntimeError("Client not initialized. Use async with context manager.")
         
-        url = f"{self.BASE_URL}{endpoint}"
+        url = f"{self.base_url}{endpoint}"
         
         for attempt in range(self.max_retries):
             try:
@@ -109,6 +129,105 @@ class KalshiClient:
                     raise
         
         return {}
+
+    def _auth_headers(self, method: str, endpoint: str) -> dict[str, str]:
+        if not self.is_authenticated:
+            raise RuntimeError(
+                "Kalshi API key id and private key path are required for authenticated requests"
+            )
+        timestamp_ms = str(int(time.time() * 1000))
+        sign_path = sign_path_for_url(self.base_url, endpoint)
+        return auth_headers(
+            self._private_key,
+            self.api_key_id,
+            timestamp_ms,
+            method,
+            sign_path,
+        )
+
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        params: Optional[dict] = None,
+        json_body: Optional[dict] = None,
+        authenticated: bool = False,
+    ) -> dict[str, Any]:
+        if not self._client:
+            raise RuntimeError("Client not initialized. Use async with context manager.")
+
+        url = f"{self.base_url}{endpoint}"
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if authenticated:
+            headers.update(self._auth_headers(method, endpoint))
+
+        for attempt in range(self.max_retries):
+            try:
+                response = await self._client.request(
+                    method.upper(),
+                    url,
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                )
+                response.raise_for_status()
+                if not response.content:
+                    return {}
+                return response.json()
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Rate limited, waiting {wait_time}s before retry")
+                    await asyncio.sleep(wait_time)
+                elif e.response.status_code == 404:
+                    logger.debug(f"Not found: {endpoint}")
+                    return {}
+                else:
+                    logger.error(f"HTTP error {e.response.status_code}: {e}")
+                    raise
+            except httpx.RequestError as e:
+                logger.warning(f"Request error (attempt {attempt + 1}): {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(1)
+                else:
+                    raise
+
+        return {}
+
+    # =========================================================================
+    # EXCHANGE / PORTFOLIO (auth optional for status; balance needs auth)
+    # =========================================================================
+
+    async def get_exchange_status(self) -> dict[str, Any]:
+        """GET /exchange/status — public, no auth required."""
+        return await self._get("/exchange/status")
+
+    async def get_balance(self) -> Optional[dict[str, Any]]:
+        """GET /portfolio/balance — requires API key + RSA private key."""
+        data = await self._request("GET", "/portfolio/balance", authenticated=True)
+        return data or None
+
+    async def get_balance_dollars(self) -> Optional[float]:
+        """Available buying power in USD."""
+        data = await self.get_balance()
+        if not data:
+            return None
+        if data.get("balance_dollars") is not None:
+            return float(data["balance_dollars"])
+        if data.get("balance") is not None:
+            return float(data["balance"]) / 100.0
+        return None
+
+    async def get_positions(self, limit: int = 100) -> list[dict[str, Any]]:
+        """GET /portfolio/positions — requires authentication."""
+        data = await self._request(
+            "GET",
+            "/portfolio/positions",
+            params={"limit": limit},
+            authenticated=True,
+        )
+        return data.get("market_positions", []) if data else []
     
     # =========================================================================
     # SERIES ENDPOINTS
@@ -213,7 +332,7 @@ class KalshiClient:
         self,
         status: str = "open",
         max_markets: int = 10000,
-        on_progress: callable = None,  # Callback for progress updates
+        on_progress: Optional[Callable[[int], None]] = None,  # Callback for progress updates
     ) -> list[KalshiMarket]:
         """
         Fetch all markets with pagination.
@@ -246,8 +365,8 @@ class KalshiClient:
             if on_progress:
                 try:
                     on_progress(len(all_markets))
-                except:
-                    pass
+                except Exception as exc:
+                    logger.debug("Kalshi progress callback failed: %s", exc)
             
             if not next_cursor:
                 break
@@ -281,6 +400,31 @@ class KalshiClient:
         if market:
             self._markets_cache[ticker] = market
         return market
+
+    async def list_historical_markets(
+        self,
+        max_markets: int = 1000,
+        cursor: Optional[str] = None,
+    ) -> tuple[list[KalshiMarket], Optional[str]]:
+        """
+        List markets archived to Kalshi historical data.
+        """
+        params = {"limit": min(max_markets, 1000)}
+        if cursor:
+            params["cursor"] = cursor
+
+        data = await self._get("/historical/markets", params=params)
+        if not data or "markets" not in data:
+            return [], None
+
+        markets = []
+        for item in data["markets"][:max_markets]:
+            market = self._parse_market(item)
+            if market:
+                markets.append(market)
+                self._markets_cache[market.ticker] = market
+
+        return markets, data.get("cursor")
     
     def _parse_market(self, data: dict) -> Optional[KalshiMarket]:
         """Parse market data from API response."""
@@ -298,9 +442,12 @@ class KalshiClient:
             if data.get("close_time"):
                 try:
                     close_time = datetime.fromisoformat(data["close_time"].replace("Z", "+00:00"))
-                except:
-                    pass
+                except (TypeError, ValueError) as exc:
+                    logger.debug("Failed to parse Kalshi close_time %r: %s", data.get("close_time"), exc)
             
+            volume = data.get("volume", data.get("volume_fp", 0))
+            open_interest = data.get("open_interest", data.get("open_interest_fp", 0))
+
             return KalshiMarket(
                 ticker=data.get("ticker", ""),
                 event_ticker=data.get("event_ticker", ""),
@@ -311,8 +458,8 @@ class KalshiClient:
                 no_price=no_price,
                 status=data.get("status", ""),
                 result=data.get("result"),
-                volume=data.get("volume", 0),
-                open_interest=data.get("open_interest", 0),
+                volume=int(float(volume or 0)),
+                open_interest=int(float(open_interest or 0)),
                 close_time=close_time,
                 category=data.get("category", ""),
             )
@@ -335,13 +482,30 @@ class KalshiClient:
             KalshiOrderBook object or None if not found
         """
         data = await self._get(f"/markets/{ticker}/orderbook")
-        if not data or "orderbook" not in data:
+        if not data:
             return None
-        
-        ob = data["orderbook"]
-        
-        # Parse YES bids (prices in cents)
+
         yes_bids = []
+        no_bids = []
+
+        # Newer fractional-trading shape: dollar strings under orderbook_fp.
+        ob_fp = data.get("orderbook_fp")
+        if ob_fp:
+            for level in ob_fp.get("yes_dollars", []):
+                if len(level) >= 2:
+                    yes_bids.append(PriceLevel(
+                        price=float(level[0]),
+                        size=float(level[1]),
+                    ))
+            for level in ob_fp.get("no_dollars", []):
+                if len(level) >= 2:
+                    no_bids.append(PriceLevel(
+                        price=float(level[0]),
+                        size=float(level[1]),
+                    ))
+
+        # Older shape: cent integer levels under orderbook.
+        ob = data.get("orderbook", {})
         for level in ob.get("yes", []):
             if len(level) >= 2:
                 price_cents = level[0]
@@ -350,9 +514,6 @@ class KalshiClient:
                     price=price_cents / 100.0,  # Convert to dollars
                     size=float(quantity)
                 ))
-        
-        # Parse NO bids (prices in cents)
-        no_bids = []
         for level in ob.get("no", []):
             if len(level) >= 2:
                 price_cents = level[0]
@@ -370,7 +531,7 @@ class KalshiClient:
             ticker=ticker,
             yes_bids=yes_bids,
             no_bids=no_bids,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
     
     async def get_orderbook_unified(self, ticker: str) -> Optional[OrderBook]:
@@ -387,6 +548,59 @@ class KalshiClient:
         if not kalshi_ob:
             return None
         return kalshi_ob.to_unified_orderbook()
+
+    async def get_market_candlesticks(
+        self,
+        series_ticker: str,
+        ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 60,
+        include_latest_before_start: bool = False,
+    ) -> list[dict]:
+        """
+        Fetch candlesticks for an active Kalshi market.
+
+        Args:
+            series_ticker: Series ticker for the market.
+            ticker: Market ticker.
+            start_ts: Unix start timestamp in seconds.
+            end_ts: Unix end timestamp in seconds.
+            period_interval: Candle length in minutes (1, 60, or 1440).
+            include_latest_before_start: Include Kalshi's synthetic continuity candle.
+        """
+        params = {
+            "start_ts": int(start_ts),
+            "end_ts": int(end_ts),
+            "period_interval": int(period_interval),
+            "include_latest_before_start": str(include_latest_before_start).lower(),
+        }
+        data = await self._get(
+            f"/series/{series_ticker}/markets/{ticker}/candlesticks",
+            params=params,
+        )
+        return data.get("candlesticks", []) if isinstance(data, dict) else []
+
+    async def get_historical_market_candlesticks(
+        self,
+        ticker: str,
+        start_ts: int,
+        end_ts: int,
+        period_interval: int = 60,
+    ) -> list[dict]:
+        """
+        Fetch candlesticks for a Kalshi market archived to historical data.
+        """
+        params = {
+            "start_ts": int(start_ts),
+            "end_ts": int(end_ts),
+            "period_interval": int(period_interval),
+        }
+        data = await self._get(
+            f"/historical/markets/{ticker}/candlesticks",
+            params=params,
+        )
+        return data.get("candlesticks", []) if isinstance(data, dict) else []
     
     # =========================================================================
     # STREAMING (Polling-based for public API)
@@ -460,4 +674,3 @@ class KalshiClient:
             m for m in all_markets 
             if query_lower in m.title.lower() or query_lower in m.subtitle.lower()
         ]
-

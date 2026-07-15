@@ -25,10 +25,18 @@ class ApiConfig:
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     gamma_api_url: str = "https://gamma-api.polymarket.com"
     kalshi_api_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+    kalshi_api_key_id: str = ""
+    kalshi_private_key_path: str = ""
     api_key: str = ""
     api_secret: str = ""
     passphrase: str = ""
     private_key: str = ""
+    chain_id: int = 137
+    polymarket_platform: str = "global"  # "global" or "us"
+    polymarket_us_api_url: str = "https://api.polymarket.us"
+    polymarket_us_gateway_url: str = "https://gateway.polymarket.us"
+    polymarket_us_key_id: str = ""
+    polymarket_us_secret_key: str = ""
     timeout_seconds: float = 30.0
     max_retries: int = 3
     retry_delay_seconds: float = 1.0
@@ -37,17 +45,31 @@ class ApiConfig:
 @dataclass
 class TradingConfig:
     """Trading configuration."""
+    risk_profile: str = "conservative"
     markets: list[str] = field(default_factory=list)
     min_edge: float = 0.01
     bundle_arb_enabled: bool = True
+    bundle_cooldown_seconds: float = 2.0
     min_spread: float = 0.05
     tick_size: float = 0.01
     mm_enabled: bool = True
+    mm_cooldown_seconds: float = 5.0
+    mm_one_sided_enabled: bool = False
     default_order_size: float = 50.0
     min_order_size: float = 5.0
     max_order_size: float = 200.0
+    edge_size_multiplier: float = 4.0
+    max_liquidity_fraction: float = 1.0
     slippage_tolerance: float = 0.02
+    arb_slippage_tolerance: float = 0.02
+    market_making_slippage_tolerance: float = 0.01
+    high_edge_slippage_multiplier: float = 1.5
     order_timeout_seconds: float = 60.0
+    arb_order_timeout_seconds: float = 15.0
+    market_making_order_timeout_seconds: float = 20.0
+    cross_platform_max_order_size: float = 100.0
+    cross_platform_edge_size_multiplier: float = 4.0
+    cross_platform_max_liquidity_fraction: float = 1.0
 
 
 @dataclass
@@ -61,6 +83,7 @@ class RiskConfig:
     min_24h_volume: float = 10000.0
     whitelist: list[str] = field(default_factory=list)
     blacklist: list[str] = field(default_factory=list)
+    strategy_exposure_limits: dict[str, float] = field(default_factory=dict)
     kill_switch_enabled: bool = True
     auto_unwind_on_breach: bool = False
 
@@ -74,8 +97,8 @@ class ModeConfig:
     kalshi_enabled: bool = True  # Enable Kalshi market monitoring
     min_match_similarity: float = 0.6  # Minimum similarity score for market matching (0-1)
     dry_run_initial_balance: float = 10000.0
-    simulate_fills: bool = True
-    fill_probability: float = 0.8
+    simulate_fills: bool = False
+    fill_probability: float = 0.0
 
 
 @dataclass
@@ -98,6 +121,8 @@ class MonitoringConfig:
     heartbeat_interval: float = 30.0
     track_latency: bool = True
     track_fill_rates: bool = True
+    paper_trade_db_path: str = "data/paper_trades.db"
+    display_timezone: str = "America/New_York"
 
 
 @dataclass
@@ -110,6 +135,10 @@ class BotConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     
+    @property
+    def is_polymarket_us(self) -> bool:
+        return self.api.polymarket_platform.lower() == "us"
+
     @property
     def is_dry_run(self) -> bool:
         return self.mode.trading_mode.lower() == "dry_run"
@@ -165,8 +194,19 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         "api_secret": "POLYMARKET_API_SECRET",
         "passphrase": "POLYMARKET_PASSPHRASE",
         "private_key": "POLYMARKET_PRIVATE_KEY",
+        "chain_id": "POLYMARKET_CHAIN_ID",
+        "polymarket_platform": "POLYMARKET_PLATFORM",
+        "polymarket_us_key_id": "POLYMARKET_US_KEY_ID",
+        "polymarket_us_secret_key": "POLYMARKET_US_SECRET_KEY",
+        "polymarket_us_api_url": "POLYMARKET_US_API_URL",
+        "polymarket_us_gateway_url": "POLYMARKET_US_GATEWAY_URL",
+        "kalshi_api_url": "KALSHI_API_URL",
+        "kalshi_api_key_id": "KALSHI_API_KEY_ID",
+        "kalshi_private_key_path": "KALSHI_PRIVATE_KEY_PATH",
     })
     
+    _apply_risk_profile_defaults(trading_data, risk_data)
+
     # Build config objects
     config = BotConfig(
         api=_build_dataclass(ApiConfig, api_data),
@@ -189,7 +229,10 @@ def _apply_env_overrides(data: dict, env_map: dict[str, str]) -> dict:
     for key, env_var in env_map.items():
         env_value = os.environ.get(env_var)
         if env_value:
-            result[key] = env_value
+            if key == "chain_id":
+                result[key] = int(env_value)
+            else:
+                result[key] = env_value
     return result
 
 
@@ -202,11 +245,86 @@ def _build_dataclass(cls, data: dict):
     return cls(**filtered_data)
 
 
+def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
+    """Apply profile defaults only where the config did not set explicit values."""
+    profile = str(trading_data.get("risk_profile", "conservative")).lower()
+    profiles: dict[str, dict[str, dict[str, Any]]] = {
+        "conservative": {
+            "trading": {},
+            "risk": {},
+        },
+        "balanced": {
+            "trading": {
+                "min_edge": 0.0075,
+                "min_spread": 0.035,
+                "bundle_cooldown_seconds": 1.0,
+                "mm_cooldown_seconds": 3.0,
+                "default_order_size": 10.0,
+                "max_order_size": 20.0,
+                "edge_size_multiplier": 5.0,
+                "max_liquidity_fraction": 0.75,
+            },
+            "risk": {
+                "max_position_per_market": 25.0,
+                "max_global_exposure": 75.0,
+                "max_daily_loss": 15.0,
+                "strategy_exposure_limits": {
+                    "bundle_arb": 50.0,
+                    "market_making": 25.0,
+                    "cross_platform_arb": 50.0,
+                },
+            },
+        },
+        "aggressive": {
+            "trading": {
+                "min_edge": 0.005,
+                "min_spread": 0.025,
+                "mm_enabled": True,
+                "mm_one_sided_enabled": True,
+                "bundle_cooldown_seconds": 0.5,
+                "mm_cooldown_seconds": 1.0,
+                "default_order_size": 15.0,
+                "max_order_size": 30.0,
+                "edge_size_multiplier": 7.5,
+                "max_liquidity_fraction": 0.85,
+                "arb_slippage_tolerance": 0.03,
+                "market_making_slippage_tolerance": 0.015,
+                "arb_order_timeout_seconds": 8.0,
+                "market_making_order_timeout_seconds": 12.0,
+                "cross_platform_max_order_size": 30.0,
+                "cross_platform_edge_size_multiplier": 7.5,
+                "cross_platform_max_liquidity_fraction": 0.85,
+            },
+            "risk": {
+                "max_position_per_market": 35.0,
+                "max_global_exposure": 100.0,
+                "max_daily_loss": 20.0,
+                "strategy_exposure_limits": {
+                    "bundle_arb": 70.0,
+                    "market_making": 35.0,
+                    "cross_platform_arb": 70.0,
+                },
+            },
+        },
+    }
+
+    if profile not in profiles:
+        return
+
+    for key, value in profiles[profile]["trading"].items():
+        trading_data.setdefault(key, value)
+    for key, value in profiles[profile]["risk"].items():
+        risk_data.setdefault(key, value)
+
+
 def _validate_config(config: BotConfig) -> None:
     """Validate configuration values."""
     errors = []
     
     # Trading validation
+    if config.trading.risk_profile.lower() not in ("conservative", "balanced", "aggressive"):
+        errors.append("trading.risk_profile must be 'conservative', 'balanced', or 'aggressive'")
+
     if config.trading.min_edge < 0 or config.trading.min_edge > 1:
         errors.append("trading.min_edge must be between 0 and 1")
     
@@ -218,6 +336,24 @@ def _validate_config(config: BotConfig) -> None:
     
     if config.trading.default_order_size <= 0:
         errors.append("trading.default_order_size must be positive")
+
+    if config.trading.min_order_size <= 0:
+        errors.append("trading.min_order_size must be positive")
+
+    if config.trading.max_order_size < config.trading.min_order_size:
+        errors.append("trading.max_order_size must be >= trading.min_order_size")
+
+    if config.trading.bundle_cooldown_seconds < 0:
+        errors.append("trading.bundle_cooldown_seconds must be non-negative")
+
+    if config.trading.mm_cooldown_seconds < 0:
+        errors.append("trading.mm_cooldown_seconds must be non-negative")
+
+    if config.trading.max_liquidity_fraction <= 0 or config.trading.max_liquidity_fraction > 1:
+        errors.append("trading.max_liquidity_fraction must be between 0 and 1")
+
+    if config.trading.cross_platform_max_liquidity_fraction <= 0 or config.trading.cross_platform_max_liquidity_fraction > 1:
+        errors.append("trading.cross_platform_max_liquidity_fraction must be between 0 and 1")
     
     # Risk validation
     if config.risk.max_position_per_market <= 0:
@@ -231,6 +367,10 @@ def _validate_config(config: BotConfig) -> None:
     
     if config.risk.max_drawdown_pct < 0 or config.risk.max_drawdown_pct > 1:
         errors.append("risk.max_drawdown_pct must be between 0 and 1")
+
+    for strategy, limit in config.risk.strategy_exposure_limits.items():
+        if limit < 0:
+            errors.append(f"risk.strategy_exposure_limits.{strategy} must be non-negative")
     
     # Mode validation
     if config.mode.trading_mode.lower() not in ("live", "dry_run"):
@@ -238,10 +378,23 @@ def _validate_config(config: BotConfig) -> None:
     
     # Live mode checks
     if config.is_live:
-        if not config.api.api_key or config.api.api_key == "YOUR_API_KEY_HERE":
-            errors.append("api.api_key is required for live trading")
-        if not config.api.private_key or config.api.private_key == "YOUR_PRIVATE_KEY_HERE":
-            errors.append("api.private_key is required for live trading")
+        if config.is_polymarket_us:
+            if not config.api.polymarket_us_key_id:
+                errors.append("api.polymarket_us_key_id is required for live Polymarket US trading")
+            if not config.api.polymarket_us_secret_key:
+                errors.append("api.polymarket_us_secret_key is required for live Polymarket US trading")
+        else:
+            if not config.api.api_key or config.api.api_key == "YOUR_API_KEY_HERE":
+                errors.append("api.api_key is required for live Polymarket Global trading")
+            if not config.api.api_secret or config.api.api_secret == "YOUR_API_SECRET_HERE":
+                errors.append("api.api_secret is required for live Polymarket Global trading")
+            if not config.api.passphrase or config.api.passphrase == "YOUR_PASSPHRASE_HERE":
+                errors.append("api.passphrase is required for live Polymarket Global trading")
+            if not config.api.private_key or config.api.private_key == "YOUR_PRIVATE_KEY_HERE":
+                errors.append("api.private_key is required for live Polymarket Global trading")
+
+    if config.api.polymarket_platform.lower() not in ("global", "us"):
+        errors.append("api.polymarket_platform must be 'global' or 'us'")
     
     if errors:
         raise ConfigError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -265,4 +418,3 @@ def save_config(config: BotConfig, config_path: str = "config.yaml") -> None:
 def get_default_config() -> BotConfig:
     """Get a default configuration."""
     return BotConfig()
-

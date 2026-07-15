@@ -22,6 +22,7 @@ from polymarket_client.models import (
     Signal,
     TokenType,
 )
+from core.decision_journal import DecisionJournal, DecisionOutcome
 
 
 logger = logging.getLogger(__name__)
@@ -38,14 +39,19 @@ class ArbConfig:
     min_spread: float = 0.05  # Minimum spread to MM (5c)
     mm_enabled: bool = True
     tick_size: float = 0.01
+    mm_one_sided_enabled: bool = False
     
     # Sizing
     default_order_size: float = 50.0
     min_order_size: float = 5.0
     max_order_size: float = 200.0
+    edge_size_multiplier: float = 4.0
+    max_liquidity_fraction: float = 1.0
     
     # Signal expiry
     signal_expiry_seconds: float = 5.0
+    bundle_cooldown_seconds: float = 2.0
+    mm_cooldown_seconds: float = 5.0
     
     # Fees (in basis points - 100 bps = 1%)
     # Polymarket: ~0% maker, ~1.5% taker
@@ -100,8 +106,9 @@ class ArbEngine:
     signals for the ExecutionEngine.
     """
     
-    def __init__(self, config: ArbConfig):
+    def __init__(self, config: ArbConfig, decision_journal: Optional[DecisionJournal] = None):
         self.config = config
+        self.decision_journal = decision_journal
         self.stats = ArbStats()
         
         # Track recent opportunities to avoid duplicates
@@ -111,6 +118,7 @@ class ArbEngine:
         # Track active opportunities for duration measurement
         self._active_opportunities: dict[str, OpportunityTiming] = {}
         self._opportunity_history: list[OpportunityTiming] = []
+        self._decision_cooldown: dict[str, datetime] = {}
         
         logger.info(f"ArbEngine initialized with min_edge={config.min_edge}, min_spread={config.min_spread}")
     
@@ -130,13 +138,13 @@ class ArbEngine:
         
         # Check for bundle arbitrage
         if self.config.bundle_arb_enabled:
-            bundle_signal = self._check_bundle_arbitrage(market_id, order_book)
+            bundle_signal = self._check_bundle_arbitrage(market_state)
             if bundle_signal:
                 signals.append(bundle_signal)
         
         # Check for market-making opportunities
         if self.config.mm_enabled:
-            mm_signals = self._check_market_making(market_id, order_book)
+            mm_signals = self._check_market_making(market_state)
             signals.extend(mm_signals)
         
         return signals
@@ -273,7 +281,44 @@ class ArbEngine:
             ]
         }
     
-    def _check_bundle_arbitrage(self, market_id: str, order_book: OrderBook) -> Optional[Signal]:
+    def _record_decision(
+        self,
+        *,
+        strategy: str,
+        outcome: DecisionOutcome,
+        reason_code: str,
+        explanation: str,
+        market_state: MarketState,
+        evidence: dict,
+        orders: Optional[list[dict]] = None,
+        cooldown_seconds: float = 10.0,
+    ) -> None:
+        """Record a bounded, de-spammed decision journal entry."""
+        if not self.decision_journal:
+            return
+
+        market_id = market_state.market.market_id
+        cooldown_key = f"{strategy}:{outcome.value}:{reason_code}:{market_id}"
+        now = datetime.utcnow()
+        if cooldown_key in self._decision_cooldown and now < self._decision_cooldown[cooldown_key]:
+            return
+        self._decision_cooldown[cooldown_key] = now + timedelta(seconds=cooldown_seconds)
+
+        self.decision_journal.add_decision(
+            decision_id=f"dec_{uuid.uuid4().hex[:12]}",
+            strategy=strategy,
+            outcome=outcome,
+            reason_code=reason_code,
+            explanation=explanation,
+            market_id=market_id,
+            platform="polymarket",
+            market_question=market_state.market.question,
+            category=market_state.market.category,
+            evidence=evidence,
+            orders=orders or [],
+        )
+
+    def _check_bundle_arbitrage(self, market_state: MarketState) -> Optional[Signal]:
         """
         Check for bundle mispricing opportunities.
         
@@ -282,6 +327,9 @@ class ArbEngine:
         
         Fees are factored in to ensure net profitability!
         """
+        market_id = market_state.market.market_id
+        order_book = market_state.order_book
+
         # Get prices
         best_ask_yes = order_book.best_ask_yes
         best_ask_no = order_book.best_ask_no
@@ -290,6 +338,21 @@ class ArbEngine:
         
         # Need all prices to evaluate
         if None in (best_ask_yes, best_ask_no, best_bid_yes, best_bid_no):
+            self._record_decision(
+                strategy="bundle_arb",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="missing_price",
+                explanation="Skipped bundle arbitrage because one or more YES/NO bid/ask prices are missing.",
+                market_state=market_state,
+                evidence={
+                    "best_bid_yes": best_bid_yes,
+                    "best_ask_yes": best_ask_yes,
+                    "best_bid_no": best_bid_no,
+                    "best_ask_no": best_ask_no,
+                    "required_net_edge": self.config.min_edge,
+                },
+                cooldown_seconds=30.0,
+            )
             return None
         
         total_ask = best_ask_yes + best_ask_no
@@ -322,17 +385,20 @@ class ArbEngine:
             no_ask_size = order_book.no.best_ask_size or 0
             max_size = min(yes_ask_size, no_ask_size)
             
-            suggested_size = min(
-                self.config.default_order_size / max(best_ask_yes, best_ask_no),
-                max_size
+            suggested_size = self._size_for_opportunity(
+                edge=edge,
+                max_size=max_size,
+                reference_price=max(best_ask_yes, best_ask_no),
             )
-            suggested_size = max(self.config.min_order_size, suggested_size)
+            if suggested_size is None:
+                return None
             
             opportunity = Opportunity(
                 opportunity_id=f"bundle_long_{uuid.uuid4().hex[:8]}",
                 opportunity_type=OpportunityType.BUNDLE_LONG,
                 market_id=market_id,
                 edge=edge,
+                market_question=market_state.market.question,
                 best_bid_yes=best_bid_yes,
                 best_ask_yes=best_ask_yes,
                 best_bid_no=best_bid_no,
@@ -354,6 +420,22 @@ class ArbEngine:
         gross_edge_short = total_bid - 1.0
         net_edge_short = gross_edge_short - fee_cost_short - gas_cost
         
+        bundle_evidence = {
+            "best_bid_yes": best_bid_yes,
+            "best_ask_yes": best_ask_yes,
+            "best_bid_no": best_bid_no,
+            "best_ask_no": best_ask_no,
+            "total_ask": total_ask,
+            "total_bid": total_bid,
+            "gross_edge_long": gross_edge_long,
+            "net_edge_long": net_edge_long,
+            "gross_edge_short": gross_edge_short,
+            "net_edge_short": net_edge_short,
+            "taker_fee_pct": taker_fee_pct,
+            "gas_cost": gas_cost,
+            "required_net_edge": self.config.min_edge,
+        }
+        
         if opportunity is None and net_edge_short >= self.config.min_edge:
             edge = net_edge_short  # Use NET edge (after fees)
             
@@ -362,17 +444,20 @@ class ArbEngine:
             no_bid_size = order_book.no.best_bid_size or 0
             max_size = min(yes_bid_size, no_bid_size)
             
-            suggested_size = min(
-                self.config.default_order_size / max(best_bid_yes, best_bid_no),
-                max_size
+            suggested_size = self._size_for_opportunity(
+                edge=edge,
+                max_size=max_size,
+                reference_price=max(best_bid_yes, best_bid_no),
             )
-            suggested_size = max(self.config.min_order_size, suggested_size)
+            if suggested_size is None:
+                return None
             
             opportunity = Opportunity(
                 opportunity_id=f"bundle_short_{uuid.uuid4().hex[:8]}",
                 opportunity_type=OpportunityType.BUNDLE_SHORT,
                 market_id=market_id,
                 edge=edge,
+                market_question=market_state.market.question,
                 best_bid_yes=best_bid_yes,
                 best_ask_yes=best_ask_yes,
                 best_bid_no=best_bid_no,
@@ -391,6 +476,19 @@ class ArbEngine:
             )
         
         if not opportunity:
+            best_net_edge = max(net_edge_long, net_edge_short)
+            self._record_decision(
+                strategy="bundle_arb",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="edge_below_threshold",
+                explanation=(
+                    f"Skipped bundle arbitrage: best net edge {best_net_edge:.2%} "
+                    f"is below required {self.config.min_edge:.2%}."
+                ),
+                market_state=market_state,
+                evidence=bundle_evidence,
+                cooldown_seconds=15.0,
+            )
             return None
         
         # Check cooldown to avoid spam
@@ -399,7 +497,9 @@ class ArbEngine:
             if datetime.utcnow() < self._opportunity_cooldown[cooldown_key]:
                 return None
         
-        self._opportunity_cooldown[cooldown_key] = datetime.utcnow() + timedelta(seconds=2)
+        self._opportunity_cooldown[cooldown_key] = (
+            datetime.utcnow() + timedelta(seconds=self.config.bundle_cooldown_seconds)
+        )
         self._recent_opportunities[opportunity.opportunity_id] = opportunity
         self.stats.last_opportunity_time = datetime.utcnow()
         
@@ -407,7 +507,21 @@ class ArbEngine:
         self._start_tracking_opportunity(opportunity)
         
         # Generate signal
-        return self._create_bundle_signal(opportunity)
+        signal = self._create_bundle_signal(opportunity)
+        self._record_decision(
+            strategy="bundle_arb",
+            outcome=DecisionOutcome.TRADE,
+            reason_code="net_edge_above_threshold",
+            explanation=(
+                f"Bundle arbitrage signal generated with net edge {opportunity.edge:.2%} "
+                f"above required {self.config.min_edge:.2%}."
+            ),
+            market_state=market_state,
+            evidence={**bundle_evidence, "opportunity_type": opportunity.opportunity_type.value},
+            orders=signal.orders,
+            cooldown_seconds=2.0,
+        )
+        return signal
     
     def _create_bundle_signal(self, opportunity: Opportunity) -> Signal:
         """Create a trading signal for a bundle arbitrage opportunity."""
@@ -454,6 +568,7 @@ class ArbEngine:
             signal_id=f"sig_{uuid.uuid4().hex[:12]}",
             action="place_orders",
             market_id=opportunity.market_id,
+            market_question=getattr(opportunity, "market_question", ""),
             opportunity=opportunity,
             orders=orders,
             priority=10,  # High priority for arb
@@ -461,22 +576,47 @@ class ArbEngine:
         
         self.stats.signals_generated += 1
         return signal
+
+    def _size_for_opportunity(
+        self,
+        *,
+        edge: float,
+        max_size: float,
+        reference_price: float,
+    ) -> Optional[float]:
+        """Scale size by edge while respecting book depth and configured caps."""
+        if max_size < self.config.min_order_size or reference_price <= 0:
+            return None
+
+        base_size = self.config.default_order_size / reference_price
+        edge_ratio = max(0.0, edge / max(self.config.min_edge, 0.0001))
+        liquidity_cap = max_size * self.config.max_liquidity_fraction
+        sized = min(
+            base_size * (1.0 + edge_ratio * self.config.edge_size_multiplier),
+            self.config.max_order_size,
+            liquidity_cap,
+        )
+        if sized < self.config.min_order_size:
+            return None
+        return sized
     
-    def _check_market_making(self, market_id: str, order_book: OrderBook) -> list[Signal]:
+    def _check_market_making(self, market_state: MarketState) -> list[Signal]:
         """
         Check for market-making opportunities on YES and NO tokens.
         
         Place limit orders inside the spread to capture the bid-ask spread.
         """
         signals = []
+        market_id = market_state.market.market_id
+        order_book = market_state.order_book
         
         # Check YES token
-        yes_signal = self._check_mm_token(market_id, order_book.yes, TokenType.YES)
+        yes_signal = self._check_mm_token(market_state, order_book.yes, TokenType.YES)
         if yes_signal:
             signals.append(yes_signal)
         
         # Check NO token
-        no_signal = self._check_mm_token(market_id, order_book.no, TokenType.NO)
+        no_signal = self._check_mm_token(market_state, order_book.no, TokenType.NO)
         if no_signal:
             signals.append(no_signal)
         
@@ -484,20 +624,54 @@ class ArbEngine:
     
     def _check_mm_token(
         self,
-        market_id: str,
+        market_state: MarketState,
         token_book,
         token_type: TokenType
     ) -> Optional[Signal]:
         """Check market-making opportunity for a single token."""
+        market_id = market_state.market.market_id
         best_bid = token_book.best_bid
         best_ask = token_book.best_ask
         spread = token_book.spread
         
         if spread is None or best_bid is None or best_ask is None:
+            self._record_decision(
+                strategy="market_making",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="missing_price",
+                explanation=f"Skipped {token_type.value.upper()} market-making because bid, ask, or spread is missing.",
+                market_state=market_state,
+                evidence={
+                    "token_type": token_type.value,
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
+                    "spread": spread,
+                    "required_spread": self.config.min_spread,
+                },
+                cooldown_seconds=30.0,
+            )
             return None
         
         # Check if spread is wide enough
         if spread < self.config.min_spread:
+            self._record_decision(
+                strategy="market_making",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="spread_below_threshold",
+                explanation=(
+                    f"Skipped {token_type.value.upper()} market-making: spread {spread:.2%} "
+                    f"is below required {self.config.min_spread:.2%}."
+                ),
+                market_state=market_state,
+                evidence={
+                    "token_type": token_type.value,
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
+                    "spread": spread,
+                    "required_spread": self.config.min_spread,
+                },
+                cooldown_seconds=15.0,
+            )
             return None
         
         # Check cooldown
@@ -506,7 +680,9 @@ class ArbEngine:
             if datetime.utcnow() < self._opportunity_cooldown[cooldown_key]:
                 return None
         
-        self._opportunity_cooldown[cooldown_key] = datetime.utcnow() + timedelta(seconds=5)
+        self._opportunity_cooldown[cooldown_key] = (
+            datetime.utcnow() + timedelta(seconds=self.config.mm_cooldown_seconds)
+        )
         
         # Calculate our prices (inside the spread)
         our_bid = best_bid + self.config.tick_size
@@ -514,16 +690,65 @@ class ArbEngine:
         
         # Make sure we still have positive edge
         if our_ask <= our_bid:
+            self._record_decision(
+                strategy="market_making",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="no_inside_spread",
+                explanation=f"Skipped {token_type.value.upper()} market-making because inside-spread prices would cross.",
+                market_state=market_state,
+                evidence={
+                    "token_type": token_type.value,
+                    "best_bid": best_bid,
+                    "best_ask": best_ask,
+                    "our_bid": our_bid,
+                    "our_ask": our_ask,
+                    "tick_size": self.config.tick_size,
+                },
+                cooldown_seconds=15.0,
+            )
             return None
         
         our_spread = our_ask - our_bid
-        if our_spread < self.config.tick_size * 2:
+        if our_spread < self.config.tick_size * 2 and not self.config.mm_one_sided_enabled:
+            self._record_decision(
+                strategy="market_making",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="inside_spread_too_tight",
+                explanation=f"Skipped {token_type.value.upper()} market-making because the post-improvement spread is too tight.",
+                market_state=market_state,
+                evidence={
+                    "token_type": token_type.value,
+                    "our_bid": our_bid,
+                    "our_ask": our_ask,
+                    "our_spread": our_spread,
+                    "minimum_our_spread": self.config.tick_size * 2,
+                },
+                cooldown_seconds=15.0,
+            )
             return None
         
-        # Calculate size
-        order_size = self.config.default_order_size / ((our_bid + our_ask) / 2)
-        order_size = min(order_size, self.config.max_order_size)
-        order_size = max(order_size, self.config.min_order_size)
+        order_size = self._size_for_opportunity(
+            edge=max(our_spread / 2, self.config.min_edge),
+            max_size=min(token_book.best_bid_size or 0, token_book.best_ask_size or 0),
+            reference_price=(our_bid + our_ask) / 2,
+        )
+        if order_size is None:
+            self._record_decision(
+                strategy="market_making",
+                outcome=DecisionOutcome.SKIP,
+                reason_code="insufficient_liquidity",
+                explanation=f"Skipped {token_type.value.upper()} market-making because available size is below configured minimum.",
+                market_state=market_state,
+                evidence={
+                    "token_type": token_type.value,
+                    "bid_size": token_book.best_bid_size,
+                    "ask_size": token_book.best_ask_size,
+                    "min_order_size": self.config.min_order_size,
+                    "max_liquidity_fraction": self.config.max_liquidity_fraction,
+                },
+                cooldown_seconds=15.0,
+            )
+            return None
         
         # Create opportunity for logging
         opportunity = Opportunity(
@@ -531,6 +756,7 @@ class ArbEngine:
             opportunity_type=OpportunityType.MM_BID if token_type == TokenType.YES else OpportunityType.MM_ASK,
             market_id=market_id,
             edge=our_spread / 2,  # Expected edge per side
+            market_question=market_state.market.question,
             suggested_size=order_size,
             max_size=order_size * 2,
         )
@@ -543,7 +769,6 @@ class ArbEngine:
             f"spread={spread:.4f} | our_spread={our_spread:.4f} | size={order_size:.2f}"
         )
         
-        # Generate signal with both bid and ask orders
         orders = [
             {
                 "token_type": token_type,
@@ -560,17 +785,44 @@ class ArbEngine:
                 "strategy_tag": "market_making",
             },
         ]
+        if self.config.mm_one_sided_enabled and our_spread < self.config.tick_size * 2:
+            midpoint = (best_bid + best_ask) / 2
+            orders = [orders[0] if midpoint >= 0.5 else orders[1]]
         
         signal = Signal(
             signal_id=f"sig_{uuid.uuid4().hex[:12]}",
             action="place_orders",
             market_id=market_id,
+            market_question=market_state.market.question,
             opportunity=opportunity,
             orders=orders,
             priority=5,  # Lower priority than arb
         )
         
         self.stats.signals_generated += 1
+        self._record_decision(
+            strategy="market_making",
+            outcome=DecisionOutcome.TRADE,
+            reason_code="spread_above_threshold",
+            explanation=(
+                f"Market-making signal generated for {token_type.value.upper()}: spread {spread:.2%} "
+                f"meets required {self.config.min_spread:.2%}."
+            ),
+            market_state=market_state,
+            evidence={
+                "token_type": token_type.value,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "spread": spread,
+                "required_spread": self.config.min_spread,
+                "our_bid": our_bid,
+                "our_ask": our_ask,
+                "our_spread": our_spread,
+                "suggested_size": order_size,
+            },
+            orders=orders,
+            cooldown_seconds=5.0,
+        )
         return signal
     
     def get_recent_opportunities(self, max_age_seconds: float = 60.0) -> list[Opportunity]:
@@ -595,4 +847,3 @@ class ArbEngine:
     def get_stats(self) -> ArbStats:
         """Get engine statistics."""
         return self.stats
-

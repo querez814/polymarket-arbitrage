@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="luxury">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Arbitrage Bot — Production Readiness Report</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const paint = document.createElement("canvas").getContext("2d");
+  function toRgba(color) {
+    paint.clearRect(0, 0, 1, 1);
+    paint.fillStyle = "#000";
+    paint.fillStyle = color;
+    paint.fillRect(0, 0, 1, 1);
+    return paint.getImageData(0, 0, 1, 1).data;
+  }
+  function compositeRgba(foreground, background) {
+    const foregroundAlpha = foreground[3] / 255;
+    const backgroundAlpha = background[3] / 255;
+    const alpha = foregroundAlpha + backgroundAlpha * (1 - foregroundAlpha);
+    if (alpha === 0) return [0, 0, 0, 0];
+    return [
+      (foreground[0] * foregroundAlpha + background[0] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+      (foreground[1] * foregroundAlpha + background[1] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+      (foreground[2] * foregroundAlpha + background[2] * backgroundAlpha * (1 - foregroundAlpha)) / alpha,
+      alpha * 255,
+    ];
+  }
+  function pageIsDark() {
+    const root = document.documentElement;
+    const rootBackground = toRgba(getComputedStyle(root).backgroundColor);
+    const bodyBackground = document.body ? toRgba(getComputedStyle(document.body).backgroundColor) : [0, 0, 0, 0];
+    const [r, g, b, a] = compositeRgba(bodyBackground, rootBackground);
+    if (a > 0) return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.5;
+    const colorScheme = getComputedStyle(root).colorScheme;
+    if (colorScheme.includes("dark") && !colorScheme.includes("light")) return true;
+    if (colorScheme.includes("light") && !colorScheme.includes("dark")) return false;
+    return darkQuery.matches;
+  }
+  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
+  let applied;
+  let rendering = false;
+  let queued = false;
+  function queueRender() {
+    queued = true;
+    if (rendering) return;
+    void render();
+  }
+  async function render() {
+    rendering = true;
+    try {
+      while (queued) {
+        queued = false;
+        const theme = pageIsDark() ? "dark" : "default";
+        if (theme === applied) continue;
+        mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
+        for (const { el, src } of diagrams) {
+          el.removeAttribute("data-processed");
+          el.textContent = src;
+        }
+        try { await mermaid.run({ nodes: diagrams.map((d) => d.el) }); }
+        catch (error) { console.error("Mermaid diagram render failed:", error); return; }
+        applied = theme;
+      }
+    } finally { rendering = false; if (queued) queueRender(); }
+  }
+  if (document.readyState === "complete") queueRender();
+  else window.addEventListener("load", queueRender, { once: true });
+  const themeObserver = new MutationObserver(queueRender);
+  for (const el of [document.documentElement, document.body]) {
+    if (!el) continue;
+    themeObserver.observe(el, { attributes: true, attributeFilter: ["data-theme", "class", "style"] });
+  }
+  document.addEventListener("change", queueRender, true);
+  document.addEventListener("transitionend", ({ propertyName }) => {
+    if (propertyName === "background-color") queueRender();
+  }, true);
+  darkQuery.addEventListener("change", queueRender);
+</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :where(.grid, .flex, .layout-grid, .layout-flex) > *,
+  :where([style*="display: grid"], [style*="display:grid"], [style*="display: flex"], [style*="display:flex"]) > * {
+    min-width: 0;
+  }
+  :where(p, h1, h2, h3, h4, h5, h6, li, dd, blockquote, figcaption, td, th, .badge, .label) {
+    overflow-wrap: anywhere;
+  }
+  :where(img, svg, video, canvas, iframe) {
+    max-width: 100%;
+    height: auto;
+  }
+  .gap-critical { @apply bg-error/15 border-l-4 border-error; }
+  .gap-high { @apply bg-warning/15 border-l-4 border-warning; }
+  .gap-medium { @apply bg-info/15 border-l-4 border-info; }
+  .gap-low { @apply bg-success/15 border-l-4 border-success; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<main class="mx-auto max-w-6xl p-6 lg:p-10 space-y-8">
+
+<!-- HEADER -->
+<section class="hero bg-base-200 rounded-box">
+  <div class="hero-content text-center py-10">
+    <div>
+      <div class="flex items-center justify-center gap-3 mb-2">
+        <span class="badge badge-soft badge-warning badge-lg">PRE-PRODUCTION</span>
+        <span class="badge badge-soft badge-info badge-lg">DRY-RUN ONLY</span>
+      </div>
+      <h1 class="text-3xl md:text-4xl font-bold" style="overflow-wrap: anywhere;">Polymarket Arbitrage Bot</h1>
+      <p class="text-lg text-base-content/60 mt-2">Production Readiness Assessment &amp; Gap Analysis</p>
+      <p class="text-sm text-base-content/40 mt-1">~8,500 lines of Python · 18 test files · 3 platform clients · Web dashboard</p>
+    </div>
+  </div>
+</section>
+
+<!-- EXECUTIVE SUMMARY STATS -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+  <div class="stat bg-base-200 rounded-box p-4">
+    <div class="stat-title text-sm">Codebase Lines</div>
+    <div class="stat-value text-2xl">8,500+</div>
+    <div class="stat-desc text-xs">Python across 40+ files</div>
+  </div>
+  <div class="stat bg-base-200 rounded-box p-4">
+    <div class="stat-title text-sm">Test Coverage</div>
+    <div class="stat-value text-2xl">18 files</div>
+    <div class="stat-desc text-xs">~1,700 test lines</div>
+  </div>
+  <div class="stat bg-base-200 rounded-box p-4">
+    <div class="stat-title text-sm">Strategies</div>
+    <div class="stat-value text-2xl">3</div>
+    <div class="stat-desc text-xs">Bundle · MM · Cross-platform</div>
+  </div>
+  <div class="stat bg-base-200 rounded-box p-4">
+    <div class="stat-title text-sm">Prod Readiness</div>
+    <div class="stat-value text-error text-2xl">0%</div>
+    <div class="stat-desc text-xs">Never placed a real order</div>
+  </div>
+</div>
+
+<!-- ARCHITECTURE OVERVIEW -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">1</span> System Architecture
+  </h2>
+  <div class="card card-border bg-base-200">
+    <div class="card-body">
+      <p class="text-sm text-base-content/60 mb-4">How data flows from exchanges through detection to execution and dashboard.</p>
+      <div class="mermaid">
+flowchart TD
+    CONFIG["config.yaml\nBotConfig"] --> FACTORY["create_polymarket_client()"]
+    FACTORY --> POLY["PolymarketClient\n(Global CLOB)"]
+    FACTORY --> POLYUS["PolymarketUSClient\n(CFTC-regulated)"]
+    CONFIG --> KALSHI["KalshiClient\n(RSA-PSS auth)"]
+
+    POLY --> DF["DataFeed\nbatch polling 500/rot"]
+    POLYUS --> DF
+    DF --> AE["ArbEngine\nbundle arb + market making"]
+    AE --> EE["ExecutionEngine"]
+    EE --> RM["RiskManager\nkill switch / exposure"]
+    EE --> PT["PaperTradeStore\nSQLite ledger"]
+    EE --> PORT["Portfolio\nPnL tracking"]
+
+    POLY -.-> MATCHER["MarketMatcher\ntext similarity matching"]
+    KALSHI -.-> MATCHER
+    MATCHER -.-> CROSS["CrossPlatformArbEngine\n4-directional check"]
+    CROSS -.-> DJ["DecisionJournal\nbounded audit log"]
+
+    EE --> DI["DashboardIntegration"]
+    DJ --> DI
+    PORT --> DI
+    RM --> DI
+    DI --> WS["WebSocket broadcast"]
+    WS --> DASH["Browser Dashboard\nembedded SPA"]
+
+    style MATCHER stroke-dasharray: 5 5
+    style CROSS stroke-dasharray: 5 5
+    style EE fill:#f59e0b22,stroke:#f59e0b
+    style KALSHI fill:#ef444422,stroke:#ef4444
+      </div>
+      <div class="flex gap-3 mt-4 text-xs text-base-content/50">
+        <span>Solid arrows = wired end-to-end</span>
+        <span>Dashed = detection exists but execution path incomplete</span>
+        <span class="text-warning">Orange = US client exists but untested live</span>
+        <span class="text-error">Red = missing pieces</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CURRENT STATE -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">2</span> Current State: What Works
+  </h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="card card-border bg-success/10 border-success/30">
+      <div class="card-body p-5">
+        <h3 class="card-title text-success text-lg">Mature &amp; Well-Tested</h3>
+        <ul class="list-disc list-inside text-sm space-y-2 text-base-content/80">
+          <li><strong>Bundle Arbitrage Engine</strong> — buys YES+NO when total_ask &lt; 1.0, sells when total_bid &gt; 1.0; fee-aware, duration tracking, cooldown logic.</li>
+          <li><strong>Market Making Engine</strong> — places inside-spread limit orders, one-sided MM support, tick-size-aware.</li>
+          <li><strong>Polymarket Global Client</strong> — Gamma API markets, CLOB orderbooks (real &amp; simulated), batch polling with rate limiting for 5,000+ markets.</li>
+          <li><strong>Risk Manager</strong> — kill switch, per-market/global/strategy exposure limits, daily loss &amp; drawdown triggers.</li>
+          <li><strong>Portfolio Tracker</strong> — FIFO cost basis, realized+unrealized PnL, win/loss stats.</li>
+          <li><strong>Paper Trading Ledger</strong> — SQLite store with full lifecycle events (placed→filled/cancelled/expired), decision linking.</li>
+          <li><strong>Web Dashboard</strong> — FastAPI + WebSocket SPA showing markets, opportunities, orders, portfolio, risk, decisions, timing stats.</li>
+          <li><strong>Configuration System</strong> — YAML with env var overrides, 3 risk presets (conservative/balanced/aggressive), extensive validation.</li>
+          <li><strong>Backtesting</strong> — single-platform simulation with random-walk orderbooks; cross-platform historical replay.</li>
+          <li><strong>Test Suite</strong> — 18 files covering arb engine, portfolio, risk, execution, cross-platform replay, config, paper store, Kalshi auth, US parsing.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="card card-border bg-error/10 border-error/30">
+      <div class="card-body p-5">
+        <h3 class="card-title text-error text-lg">Incomplete or Untested</h3>
+        <ul class="list-disc list-inside text-sm space-y-2 text-base-content/80">
+          <li><strong>Zero Live Orders</strong> — neither Polymarket Global, Polymarket US, nor Kalshi have ever placed a real order.</li>
+          <li><strong>Kalshi Can't Trade</strong> — client fetches markets &amp; orderbooks but has <em>no order placement method</em>. Missing: <code>place_order()</code>, <code>cancel_order()</code>.</li>
+          <li><strong>Cross-Platform Execution Stops at Detection</strong> — <code>CrossPlatformArbEngine.check_arbitrage()</code> finds opportunities and writes to DecisionJournal + Dashboard, but <code>ExecutionEngine</code> never consumes cross-platform signals.</li>
+          <li><strong>Polymarket US Untested Live</strong> — US client wraps SDK and supports order placement, but never tested against the live exchange with real funds.</li>
+          <li><strong>No Wallet/Funding Setup</strong> — Polygon USDC wallet, Kalshi deposit, Ed25519 API keys — all config templated but not set up.</li>
+          <li><strong>ClobTradingBridge Untested</strong> — wraps <code>py_clob_client_v2</code> for live CLOB trading but has never placed an order against the live exchange.</li>
+          <li><strong>No Monitoring Alerts</strong> — logs exist but no Telegram/Discord/email notifications for trades, errors, or kill-switch events.</li>
+          <li><strong>No Deployment Story</strong> — no Dockerfile, no systemd/launchd, no healthcheck endpoint, no restart-on-crash.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- GAP ANALYSIS -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">3</span> Gap Analysis: What Blocks Production
+  </h2>
+  <p class="text-sm text-base-content/50 mb-4">Each gap rated by severity and estimated effort. Ordered by dependency — earlier items unblock later ones.</p>
+
+  <div class="overflow-x-auto rounded-box border border-base-content/10">
+    <table class="table table-zebra table-md">
+      <thead>
+        <tr>
+          <th class="w-8">#</th>
+          <th>Gap</th>
+          <th class="w-24">Severity</th>
+          <th class="w-28">Effort</th>
+          <th>What's Missing</th>
+          <th class="w-28">Blocks</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="gap-critical">
+          <td>G1</td>
+          <td><strong>Polymarket Global Live Order</strong></td>
+          <td><span class="badge badge-error badge-sm">Critical</span></td>
+          <td>2-4 hrs</td>
+          <td class="text-sm">Wallet funded with USDC, API keys generated, <code>ClobTradingBridge</code> wired to real CLOB, one BUY order at minimum size. Needs env vars for <code>POLYMARKET_PRIVATE_KEY</code>.</td>
+          <td>G3, G4</td>
+        </tr>
+        <tr class="gap-critical">
+          <td>G2</td>
+          <td><strong>Kalshi Order Placement</strong></td>
+          <td><span class="badge badge-error badge-sm">Critical</span></td>
+          <td>4-8 hrs</td>
+          <td class="text-sm">Implement <code>place_order()</code> and <code>cancel_order()</code> on <code>KalshiClient</code>. Kalshi REST API supports POST <code>/orders</code> with RSA-PSS auth. Need to add <code>get_order()</code> for fill tracking. Must handle Kalshi's Yes/No binary model.</td>
+          <td>G4, G9</td>
+        </tr>
+        <tr class="gap-critical">
+          <td>G3</td>
+          <td><strong>Cross-Platform Execution Pipeline</strong></td>
+          <td><span class="badge badge-error badge-sm">Critical</span></td>
+          <td>6-12 hrs</td>
+          <td class="text-sm">Wire <code>CrossPlatformArbEngine</code> output into <code>ExecutionEngine</code>. Needs: translation of <code>CrossPlatformOpportunity</code> → dual <code>Signal</code> objects, atomic dual-platform order placement, fill-acknowledge-both-sides logic, cross-platform-specific risk checks, timeout handling when one side fills and the other doesn't.</td>
+          <td>—</td>
+        </tr>
+        <tr class="gap-high">
+          <td>G4</td>
+          <td><strong>Live Mode Config &amp; Secrets</strong></td>
+          <td><span class="badge badge-warning badge-sm">High</span></td>
+          <td>1-2 hrs</td>
+          <td class="text-sm">Populate live config from templates (<code>config.live.yaml.example</code>, <code>config.live.us.yaml.example</code>). Generate Polymarket API keypair, fund Polygon wallet. Generate Kalshi RSA keypair, deposit funds. Set up Ed25519 keys for US Polymarket. Wire env vars to <code>config_loader</code>.</td>
+          <td>G1, G2, G5</td>
+        </tr>
+        <tr class="gap-high">
+          <td>G5</td>
+          <td><strong>Order Safety Limits for Live</strong></td>
+          <td><span class="badge badge-warning badge-sm">High</span></td>
+          <td>2-4 hrs</td>
+          <td class="text-sm">Add max-open-orders cap, max-orders-per-minute ratelimit, max-daily-order count, max-position-count. Conservative defaults for live: $5 min order, $15 max, $50 global exposure, 3 max open orders simultaneously, 5 max orders/day. All configurable.</td>
+          <td>—</td>
+        </tr>
+        <tr class="gap-high">
+          <td>G6</td>
+          <td><strong>Fee &amp; Gas Model Validation</strong></td>
+          <td><span class="badge badge-warning badge-sm">High</span></td>
+          <td>1-2 hrs</td>
+          <td class="text-sm">Verify assumed 1.5% taker fee against actual exchange fees. Measure real Polygon gas costs for CLOB transactions. Kalshi has 0% fees for most markets but need verification. Update <code>config.yaml</code> trading.fees section.</td>
+          <td>G1, G2</td>
+        </tr>
+        <tr class="gap-high">
+          <td>G7</td>
+          <td><strong>Crash Recovery / Position Reconciliation</strong></td>
+          <td><span class="badge badge-warning badge-sm">High</span></td>
+          <td>3-6 hrs</td>
+          <td class="text-sm">On bot restart: fetch open orders from exchange, fetch positions from exchange, reconcile with <code>Portfolio</code>, replay any missed fills. Without this, a crash with open orders leaves positions in limbo.</td>
+          <td>G1, G2</td>
+        </tr>
+        <tr class="gap-medium">
+          <td>G8</td>
+          <td><strong>Monitoring &amp; Alerting</strong></td>
+          <td><span class="badge badge-info badge-sm">Medium</span></td>
+          <td>3-6 hrs</td>
+          <td class="text-sm">Telegram bot integration for: trade executions, kill-switch triggers, daily PnL summary, error alerts. Discord webhook as alternative. Rate-limited to prevent spam.</td>
+          <td>—</td>
+        </tr>
+        <tr class="gap-medium">
+          <td>G9</td>
+          <td><strong>Market Match Quality Validation</strong></td>
+          <td><span class="badge badge-info badge-sm">Medium</span></td>
+          <td>2-4 hrs</td>
+          <td class="text-sm"><code>MarketMatcher</code> uses text similarity (0.6 threshold) and category-based grouping. Need to manually audit a sample of matched pairs to ensure no false positives that would cause trading wrong markets. Add a dashboard page showing matched pairs with "approve/reject" controls.</td>
+          <td>—</td>
+        </tr>
+        <tr class="gap-medium">
+          <td>G10</td>
+          <td><strong>Kalshi Orderbook Depth Limitation</strong></td>
+          <td><span class="badge badge-info badge-sm">Medium</span></td>
+          <td>2-4 hrs</td>
+          <td class="text-sm">Kalshi API returns only bids; asks are mathematically derived (<code>ask_yes = 1.0 - best_bid_no</code>). Real ask-side liquidity may differ from this derivation in thin markets. Need to add a safety discount/confidence factor for derived asks — e.g., only trade at 98% of derived ask price.</td>
+          <td>G2</td>
+        </tr>
+        <tr class="gap-medium">
+          <td>G11</td>
+          <td><strong>Manual Kill Switch</strong></td>
+          <td><span class="badge badge-info badge-sm">Medium</span></td>
+          <td>1-2 hrs</td>
+          <td class="text-sm">Add a dashboard button or API endpoint to trigger the kill switch manually. Currently kill switch only fires on PnL/drawdown thresholds. Need a panic button for when you see something wrong.</td>
+          <td>—</td>
+        </tr>
+        <tr class="gap-low">
+          <td>G12</td>
+          <td><strong>Deployment &amp; Persistence</strong></td>
+          <td><span class="badge badge-success badge-sm">Low</span></td>
+          <td>4-8 hrs</td>
+          <td class="text-sm">Dockerfile, docker-compose for local deployment. systemd/launchd service definition. Healthcheck endpoint. Log to stdout for Docker. This can wait until after first live test.</td>
+          <td>—</td>
+        </tr>
+        <tr class="gap-low">
+          <td>G13</td>
+          <td><strong>Polymarket US Live Validation</strong></td>
+          <td><span class="badge badge-success badge-sm">Low</span></td>
+          <td>2-4 hrs</td>
+          <td class="text-sm">Test <code>PolymarketUSClient.place_order()</code> with real Ed25519 API keys against live CFTC-regulated exchange. Verify order lifecycle, fill reporting, cancellation. US platform has different fee structure.</td>
+          <td>G4</td>
+        </tr>
+        <tr class="gap-low">
+          <td>G14</td>
+          <td><strong>ML Training Data Pipeline</strong></td>
+          <td><span class="badge badge-success badge-sm">Low</span></td>
+          <td>Not for v1</td>
+          <td class="text-sm"><code>utils/training_data.py</code> builds snapshots and <code>scripts/collect_training_snapshots.py</code> collects them. But there's no model, no training script, no inference. This is future work — collect data passively while trading.</td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- PRIORITIZED ROADMAP -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">4</span> Roadmap to First $100 Live Trade
+  </h2>
+  <p class="text-sm text-base-content/50 mb-4">Phased approach to get real money trading with minimal risk.</p>
+
+  <div class="space-y-4">
+
+    <!-- Phase 1 -->
+    <div class="collapse collapse-arrow bg-base-200 border border-base-content/10">
+      <input type="radio" name="roadmap" checked="checked" />
+      <div class="collapse-title text-lg font-semibold flex items-center gap-3">
+        <span class="badge badge-error badge-lg">Phase 1</span>
+        <span>Single-Platform Live (Polymarket Global)</span>
+        <span class="badge badge-ghost badge-sm ml-auto">Est. 1-2 days</span>
+      </div>
+      <div class="collapse-content space-y-3">
+        <p class="text-sm text-base-content/70">Goal: Place ONE real bundle arbitrage trade on Polymarket Global with $10 risk.</p>
+        <div class="overflow-x-auto">
+          <table class="table table-sm table-zebra">
+            <thead><tr><th>Task</th><th>Details</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>1. Fund Polygon Wallet</td><td class="text-sm">Create/fund wallet with $50 USDC on Polygon. Bridge if needed.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>2. Generate API Credentials</td><td class="text-sm">Run <code>scripts/generate_polymarket_credentials.py</code> to derive API key from wallet key.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>3. Populate Live Config</td><td class="text-sm">Copy <code>config.live.yaml.example</code> → <code>config.live.yaml</code>, fill in wallet key &amp; API credentials.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>4. G5: Safety Limits</td><td class="text-sm">Add max-open-orders=3, max-daily=5, min-order=$5, max-order=$15, global exposure=$50.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>5. G6: Fee Validation</td><td class="text-sm">Verify real taker fees and Polygon gas. Adjust config.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>6. G11: Manual Kill Switch</td><td class="text-sm">Add dashboard panic button.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>7. G1: First Live Order</td><td class="text-sm">Run <code>main.py --live</code> with dry-run OFF. Place 1 BUY order, verify fill, verify portfolio.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>8. Run 24hr Observation</td><td class="text-sm">Let bot run paper-only with live data feed. Observe opportunity quality, orderbook depth, latency.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="alert alert-warning alert-soft text-sm mt-2">After Phase 1: you'll have placed a real trade and seen how the bot behaves with live data. ~$10 at risk max.</div>
+      </div>
+    </div>
+
+    <!-- Phase 2 -->
+    <div class="collapse collapse-arrow bg-base-200 border border-base-content/10">
+      <input type="radio" name="roadmap" />
+      <div class="collapse-title text-lg font-semibold flex items-center gap-3">
+        <span class="badge badge-warning badge-lg">Phase 2</span>
+        <span>Kalshi Integration + Cross-Platform Detection</span>
+        <span class="badge badge-ghost badge-sm ml-auto">Est. 2-3 days</span>
+      </div>
+      <div class="collapse-content space-y-3">
+        <p class="text-sm text-base-content/70">Goal: Detect real cross-platform opportunities between Polymarket and Kalshi. No execution yet.</p>
+        <div class="overflow-x-auto">
+          <table class="table table-sm table-zebra">
+            <thead><tr><th>Task</th><th>Details</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>1. Fund Kalshi Account</td><td class="text-sm">Deposit $50 into Kalshi account.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>2. Generate Kalshi RSA Keys</td><td class="text-sm">Create RSA keypair, upload public key to Kalshi, configure <code>config.yaml</code>.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>3. G2: Kalshi Order Methods</td><td class="text-sm">Implement <code>place_order()</code>, <code>cancel_order()</code>, <code>get_order()</code> on <code>KalshiClient</code>.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>4. G9: Match Quality Audit</td><td class="text-sm">Manually review sample matched pairs for false positives. Add dashboard approve/reject.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>5. G10: Kalshi Orderbook Safety</td><td class="text-sm">Add confidence discount on derived asks for thin markets.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>6. Run Scanner 48hr</td><td class="text-sm">Let cross-platform scanner run with live data. Collect stats: how many opportunities, avg edge, frequency.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="alert alert-info alert-soft text-sm mt-2">After Phase 2: Kalshi client is trade-ready. Cross-platform scanner running. Data on opportunity frequency and quality available to decide if worth executing.</div>
+      </div>
+    </div>
+
+    <!-- Phase 3 -->
+    <div class="collapse collapse-arrow bg-base-200 border border-base-content/10">
+      <input type="radio" name="roadmap" />
+      <div class="collapse-title text-lg font-semibold flex items-center gap-3">
+        <span class="badge badge-info badge-lg">Phase 3</span>
+        <span>Cross-Platform Live Execution</span>
+        <span class="badge badge-ghost badge-sm ml-auto">Est. 3-4 days</span>
+      </div>
+      <div class="collapse-content space-y-3">
+        <p class="text-sm text-base-content/70">Goal: Execute real cross-platform arbitrage trades. Most complex phase — dual-platform atomicity.</p>
+        <div class="overflow-x-auto">
+          <table class="table table-sm table-zebra">
+            <thead><tr><th>Task</th><th>Details</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>1. G3: Cross-Platform Pipeline</td><td class="text-sm">Wire <code>CrossPlatformArbEngine</code> → <code>ExecutionEngine</code>. Dual Signal translation, risk checks, atomic placement.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>2. G7: Crash Recovery</td><td class="text-sm">Position reconciliation on restart. Fetch open orders from both exchanges.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>3. G8: Monitoring Alerts</td><td class="text-sm">Telegram bot for trade notifications, errors, daily PnL.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>4. Production Dry Run</td><td class="text-sm">Run full pipeline with $5 min orders for 48 hours. Monitor every trade manually.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>5. Scale Orders</td><td class="text-sm">Gradually increase from $5 → $10 → $15 as confidence grows.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="alert alert-warning alert-soft text-sm mt-2">This is the riskiest phase — dual-platform execution means you could get filled on one side and not the other. Need careful atomicity handling.</div>
+      </div>
+    </div>
+
+    <!-- Phase 4 -->
+    <div class="collapse collapse-arrow bg-base-200 border border-base-content/10">
+      <input type="radio" name="roadmap" />
+      <div class="collapse-title text-lg font-semibold flex items-center gap-3">
+        <span class="badge badge-success badge-lg">Phase 4</span>
+        <span>Hardening &amp; Scale</span>
+        <span class="badge badge-ghost badge-sm ml-auto">Est. 3-5 days</span>
+      </div>
+      <div class="collapse-content space-y-3">
+        <p class="text-sm text-base-content/70">Goal: Production-grade reliability, deployment, and monitoring.</p>
+        <div class="overflow-x-auto">
+          <table class="table table-sm table-zebra">
+            <thead><tr><th>Task</th><th>Details</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td>1. G12: Docker Deploy</td><td class="text-sm">Dockerfile, docker-compose, healthcheck endpoint, log to stdout.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>2. G13: US Polymarket Live</td><td class="text-sm">Test <code>PolymarketUSClient</code> with real keys. US exchange may offer different arb opportunities.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>3. Parameter Optimization</td><td class="text-sm">Run backtests with varying min_edge, sizes, cooldowns. Find optimal config for live.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>4. G14: ML Pipeline (Passive)</td><td class="text-sm">Run snapshot collector alongside trading. Don't use for decisions yet — just accumulate data.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+              <tr><td>5. Monthly Review Cadence</td><td class="text-sm">Set up recurring review of PnL, opportunity quality, match accuracy, fee costs.</td><td><span class="badge badge-ghost badge-sm">To Do</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- $100 BUDGET PLAN -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">5</span> $100 Budget Allocation
+  </h2>
+  <p class="text-sm text-base-content/50 mb-4">How to split the $100 test capital across platforms for maximum learning with minimum risk.</p>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title">Polymarket Global</h3>
+        <div class="stat-value text-primary">$50</div>
+        <p class="text-sm text-base-content/60">Polygon USDC + gas reserve. Bundle arb + market making. Most mature strategy. 5-10 small trades max.</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-primary badge-soft">Primary venue</span>
+        </div>
+      </div>
+    </div>
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title">Kalshi</h3>
+        <div class="stat-value text-secondary">$30</div>
+        <p class="text-sm text-base-content/60">Deposit for cross-platform testing. 0% fees on most markets. Used for matched-pair validation, not solo trading.</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-secondary badge-soft">Cross-platform only</span>
+        </div>
+      </div>
+    </div>
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title">Reserve / Gas</h3>
+        <div class="stat-value text-accent">$20</div>
+        <p class="text-sm text-base-content/60">Polygon gas fees ($0.01-0.05 per tx). Kalshi withdrawal fees. Buffer for unexpected costs.</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-accent badge-soft">Safety buffer</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- RISKS -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">6</span> Key Risks &amp; Mitigations
+  </h2>
+  <div class="overflow-x-auto rounded-box border border-base-content/10">
+    <table class="table table-zebra table-md">
+      <thead>
+        <tr>
+          <th>Risk</th>
+          <th class="w-32">Impact</th>
+          <th>Mitigation</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>One-sided fill on cross-platform</strong><br><span class="text-xs text-base-content/50">Buy fills on Poly, but sell doesn't fill on Kalshi (or vice versa)</span></td>
+          <td><span class="badge badge-error badge-sm">$Loss</span></td>
+          <td class="text-sm">Use limit orders only. Set aggressive timeouts (30s). Auto-cancel unfilled leg and close open position at market. Implement "cross-platform pair" tracking that prevents orphaned legs.</td>
+        </tr>
+        <tr>
+          <td><strong>Derived Kalshi asks are wrong</strong><br><span class="text-xs text-base-content/50">Kalshi only returns bids; asks derived mathematically may not reflect real liquidity</span></td>
+          <td><span class="badge badge-error badge-sm">$Loss</span></td>
+          <td class="text-sm">Apply 2% safety discount to derived asks. Only trade when depth &gt; $100 on both sides. Start with smallest orders ($5).</td>
+        </tr>
+        <tr>
+          <td><strong>Market matching false positives</strong><br><span class="text-xs text-base-content/50">Text similarity matching pairs wrong markets (e.g., "Will Trump win" vs "Trump win margin")</span></td>
+          <td><span class="badge badge-error badge-sm">$Loss</span></td>
+          <td class="text-sm">Require manual approval of matched pairs before trading. Add date matching and outcome-type matching (binary vs scalar).</td>
+        </tr>
+        <tr>
+          <td><strong>Bot runs away (bug causes rapid orders)</strong><br><span class="text-xs text-base-content/50">Software defect places dozens of orders rapidly, draining account</span></td>
+          <td><span class="badge badge-error badge-sm">Account drain</span></td>
+          <td class="text-sm">G5 safety limits (max 3 open, max 5/day). Kill switch on daily loss $10. Manual kill switch button. Cooldown between trades (60s min).</td>
+        </tr>
+        <tr>
+          <td><strong>Exchange API outage mid-trade</strong><br><span class="text-xs text-base-content/50">Polymarket or Kalshi API goes down while order is open</span></td>
+          <td><span class="badge badge-warning badge-sm">Stuck position</span></td>
+          <td class="text-sm">G7 crash recovery: on restart, fetch open orders and positions from exchange. Auto-cancel stale orders older than 5min.</td>
+        </tr>
+        <tr>
+          <td><strong>Polygon gas spike</strong><br><span class="text-xs text-base-content/50">Gas costs eat all profit or make transactions fail</span></td>
+          <td><span class="badge badge-info badge-sm">Unprofitable</span></td>
+          <td class="text-sm">Include gas in edge calculation (already done in <code>ArbEngine</code>). Set max gas per tx. Monitor gas before placing orders.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- NEXT STEPS -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">7</span> Immediate Next Actions
+  </h2>
+  <p class="text-sm text-base-content/50 mb-4">What to do right now, before the $100 arrives.</p>
+
+  <ul class="steps steps-vertical lg:steps-horizontal w-full">
+    <li class="step step-primary">Fund wallet<br><span class="text-xs text-base-content/50">Create Polygon wallet<br>deposit $50 USDC</span></li>
+    <li class="step step-primary">Generate keys<br><span class="text-xs text-base-content/50">Run credential script<br>set env vars</span></li>
+    <li class="step">Safety limits<br><span class="text-xs text-base-content/50">G5: max orders, exposure<br>kill switch wiring</span></li>
+    <li class="step">Dry-run 24hr<br><span class="text-xs text-base-content/50">Live data, paper trades<br>observe opportunity flow</span></li>
+    <li class="step">First $5 trade<br><span class="text-xs text-base-content/50">Single bundle arb<br>verify end-to-end</span></li>
+    <li class="step">Phase 2 prep<br><span class="text-xs text-base-content/50">Kalshi keys + order code<br>while monitoring Poly</span></li>
+  </ul>
+</section>
+
+<!-- OPEN QUESTIONS -->
+<section>
+  <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+    <span class="badge badge-neutral">8</span> Open Questions for PM Decision
+  </h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title text-base">Q1: Which venue first?</h3>
+        <p class="text-sm">Polymarket Global (more mature client, bundle arb well-tested) vs Polymarket US (CFTC-regulated, simpler setup, different fees)?</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-ghost badge-sm">Recommendation: Global</span>
+        </div>
+      </div>
+    </div>
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title text-base">Q2: Solo or cross-platform only?</h3>
+        <p class="text-sm">Start with single-platform bundle arb (simpler, already well-tested) then add cross-platform, or go straight to cross-platform?</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-ghost badge-sm">Recommendation: Solo first</span>
+        </div>
+      </div>
+    </div>
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title text-base">Q3: Order sizing?</h3>
+        <p class="text-sm">Start at $5 minimum orders (very small edge) or $2 (even smaller, more trades)? Larger = fewer trades but cleaner data.</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-ghost badge-sm">Recommendation: $2-5</span>
+        </div>
+      </div>
+    </div>
+    <div class="card card-border bg-base-200">
+      <div class="card-body">
+        <h3 class="card-title text-base">Q4: Run on laptop or cloud?</h3>
+        <p class="text-sm">Phase 1-2 can run on your Mac. Phase 3+ may need cloud for reliability. Cheapest VPS is ~$5/month.</p>
+        <div class="card-actions mt-2">
+          <span class="badge badge-ghost badge-sm">Recommendation: Laptop first</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<div class="text-center text-sm text-base-content/30 pt-8 pb-4">
+  Polymarket Arbitrage Bot · Production Readiness Report · July 2026
+</div>
+
+</main>
+</body>
+</html>

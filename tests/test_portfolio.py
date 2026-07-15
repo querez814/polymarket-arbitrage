@@ -264,3 +264,35 @@ class TestPortfolioSummary:
         assert portfolio.get_total_exposure() == 0.0
         assert portfolio.cash_balance == 10000.0
 
+
+class TestPortfolioSnapshots:
+    """Tests for dashboard snapshot helpers."""
+
+    def test_position_and_recent_trade_snapshots(self, portfolio: Portfolio):
+        trade = create_trade(side=OrderSide.BUY, price=0.50, size=100.0)
+        portfolio.update_from_fill(trade)
+        portfolio.update_prices("test_market", yes_price=0.60, no_price=0.40)
+
+        positions = portfolio.get_position_snapshots()
+        trades = portfolio.get_recent_trade_snapshots()
+
+        assert positions[0]["type"] == "position"
+        assert positions[0]["market_id"] == "test_market"
+        assert positions[0]["notional"] == 50.0
+        assert positions[0]["unrealized_pnl"] == pytest.approx(10.0)
+        assert trades[0]["type"] == "recent_trade"
+        assert trades[0]["notional"] == 50.0
+
+    def test_recent_trade_snapshots_label_hypothetical_paper_fills(self, portfolio: Portfolio):
+        trade = create_trade(side=OrderSide.BUY, price=0.50, size=20.0)
+        trade.is_simulated = True
+        trade.simulation_label = "hypothetical_paper_fill"
+
+        portfolio.update_from_fill(trade)
+
+        trade_snapshot = portfolio.get_recent_trade_snapshots()[0]
+
+        assert trade_snapshot["is_simulated"] is True
+        assert trade_snapshot["simulation_label"] == "hypothetical_paper_fill"
+        assert trade_snapshot["pnl_source"] == "hypothetical_paper"
+

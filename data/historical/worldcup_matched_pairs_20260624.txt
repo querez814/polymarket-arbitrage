@@ -1,0 +1,5 @@
+# Polymarket market ID : Kalshi ticker
+# Mexico to win Czechia vs Mexico, June 24 2026
+1897299:KXWCGAME-26JUN24CZEMEX-MEX
+# Korea Republic to win South Africa vs Korea Republic, June 24 2026
+1897306:KXWCGAME-26JUN24RSAKOR-KOR

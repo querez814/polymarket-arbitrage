@@ -1,0 +1,114 @@
+# Live trading configuration for US traders (Polymarket US + Kalshi)
+# ===================================================================
+# Copy to config.live.us.yaml and set credentials via environment variables:
+#
+#   export POLYMARKET_PLATFORM=us
+#   export POLYMARKET_US_KEY_ID="your-key-id"
+#   export POLYMARKET_US_SECRET_KEY="base64-ed25519-secret"
+#
+# Generate keys at: https://polymarket.us/developer
+
+api:
+  polymarket_platform: "us"
+  polymarket_us_api_url: "https://api.polymarket.us"
+  polymarket_us_gateway_url: "https://gateway.polymarket.us"
+
+  # Leave blank — use environment variables (see above)
+  polymarket_us_key_id: ""
+  polymarket_us_secret_key: ""
+
+  # Global endpoints unused when platform=us
+  polymarket_rest_url: "https://clob.polymarket.com"
+  polymarket_ws_url: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+  gamma_api_url: "https://gamma-api.polymarket.com"
+  kalshi_api_url: "https://api.elections.kalshi.com/trade-api/v2"
+
+  api_key: ""
+  api_secret: ""
+  passphrase: ""
+  private_key: ""
+  chain_id: 137
+
+  timeout_seconds: 30
+  max_retries: 3
+  retry_delay_seconds: 1
+
+trading:
+  risk_profile: "conservative"
+  markets: []
+
+  min_edge: 0.01
+  bundle_arb_enabled: true
+  bundle_cooldown_seconds: 2.0
+
+  min_spread: 0.05
+  tick_size: 0.01
+  mm_enabled: false
+  mm_cooldown_seconds: 5.0
+  mm_one_sided_enabled: false
+
+  default_order_size: 5
+  min_order_size: 2
+  max_order_size: 10
+  edge_size_multiplier: 4.0
+  max_liquidity_fraction: 0.5
+
+  slippage_tolerance: 0.015
+  order_timeout_seconds: 45
+  arb_slippage_tolerance: 0.02
+  market_making_slippage_tolerance: 0.01
+  high_edge_slippage_multiplier: 1.25
+  arb_order_timeout_seconds: 10
+  market_making_order_timeout_seconds: 15
+
+  cross_platform_max_order_size: 10
+  cross_platform_edge_size_multiplier: 4.0
+  cross_platform_max_liquidity_fraction: 0.5
+
+  maker_fee_bps: 0
+  taker_fee_bps: 150
+  estimated_gas_per_order: 0.0
+
+risk:
+  max_position_per_market: 10
+  max_global_exposure: 25
+  max_daily_loss: 5
+  max_drawdown_pct: 0.10
+  trade_only_high_volume: true
+  min_24h_volume: 50000
+  whitelist: []
+  blacklist: []
+  strategy_exposure_limits:
+    bundle_arb: 20
+    market_making: 10
+    cross_platform_arb: 0
+  kill_switch_enabled: true
+  auto_unwind_on_breach: false
+
+mode:
+  trading_mode: "live"
+  data_mode: "real"
+  cross_platform_enabled: true
+  kalshi_enabled: true
+  min_match_similarity: 0.7
+  dry_run_initial_balance: 500
+  simulate_fills: false
+  fill_probability: 0.0
+
+logging:
+  console_level: "INFO"
+  file_level: "DEBUG"
+  log_dir: "logs"
+  main_log_file: "bot.live.us.log"
+  trades_log_file: "trades.live.us.log"
+  opportunities_log_file: "opportunities.live.us.log"
+  max_log_size_mb: 50
+  backup_count: 5
+
+monitoring:
+  snapshot_interval: 30
+  heartbeat_interval: 15
+  track_latency: true
+  track_fill_rates: true
+  paper_trade_db_path: "data/paper_trades.db"
+  display_timezone: "America/New_York"

@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 from dashboard.server import dashboard_state
+from utils.time_utils import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,17 @@ class DashboardIntegration:
         risk_manager=None,
         portfolio=None,
         mode: str = "dry_run",
+        decision_journal=None,
+        paper_trade_store=None,
     ):
         self.data_feed = data_feed
         self.arb_engine = arb_engine
         self.execution_engine = execution_engine
         self.risk_manager = risk_manager
         self.portfolio = portfolio
+        self.mode = mode
+        self.decision_journal = decision_journal
+        self.paper_trade_store = paper_trade_store
         
         dashboard_state.mode = mode
         dashboard_state.is_running = False
@@ -103,39 +109,76 @@ class DashboardIntegration:
             dashboard_state.markets = markets
         
         # Update portfolio
+        position_snapshots = []
+        recent_trade_snapshots = []
         if self.portfolio:
             summary = self.portfolio.get_summary()
+            summary["is_paper"] = self.mode == "dry_run"
+            summary["pnl_source"] = "paper" if self.mode == "dry_run" else "live"
             dashboard_state.portfolio = summary
+            position_snapshots = self.portfolio.get_position_snapshots()
+            recent_trade_snapshots = self.portfolio.get_recent_trade_snapshots(limit=100)
+            dashboard_state.positions = position_snapshots
+            dashboard_state.trades = recent_trade_snapshots
         
         # Update risk
         if self.risk_manager:
             dashboard_state.risk = self.risk_manager.get_summary()
         
         # Update orders
+        open_order_snapshots = []
+        order_history_snapshots = []
         if self.execution_engine:
-            orders = self.execution_engine.get_open_orders()
-            dashboard_state.orders = [
-                {
-                    "order_id": o.order_id,
-                    "market_id": o.market_id,
-                    "side": o.side.value,
-                    "token_type": o.token_type.value,
-                    "price": o.price,
-                    "size": o.size,
-                    "filled_size": o.filled_size,
-                    "status": o.status.value,
-                }
-                for o in orders
-            ]
+            open_order_snapshots = self.execution_engine.get_open_order_snapshots()
+            order_history_snapshots = self.execution_engine.get_order_history_snapshots(limit=100)
+            dashboard_state.orders = open_order_snapshots
+            dashboard_state.paper_orders = order_history_snapshots
             
             # Update stats
             stats = self.execution_engine.get_stats()
             dashboard_state.stats = {
+                "execution_mode": self.mode,
+                "is_paper": self.mode == "dry_run",
                 "orders_placed": stats.orders_placed,
+                "paper_orders": len(order_history_snapshots) if self.mode == "dry_run" else 0,
                 "orders_filled": stats.orders_filled,
                 "orders_cancelled": stats.orders_cancelled,
+                "orders_rejected": stats.orders_rejected,
                 "signals_processed": stats.signals_processed,
+                "signals_rejected": stats.signals_rejected,
+                "slippage_rejections": stats.slippage_rejections,
+                "risk_rejections": stats.risk_rejections,
+                "expired_before_fill": stats.expired_before_fill,
+                "total_open_notional": self.execution_engine.get_total_open_notional(),
             }
+
+        filled_exposure = self.portfolio.get_total_exposure() if self.portfolio else 0.0
+        open_order_exposure = sum(order["remaining_notional"] for order in open_order_snapshots)
+        strategy_reserved = (
+            self.risk_manager.get_summary().get("strategy_exposure", {})
+            if self.risk_manager
+            else {}
+        )
+        risk_summary = self.risk_manager.get_summary() if self.risk_manager else {}
+        dashboard_state.active_trades = [
+            *open_order_snapshots,
+            *position_snapshots,
+        ]
+        dashboard_state.exposure_breakdown = {
+            "filled_exposure": filled_exposure,
+            "open_order_exposure": open_order_exposure,
+            "total_active_exposure": filled_exposure + open_order_exposure,
+            "strategy_reserved_exposure": strategy_reserved,
+            "open_order_exposure_by_strategy": (
+                self.execution_engine.get_open_notional_by_strategy()
+                if self.execution_engine
+                else {}
+            ),
+            "global_exposure": risk_summary.get("global_exposure", 0.0),
+            "max_global_exposure": risk_summary.get("max_global_exposure", 0.0),
+            "global_available": risk_summary.get("max_global_exposure", 0.0) - risk_summary.get("global_exposure", 0.0),
+            "markets_with_exposure": risk_summary.get("markets_with_exposure", 0),
+        }
         
         # Update arb stats and timing
         if self.arb_engine:
@@ -161,7 +204,19 @@ class DashboardIntegration:
                 "is_streaming": self.data_feed.is_running,
             }
         
-        dashboard_state.last_update = datetime.utcnow()
+        if self.decision_journal:
+            dashboard_state.decisions = self.decision_journal.to_dicts(limit=200)
+            dashboard_state.decision_summary = self.decision_journal.summary()
+        
+        if self.paper_trade_store:
+            dashboard_state.paper_history = [
+                event.to_dict()
+                for event in self.paper_trade_store.recent_events(limit=200)
+            ]
+        elif not dashboard_state.paper_history:
+            dashboard_state.paper_history = []
+
+        dashboard_state.last_update = utc_now()
     
     async def _broadcast_update(self) -> None:
         """Broadcast update to connected clients."""

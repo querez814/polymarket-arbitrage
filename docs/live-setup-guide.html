@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>US Live Setup — Polymarket US + Kalshi</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0c0f;
+      --bg-elevated: #12161c;
+      --bg-card: #161b22;
+      --border: #2a3340;
+      --border-bright: #3d4f63;
+      --text: #e8edf4;
+      --text-muted: #8b9aab;
+      --accent: #f0b429;
+      --accent-dim: #c4921f;
+      --green: #3dd68c;
+      --green-dim: #1f9d5c;
+      --red: #f07178;
+      --blue: #6cb6ff;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --serif: "Instrument Serif", Georgia, serif;
+      --sans: "DM Sans", system-ui, sans-serif;
+      --radius: 10px;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 10% -10%, rgba(240, 180, 41, 0.08), transparent 50%),
+        radial-gradient(ellipse 60% 40% at 90% 0%, rgba(61, 214, 140, 0.06), transparent 45%),
+        repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.012) 2px, rgba(255,255,255,0.012) 3px);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .shell {
+      position: relative;
+      z-index: 1;
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 5rem;
+    }
+
+    header {
+      margin-bottom: 2.5rem;
+      animation: fadeUp 0.7s ease both;
+    }
+
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+
+    h1 {
+      font-family: var(--serif);
+      font-size: clamp(2.2rem, 5vw, 3.2rem);
+      font-weight: 400;
+      line-height: 1.1;
+      margin-bottom: 0.75rem;
+    }
+
+    h1 em { font-style: italic; color: var(--accent); }
+
+    .lede {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      max-width: 52ch;
+    }
+
+    .progress-bar {
+      margin: 2rem 0 2.5rem;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      height: 8px;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--green-dim), var(--green));
+      border-radius: 999px;
+      transition: width 0.4s ease;
+    }
+
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 2.5rem;
+      animation: fadeUp 0.7s 0.1s ease both;
+    }
+
+    .status-pill {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.85rem 1rem;
+      font-size: 0.85rem;
+    }
+
+    .status-pill strong {
+      display: block;
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 0.25rem;
+    }
+
+    .status-pill .ok { color: var(--green); }
+    .status-pill .warn { color: var(--accent); }
+    .status-pill .off { color: var(--red); }
+
+    section {
+      margin-bottom: 2rem;
+      animation: fadeUp 0.6s ease both;
+    }
+
+    section:nth-child(n+4) { animation-delay: calc(0.05s * var(--i, 0)); }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      padding: 1.25rem 1.35rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.15s;
+    }
+
+    .card-header:hover { background: rgba(255,255,255,0.02); }
+
+    .step-num {
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border-bright);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      font-weight: 600;
+      display: grid;
+      place-items: center;
+      color: var(--accent);
+    }
+
+    .card-header.done .step-num {
+      background: rgba(61, 214, 140, 0.12);
+      border-color: var(--green-dim);
+      color: var(--green);
+    }
+
+    .card-title-wrap { flex: 1; min-width: 0; }
+
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 0.15rem;
+    }
+
+    .card-subtitle {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+    }
+
+    .check-btn {
+      flex-shrink: 0;
+      width: 1.5rem;
+      height: 1.5rem;
+      border-radius: 4px;
+      border: 2px solid var(--border-bright);
+      background: transparent;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: all 0.15s;
+      margin-top: 0.15rem;
+    }
+
+    .check-btn.checked {
+      background: var(--green);
+      border-color: var(--green);
+    }
+
+    .check-btn.checked::after {
+      content: "✓";
+      color: #0a0c0f;
+      font-size: 0.75rem;
+      font-weight: 700;
+    }
+
+    .card-body {
+      padding: 1.25rem 1.35rem 1.35rem;
+      display: none;
+    }
+
+    .card.open .card-body { display: block; }
+
+    .card-body p, .card-body ul { margin-bottom: 0.85rem; color: var(--text-muted); font-size: 0.92rem; }
+    .card-body ul { padding-left: 1.2rem; }
+    .card-body li { margin-bottom: 0.35rem; }
+    .card-body strong { color: var(--text); font-weight: 500; }
+
+    .callout {
+      border-left: 3px solid var(--accent);
+      background: rgba(240, 180, 41, 0.06);
+      padding: 0.75rem 1rem;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 1rem 0;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+    }
+
+    .callout.danger {
+      border-color: var(--red);
+      background: rgba(240, 113, 120, 0.08);
+    }
+
+    .callout.success {
+      border-color: var(--green);
+      background: rgba(61, 214, 140, 0.06);
+    }
+
+    .code-block {
+      position: relative;
+      background: #080a0d;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin: 0.75rem 0 1rem;
+      overflow: hidden;
+    }
+
+    .code-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.45rem 0.75rem;
+      background: rgba(255,255,255,0.03);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .copy-btn {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      border: 1px solid var(--border-bright);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .copy-btn:hover { color: var(--accent); border-color: var(--accent-dim); }
+    .copy-btn.copied { color: var(--green); border-color: var(--green-dim); }
+
+    pre {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      line-height: 1.55;
+      padding: 1rem;
+      overflow-x: auto;
+      color: #c5d0dc;
+    }
+
+    pre .comment { color: #5c6b7a; }
+    pre .key { color: var(--blue); }
+    pre .str { color: var(--green); }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+      margin: 1rem 0;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+    }
+
+    .flow-node {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.65rem;
+      border-radius: 6px;
+      color: var(--text-muted);
+    }
+
+    .flow-node.live { border-color: var(--green-dim); color: var(--green); }
+    .flow-node.stub { border-color: var(--red); color: var(--red); opacity: 0.85; }
+    .flow-arrow { color: var(--border-bright); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+      margin: 0.75rem 0;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 0.55rem 0.65rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      font-family: var(--mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+
+    td code {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--blue);
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    footer a { color: var(--accent); }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 600px) {
+      .shell { padding: 2rem 1rem 3rem; }
+      .flow { flex-direction: column; align-items: flex-start; }
+      .flow-arrow { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="eyebrow">polymarket-arbitrage · US stack</div>
+      <h1>US live trading <em>setup guide</em></h1>
+      <p class="lede">
+        For American traders on <strong>Polymarket US</strong> and <strong>Kalshi</strong>.
+        This is a different path than international Polymarket (Polygon / py-clob-client).
+      </p>
+    </header>
+
+    <div class="progress-bar" aria-hidden="true"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-label">
+      <span id="progressText">0 of 8 steps complete</span>
+      <span>Polymarket US + Kalshi (US)</span>
+    </div>
+
+    <div class="status-grid">
+      <div class="status-pill"><strong>Polymarket Global</strong><span class="warn">Optional — international only</span></div>
+      <div class="status-pill"><strong>Polymarket US</strong><span class="ok">Ready (US-1)</span></div>
+      <div class="status-pill"><strong>Kalshi live</strong><span class="off">Not built yet</span></div>
+      <div class="status-pill"><strong>Cross-platform</strong><span class="warn">Detect only today</span></div>
+    </div>
+
+    <!-- Step 0: Architecture -->
+    <section style="--i: 1">
+      <div class="card open" data-step="arch">
+        <div class="card-header" data-toggle>
+          <div class="step-num">◎</div>
+          <div class="card-title-wrap">
+            <div class="card-title">What you're turning on</div>
+            <div class="card-subtitle">Scope for your first live session</div>
+          </div>
+        </div>
+        <div class="card-body" style="display:block">
+          <div class="callout">
+            <strong>Default:</strong> <code>api.polymarket_platform: global</code> in <code>config.yaml</code> uses MetaMask + <code>py-clob-client-v2</code> on <code>clob.polymarket.com</code>. Set <code>polymarket_platform: us</code> only for Polymarket US app API keys.
+          </div>
+          <p>Your target architecture is a <strong>US dual-exchange bot</strong>: Polymarket US + Kalshi, with cross-platform arb as the endgame.</p>
+          <div class="flow">
+            <span class="flow-node stub">Polymarket US API</span>
+            <span class="flow-arrow">↔</span>
+            <span class="flow-node live">Matcher + ArbEngine</span>
+            <span class="flow-arrow">↔</span>
+            <span class="flow-node stub">Kalshi API</span>
+          </div>
+          <div class="flow">
+            <span class="flow-node stub">Two-leg coordinator</span>
+            <span class="flow-arrow">·</span>
+            <span class="flow-node live">Risk + kill switch</span>
+            <span class="flow-arrow">·</span>
+            <span class="flow-node live">Dashboard / journal</span>
+          </div>
+          <table>
+            <thead><tr><th>Platform</th><th>Today's bot</th><th>What you need</th></tr></thead>
+            <tbody>
+              <tr><td>Polymarket Global</td><td>Live orders wired (Phase 1)</td><td>Skip — not for US accounts</td></tr>
+              <tr><td>Polymarket US</td><td>Integrated (<code>polymarket_us_client</code>)</td><td>Ed25519 keys from polymarket.us/developer</td></tr>
+              <tr><td>Kalshi</td><td>Read-only markets + books</td><td>RSA API key + order endpoints</td></tr>
+              <tr><td>Cross-platform Poly↔Kalshi</td><td>Detection + dashboard</td><td>Two-leg execution + verified pair whitelist</td></tr>
+            </tbody>
+          </table>
+          <table style="margin-top:1rem">
+            <thead><tr><th></th><th>Polymarket Global (built)</th><th>Polymarket US (your account)</th></tr></thead>
+            <tbody>
+              <tr><td>API base</td><td><code>clob.polymarket.com</code></td><td><code>api.polymarket.us</code></td></tr>
+              <tr><td>Auth</td><td>Polygon private key + L2 HMAC</td><td>OAuth JWT (RSA) or Ed25519 dev keys</td></tr>
+              <tr><td>SDK</td><td><code>py-clob-client-v2</code></td><td><code>polymarket-us</code> (official)</td></tr>
+              <tr><td>Market ID</td><td>Token ID hash</td><td>Symbol / slug</td></tr>
+              <tr><td>Funding</td><td>Self-custody USDC on Polygon</td><td>Custodial USDC.e via Polymarket US</td></tr>
+              <tr><td>KYC</td><td>Optional (non-US)</td><td>Required (iOS app)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 1 -->
+    <section style="--i: 2">
+      <div class="card" data-step="1">
+        <div class="card-header" data-toggle>
+          <div class="step-num">1</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Prerequisites (US)</div>
+            <div class="card-subtitle">Accounts on both regulated US venues</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <p><strong>Polymarket US</strong></p>
+          <ul>
+            <li><strong>Polymarket US account</strong> with KYC complete (via the Polymarket US iOS app).</li>
+            <li><strong>Funded trading balance</strong> on Polymarket US (custodial USDC.e — not a self-custody Polygon wallet).</li>
+            <li><strong>API keys</strong> from <a href="https://polymarket.us/developer" style="color:var(--blue)">polymarket.us/developer</a> — you get a <code>key_id</code> (UUID) and base64 <code>secret_key</code> (Ed25519).</li>
+          </ul>
+          <p><strong>Kalshi</strong></p>
+          <ul>
+            <li><strong>Kalshi account</strong> (US residents eligible).</li>
+            <li><strong>API key</strong> from Account → Profile → API Keys (<a href="https://kalshi.com/account/profile" style="color:var(--blue)">kalshi.com/account/profile</a>).</li>
+            <li>Download the <strong>RSA private key</strong> immediately — Kalshi does not store it.</li>
+            <li>Funded balance in your Kalshi account for live orders.</li>
+          </ul>
+          <ul>
+            <li><strong>Python 3.10+</strong> and project dependencies installed locally.</li>
+          </ul>
+          <div class="callout danger">
+            <strong>Do not use for Polymarket US:</strong> Polygon wallet private key, <code>POLYMARKET_PRIVATE_KEY</code>, or <code>scripts/generate_polymarket_credentials.py</code> — those are for Polymarket Global only.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 2 -->
+    <section style="--i: 3">
+      <div class="card" data-step="2">
+        <div class="card-header" data-toggle>
+          <div class="step-num">2</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Install dependencies</div>
+            <div class="card-subtitle">Base project + future US SDKs</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <p>From the repo root:</p>
+          <div class="code-block">
+            <div class="code-header"><span>terminal</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre>cd polymarket-arbitrage
+python -m venv .venv
+source .venv/bin/activate   <span class="comment"># Windows: .venv\Scripts\activate</span>
+uv pip install -r requirements.txt
+
+<span class="comment"># Coming in Phase US-1 / US-2 (not wired yet):</span>
+<span class="comment"># uv pip install polymarket-us PyJWT cryptography</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 3 -->
+    <section style="--i: 4">
+      <div class="card" data-step="3">
+        <div class="card-header" data-toggle>
+          <div class="step-num">3</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Gather API credentials</div>
+            <div class="card-subtitle">Polymarket US + Kalshi (not Global Polygon keys)</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <p><strong>Polymarket US</strong> — from the developer portal after KYC:</p>
+          <ol style="padding-left:1.2rem;color:var(--text-muted);font-size:0.92rem;margin-bottom:1rem">
+            <li style="margin-bottom:0.4rem">Complete KYC on the Polymarket US iOS app</li>
+            <li style="margin-bottom:0.4rem">Generate API keys at <a href="https://polymarket.us/developer" style="color:var(--blue)">polymarket.us/developer</a></li>
+            <li style="margin-bottom:0.4rem">Save <code>key_id</code> and <code>secret_key</code> (base64 Ed25519 — shown once)</li>
+          </ol>
+          <p><strong>Kalshi</strong> — from profile settings:</p>
+          <ol style="padding-left:1.2rem;color:var(--text-muted);font-size:0.92rem">
+            <li style="margin-bottom:0.4rem">Create API key → copy <strong>Key ID</strong></li>
+            <li style="margin-bottom:0.4rem">Download <strong>private key</strong> (<code>.txt</code> / PEM) — one-time only</li>
+            <li>Optional: use <a href="https://demo.kalshi.co" style="color:var(--blue)">demo.kalshi.co</a> sandbox before production</li>
+          </ol>
+          <div class="callout">
+            Keys from <a href="https://polymarket.us/developer" style="color:var(--blue)">polymarket.us/developer</a> go into <code>config.live.us.yaml</code> via env vars.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 4 -->
+    <section style="--i: 5">
+      <div class="card" data-step="4">
+        <div class="card-header" data-toggle>
+          <div class="step-num">4</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Set environment variables</div>
+            <div class="card-subtitle">Required for live mode validation</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <p>Add to <code>~/.zshrc</code>, a <code>.env</code> file (gitignored), or your session:</p>
+          <div class="code-block">
+            <div class="code-header"><span>~/.zshrc or .env</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre><span class="comment"># Polymarket US</span>
+export POLYMARKET_PLATFORM=<span class="str">us</span>
+export POLYMARKET_US_KEY_ID=<span class="str">"..."</span>
+export POLYMARKET_US_SECRET_KEY=<span class="str">"..."</span>
+export KALSHI_API_KEY_ID=<span class="str">"..."</span>
+export KALSHI_PRIVATE_KEY_PATH=<span class="str">"/path/to/kalshi-key.pem"</span>
+export KALSHI_API_URL=<span class="str">"https://api.elections.kalshi.com/trade-api/v2"</span>
+<span class="comment"># Sandbox: https://demo-api.kalshi.co/trade-api/v2</span></pre>
+          </div>
+          <table>
+            <thead><tr><th>Variable</th><th>Platform</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>POLYMARKET_US_KEY_ID</code></td><td>Polymarket US</td><td>API key UUID from developer portal</td></tr>
+              <tr><td><code>POLYMARKET_US_SECRET_KEY</code></td><td>Polymarket US</td><td>Base64 Ed25519 secret key</td></tr>
+              <tr><td><code>KALSHI_API_KEY_ID</code></td><td>Kalshi</td><td><code>KALSHI-ACCESS-KEY</code> header</td></tr>
+              <tr><td><code>KALSHI_PRIVATE_KEY_PATH</code></td><td>Kalshi</td><td>RSA-PSS request signing</td></tr>
+            </tbody>
+          </table>
+          <div class="callout danger">
+            <strong>Legacy Global vars</strong> (<code>POLYMARKET_PRIVATE_KEY</code>, <code>POLYMARKET_API_KEY</code>, etc.) are for international Polymarket only — ignore them for your US setup.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 5 -->
+    <section style="--i: 6">
+      <div class="card" data-step="5">
+        <div class="card-header" data-toggle>
+          <div class="step-num">5</div>
+          <div class="card-title-wrap">
+            <div class="card-title">What you can run today</div>
+            <div class="card-subtitle">Live config + dry-run scanner</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <p>Create your live config, then dry-run or go live:</p>
+          <div class="code-block">
+            <div class="code-header"><span>terminal</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre>cp config.live.us.yaml.example config.live.us.yaml</pre>
+          </div>
+          <p><code>config.live.us.yaml</code> is gitignored. Set <code>POLYMARKET_US_KEY_ID</code> and <code>POLYMARKET_US_SECRET_KEY</code> via env vars.</p>
+          <table>
+            <thead><tr><th>Setting</th><th>First live value</th></tr></thead>
+            <tbody>
+              <tr><td><code>platform.polymarket_us_enabled</code></td><td>true</td></tr>
+              <tr><td><code>mode.kalshi_enabled</code></td><td>true</td></tr>
+              <tr><td><code>mode.cross_platform_enabled</code></td><td>true (after two-leg exec)</td></tr>
+              <tr><td><code>max_global_exposure</code></td><td>$25 combined across venues</td></tr>
+              <tr><td><code>risk.whitelist</code></td><td>Human-verified pair list only</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 6 -->
+    <section style="--i: 7">
+      <div class="card" data-step="6">
+        <div class="card-header" data-toggle>
+          <div class="step-num">6</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Verify connectivity (manual, today)</div>
+            <div class="card-subtitle">Test each API before we integrate</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <div class="code-block">
+            <div class="code-header"><span>terminal</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre>python test_connection.py -c config.live.us.yaml</pre>
+          </div>
+          <p>Dry-run scanner (no orders):</p>
+          <div class="code-block">
+            <div class="code-header"><span>terminal</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre>python run_with_dashboard.py -c config.yaml</pre>
+          </div>
+          <p><strong>Polymarket US</strong> — use the official quickstart after onboarding:</p>
+          <div class="code-block">
+            <div class="code-header"><span>docs</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre><span class="comment"># See: https://docs.polymarket.us/trader-guide/quickstart</span>
+<span class="comment"># 1. Exchange CLIENT_ID + private_key.pem → access token</span>
+<span class="comment"># 2. GET /v1/whoami with x-participant-id</span>
+<span class="comment"># 3. POST /v1/positions/balance → buying power</span>
+<span class="comment"># 4. Place + cancel a small limit order on preprod first</span></pre>
+          </div>
+          <p><strong>Kalshi auth</strong> — after you have API keys:</p>
+          <div class="code-block">
+            <div class="code-header"><span>docs</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre><span class="comment"># See: https://docs.kalshi.com/getting_started/quick_start_authenticated_requests</span>
+<span class="comment"># GET /portfolio/balance with RSA-PSS signed headers</span></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 7 -->
+    <section style="--i: 8">
+      <div class="card" data-step="7">
+        <div class="card-header" data-toggle>
+          <div class="step-num">7</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Revised build plan (US)</div>
+            <div class="card-subtitle">What we implement next — in order</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <table>
+            <thead><tr><th>Phase</th><th>Scope</th><th>Unlocks</th></tr></thead>
+            <tbody>
+              <tr><td><strong>US-1</strong></td><td>Polymarket US client — done</td><td>Single-leg live on Polymarket US</td></tr>
+              <tr><td><strong>US-2</strong></td><td>Kalshi auth + trading: RSA signing, orders, positions, balance</td><td>Single-leg live on Kalshi</td></tr>
+              <tr><td><strong>US-3</strong></td><td>Platform abstraction + dual balance sync + position reconciliation</td><td>Safe multi-venue portfolio view</td></tr>
+              <tr><td><strong>US-4</strong></td><td>Cross-platform two-leg coordinator + verified pair whitelist + leg-risk unwind</td><td>Your actual arb goal</td></tr>
+              <tr><td><strong>US-5</strong></td><td>WebSocket books, alerting, kill-switch unwind</td><td>Production ops</td></tr>
+            </tbody>
+          </table>
+          <div class="callout">
+            <strong>Matcher note:</strong> Polymarket US uses slugs/symbols; today's matcher compares Global Polymarket questions to Kalshi titles. US-1 must feed US market metadata into the matcher (or a parallel US↔Kalshi matcher).
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 8 -->
+    <section style="--i: 9">
+      <div class="card" data-step="8">
+        <div class="card-header" data-toggle>
+          <div class="step-num">8</div>
+          <div class="card-title-wrap">
+            <div class="card-title">Go live (after US-1 + US-2)</div>
+            <div class="card-subtitle">Not available yet — target command shape</div>
+          </div>
+          <button class="check-btn" data-check aria-label="Mark step complete"></button>
+        </div>
+        <div class="card-body">
+          <div class="code-block">
+            <div class="code-header"><span>terminal (future)</span><button class="copy-btn" data-copy>copy</button></div>
+            <pre>python run_with_dashboard.py --live -c config.live.us.yaml</pre>
+          </div>
+          <div class="callout success">
+            Polymarket US live trading is wired. Kalshi live + two-leg cross-platform execution are next.
+          </div>
+          <p><strong>First live session checklist (when ready):</strong></p>
+          <ul>
+            <li>Start on Kalshi demo or Polymarket US preprod if available</li>
+            <li>Single verified cross-platform pair, $5 max per leg</li>
+            <li>Dashboard shows LIVE on both venues</li>
+            <li>Kill switch armed (<code>max_daily_loss</code>)</li>
+            <li>Stay at the machine — Ctrl+C cancels open orders</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- What I need from you -->
+    <section style="--i: 10">
+      <div class="card open" data-step="needs">
+        <div class="card-header" data-toggle>
+          <div class="step-num">?</div>
+          <div class="card-title-wrap">
+            <div class="card-title">What I need from you to start US-1</div>
+            <div class="card-subtitle">Redact secrets — confirm availability only</div>
+          </div>
+        </div>
+        <div class="card-body" style="display:block">
+          <ol style="padding-left:1.2rem;color:var(--text-muted);font-size:0.92rem">
+            <li style="margin-bottom:0.5rem"><strong>Polymarket US:</strong> KYC done? Have <code>key_id</code> + <code>secret_key</code> from developer portal?</li>
+            <li style="margin-bottom:0.5rem"><strong>Kalshi:</strong> API key created? Private key saved? Production or demo first?</li>
+            <li style="margin-bottom:0.5rem"><strong>Balances:</strong> Rough USD on each platform (confirms funded accounts)</li>
+            <li style="margin-bottom:0.5rem"><strong>Priority:</strong> Cross-platform arb first, or single-platform on one venue while we build the other?</li>
+            <li><strong>Markets:</strong> 1–3 event types you care about (e.g. NFL, elections, macro) — helps whitelist + matcher tuning</li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Generated for <code>polymarket-arbitrage</code> · US traders (Polymarket US + Kalshi) ·
+      <a href="https://docs.polymarket.us/trader-guide/quickstart">Polymarket US docs</a> ·
+      <a href="https://docs.kalshi.com">Kalshi docs</a>
+    </footer>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "polymarket-us-setup-checklist-v1";
+    const TOTAL_STEPS = 8;
+
+    function loadState() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); }
+      catch { return {}; }
+    }
+
+    function saveState(state) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function updateProgress(state) {
+      const done = Object.values(state).filter(Boolean).length;
+      const pct = Math.round((done / TOTAL_STEPS) * 100);
+      document.getElementById("progressFill").style.width = pct + "%";
+      document.getElementById("progressText").textContent = done + " of " + TOTAL_STEPS + " steps complete";
+    }
+
+    const state = loadState();
+
+    document.querySelectorAll("[data-step]").forEach((card) => {
+      const id = card.dataset.step;
+      if (!/^\d+$/.test(id)) return;
+
+      const btn = card.querySelector("[data-check]");
+      const header = card.querySelector(".card-header");
+      const stepNum = card.querySelector(".step-num");
+
+      if (state[id]) {
+        btn.classList.add("checked");
+        header.classList.add("done");
+      }
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const now = !btn.classList.contains("checked");
+        btn.classList.toggle("checked", now);
+        header.classList.toggle("done", now);
+        state[id] = now;
+        saveState(state);
+        updateProgress(state);
+      });
+    });
+
+    updateProgress(state);
+
+    document.querySelectorAll("[data-toggle]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        if (e.target.closest("[data-check]")) return;
+        el.closest(".card").classList.toggle("open");
+      });
+    });
+
+    document.querySelectorAll(".card[data-step]").forEach((card, i) => {
+      if (i === 0) card.classList.add("open");
+    });
+
+    document.querySelectorAll(".copy-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const pre = btn.closest(".code-block").querySelector("pre");
+        const text = pre.innerText;
+        try {
+          await navigator.clipboard.writeText(text);
+          btn.textContent = "copied";
+          btn.classList.add("copied");
+          setTimeout(() => { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1600);
+        } catch {
+          btn.textContent = "select manually";
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -15,6 +15,7 @@ class OrderSide(Enum):
     """Order side enumeration."""
     BUY = "buy"
     SELL = "sell"
+    HOLD = "hold"
 
 
 class OrderStatus(Enum):
@@ -269,6 +270,8 @@ class Trade:
     size: float
     fee: float = 0.0
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    is_simulated: bool = False
+    simulation_label: str = ""
     
     @property
     def notional(self) -> float:
@@ -288,6 +291,7 @@ class Opportunity:
     opportunity_type: OpportunityType
     market_id: str
     edge: float  # Expected profit margin
+    market_question: str = ""
     
     # Pricing snapshot
     best_bid_yes: Optional[float] = None
@@ -319,6 +323,7 @@ class Signal:
     signal_id: str
     action: str  # "place_orders", "cancel_orders", "modify_orders"
     market_id: str
+    market_question: str = ""
     opportunity: Optional[Opportunity] = None
     orders: list[dict] = field(default_factory=list)  # Desired order specs
     cancel_order_ids: list[str] = field(default_factory=list)
@@ -357,4 +362,3 @@ class MarketState:
         yes_notional = self.yes_position.notional if self.yes_position else 0
         no_notional = self.no_position.notional if self.no_position else 0
         return yes_notional + no_notional
-
