@@ -14,6 +14,7 @@ import math
 import os
 import sqlite3
 import stat
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -32,26 +33,33 @@ MAX_EVENT_BYTES = 64_000
 _EMPTY_DIGEST = "0" * 64
 
 
+class JournalOwnershipError(RuntimeError):
+    """Raised when another process owns the execution journal."""
+
+
 class ExecutionJournal:
     """Append-only, integrity-checked SQLite journal owned by one process.
 
-    SQLite serializes writers across processes.  Every public mutation obtains
-    an immediate write transaction, replays and validates the existing chain,
-    validates the requested transition in the domain model, and only then
-    appends the event.  Callers must commit ``start_submission`` before making
-    any future venue mutation.
+    A non-blocking exclusive file lease prevents multiple processes from
+    independently controlling execution state.  Every public mutation obtains
+    an immediate SQLite write transaction, replays and validates the existing
+    chain, validates the requested transition in the domain model, and only
+    then appends the event.  Callers must commit ``start_submission`` before
+    making any future venue mutation.
     """
 
     def __init__(self, path: Path):
         self.path = Path(path)
+        self.ownership_path = Path(f"{self.path}.lock")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._validate_destination()
-        self._connection = sqlite3.connect(
-            self.path,
-            isolation_level=None,
-            timeout=5.0,
-        )
+        self._ownership_fd = self._acquire_ownership()
         try:
+            self._connection = sqlite3.connect(
+                self.path,
+                isolation_level=None,
+                timeout=5.0,
+            )
             os.chmod(self.path, 0o600)
             self._connection.row_factory = sqlite3.Row
             self._connection.execute("PRAGMA foreign_keys = ON")
@@ -70,7 +78,10 @@ class ExecutionJournal:
             if integrity is None or integrity[0] != "ok":
                 raise ValueError("execution journal failed SQLite integrity check")
         except BaseException:
-            self._connection.close()
+            connection = getattr(self, "_connection", None)
+            if connection is not None:
+                connection.close()
+            self._release_ownership()
             raise
 
     def __enter__(self) -> ExecutionJournal:
@@ -80,7 +91,10 @@ class ExecutionJournal:
         self.close()
 
     def close(self) -> None:
-        self._connection.close()
+        try:
+            self._connection.close()
+        finally:
+            self._release_ownership()
 
     def create_execution(self, execution: TwoLegExecution) -> TwoLegExecution:
         """Persist a pristine immutable intent before either leg may submit."""
@@ -218,6 +232,51 @@ class ExecutionJournal:
             return
         if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
             raise ValueError("execution journal must be a regular file, not a symlink")
+
+    def _acquire_ownership(self) -> int:
+        try:
+            ownership_mode = self.ownership_path.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISLNK(ownership_mode) or not stat.S_ISREG(ownership_mode):
+                raise ValueError(
+                    "execution journal ownership lease must be a regular file"
+                )
+        flags = os.O_RDWR | os.O_CREAT
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(self.ownership_path, flags, 0o600)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError("execution journal must be a regular file")
+            os.fchmod(fd, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise JournalOwnershipError(
+                    "execution journal is owned by another process"
+                ) from exc
+            current = self.ownership_path.stat()
+            if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise JournalOwnershipError(
+                    "execution journal changed while acquiring ownership"
+                )
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def _release_ownership(self) -> None:
+        fd = self._ownership_fd
+        if fd < 0:
+            return
+        self._ownership_fd = -1
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def _initialize_schema(self) -> None:
         self._connection.executescript("""

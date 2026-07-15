@@ -1,10 +1,13 @@
 import json
 import sqlite3
 import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from core.execution_journal import ExecutionJournal
+from core.execution_journal import ExecutionJournal, JournalOwnershipError
 from core.two_leg_execution import (
     ExecutionPhase,
     LegIntent,
@@ -40,6 +43,39 @@ def test_private_journal_round_trip_preserves_stable_intent(tmp_path):
         == created.legs["poly"].idempotency_key
         == expected.legs["poly"].idempotency_key
     )
+
+
+def test_journal_ownership_is_exclusive_across_processes(tmp_path):
+    path = tmp_path / "executions.sqlite3"
+    probe = """
+import sys
+from pathlib import Path
+from core.execution_journal import ExecutionJournal, JournalOwnershipError
+
+try:
+    ExecutionJournal(Path(sys.argv[1]))
+except JournalOwnershipError:
+    raise SystemExit(0)
+raise SystemExit(2)
+"""
+
+    with ExecutionJournal(path):
+        with pytest.raises(JournalOwnershipError, match="owned by another process"):
+            ExecutionJournal(path)
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+    assert result.returncode == 0, result.stderr
+
+    with ExecutionJournal(path):
+        pass
+
+    assert stat.S_IMODE(Path(f"{path}.lock").stat().st_mode) == 0o600
 
 
 def test_durable_transitions_replay_ambiguous_and_partial_state(tmp_path):
@@ -143,3 +179,10 @@ def test_journal_refuses_symlink_and_non_regular_destinations(tmp_path):
         ExecutionJournal(link)
     with pytest.raises(ValueError, match="regular file"):
         ExecutionJournal(tmp_path)
+
+    unsafe_path = tmp_path / "unsafe.sqlite3"
+    lease_target = tmp_path / "lease-target"
+    lease_target.touch()
+    Path(f"{unsafe_path}.lock").symlink_to(lease_target)
+    with pytest.raises(ValueError, match="ownership lease must be a regular file"):
+        ExecutionJournal(unsafe_path)
