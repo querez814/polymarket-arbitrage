@@ -10,9 +10,11 @@ API Documentation: https://docs.kalshi.com/getting_started/quick_start_market_da
 
 import asyncio
 import logging
+import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional, AsyncIterator
 import httpx
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -28,6 +30,55 @@ from kalshi_client.models import (
 from polymarket_client.models import PriceLevel, OrderBook
 
 logger = logging.getLogger(__name__)
+_FIXED_POINT_PATTERN = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
+
+
+def _parse_orderbook_fp_levels(raw_levels: object, side: str) -> list[PriceLevel]:
+    """Validate one current Kalshi fixed-point bid side and return best-first levels."""
+    if not isinstance(raw_levels, list):
+        raise ValueError(f"orderbook_fp.{side} must be an array")
+
+    levels: list[PriceLevel] = []
+    previous_price: Optional[Decimal] = None
+    for index, raw_level in enumerate(raw_levels):
+        if not isinstance(raw_level, list) or len(raw_level) != 2:
+            raise ValueError(f"orderbook_fp.{side}[{index}] must be a two-item array")
+        raw_price, raw_size = raw_level
+        if not isinstance(raw_price, str) or not isinstance(raw_size, str):
+            raise ValueError(
+                f"orderbook_fp.{side}[{index}] values must be fixed-point strings"
+            )
+        if not _FIXED_POINT_PATTERN.fullmatch(
+            raw_price
+        ) or not _FIXED_POINT_PATTERN.fullmatch(raw_size):
+            raise ValueError(
+                f"orderbook_fp.{side}[{index}] values must use plain fixed-point notation"
+            )
+
+        try:
+            price = Decimal(raw_price)
+            size = Decimal(raw_size)
+        except InvalidOperation as exc:
+            raise ValueError(
+                f"orderbook_fp.{side}[{index}] contains an invalid decimal"
+            ) from exc
+
+        if not price.is_finite() or not (Decimal("0") < price < Decimal("1")):
+            raise ValueError(
+                f"orderbook_fp.{side}[{index}] price must be finite and between 0 and 1"
+            )
+        if not size.is_finite() or size <= 0:
+            raise ValueError(
+                f"orderbook_fp.{side}[{index}] size must be finite and positive"
+            )
+        if previous_price is not None and price <= previous_price:
+            raise ValueError(f"orderbook_fp.{side} prices must be strictly ascending")
+
+        previous_price = price
+        levels.append(PriceLevel(price=float(price), size=float(size)))
+
+    levels.reverse()
+    return levels
 
 
 class KalshiClient:
@@ -487,47 +538,30 @@ class KalshiClient:
         if not data:
             return None
 
-        yes_bids = []
-        no_bids = []
-
-        # Newer fractional-trading shape: dollar strings under orderbook_fp.
+        # Only the current fixed-point schema is admissible. Silently mixing or
+        # falling back to deprecated cent levels can manufacture incomplete or
+        # duplicated executable depth.
         ob_fp = data.get("orderbook_fp")
-        if ob_fp:
-            for level in ob_fp.get("yes_dollars", []):
-                if len(level) >= 2:
-                    yes_bids.append(PriceLevel(
-                        price=float(level[0]),
-                        size=float(level[1]),
-                    ))
-            for level in ob_fp.get("no_dollars", []):
-                if len(level) >= 2:
-                    no_bids.append(PriceLevel(
-                        price=float(level[0]),
-                        size=float(level[1]),
-                    ))
+        if not isinstance(ob_fp, Mapping):
+            logger.warning("Invalid Kalshi orderbook for %s: missing orderbook_fp", ticker)
+            return None
+        if "yes_dollars" not in ob_fp or "no_dollars" not in ob_fp:
+            logger.warning(
+                "Invalid Kalshi orderbook for %s: incomplete orderbook_fp sides",
+                ticker,
+            )
+            return None
 
-        # Older shape: cent integer levels under orderbook.
-        ob = data.get("orderbook", {})
-        for level in ob.get("yes", []):
-            if len(level) >= 2:
-                price_cents = level[0]
-                quantity = level[1]
-                yes_bids.append(PriceLevel(
-                    price=price_cents / 100.0,  # Convert to dollars
-                    size=float(quantity)
-                ))
-        for level in ob.get("no", []):
-            if len(level) >= 2:
-                price_cents = level[0]
-                quantity = level[1]
-                no_bids.append(PriceLevel(
-                    price=price_cents / 100.0,
-                    size=float(quantity)
-                ))
-        
-        # Sort bids descending (best/highest first)
-        yes_bids.sort(key=lambda x: x.price, reverse=True)
-        no_bids.sort(key=lambda x: x.price, reverse=True)
+        try:
+            yes_bids = _parse_orderbook_fp_levels(
+                ob_fp["yes_dollars"], "yes_dollars"
+            )
+            no_bids = _parse_orderbook_fp_levels(
+                ob_fp["no_dollars"], "no_dollars"
+            )
+        except ValueError as exc:
+            logger.warning("Invalid Kalshi orderbook for %s: %s", ticker, exc)
+            return None
         
         return KalshiOrderBook(
             ticker=ticker,
