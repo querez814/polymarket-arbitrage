@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -247,6 +248,85 @@ mode:
         load_config(str(config_path))
 
 
+@pytest.mark.parametrize(
+    "enabled_strategy",
+    ["bundle_arb_enabled", "mm_enabled"],
+)
+def test_live_mode_rejects_strategies_outside_recovery_admission(
+    tmp_path, enabled_strategy
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-private-key
+trading:
+  bundle_arb_enabled: false
+  mm_enabled: false
+  {enabled_strategy}: true
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: false
+  kalshi_enabled: false
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="crash-safe recovery admission path"):
+        load_config(str(config_path))
+
+
+@pytest.mark.parametrize(
+    ("template_name", "environment"),
+    [
+        (
+            "config.live.yaml.example",
+            {
+                "POLYMARKET_API_KEY": "test-key",
+                "POLYMARKET_API_SECRET": "test-secret",
+                "POLYMARKET_PASSPHRASE": "test-passphrase",
+                "POLYMARKET_PRIVATE_KEY": "test-private-key",
+            },
+        ),
+        (
+            "config.live.us.yaml.example",
+            {
+                "POLYMARKET_PLATFORM": "us",
+                "POLYMARKET_US_KEY_ID": "test-key-id",
+                "POLYMARKET_US_SECRET_KEY": "test-secret-key",
+            },
+        ),
+    ],
+)
+def test_tracked_live_templates_disable_unrecovered_execution(
+    monkeypatch, template_name, environment
+):
+    for variable in (
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_API_SECRET",
+        "POLYMARKET_PASSPHRASE",
+        "POLYMARKET_PRIVATE_KEY",
+        "POLYMARKET_PLATFORM",
+        "POLYMARKET_US_KEY_ID",
+        "POLYMARKET_US_SECRET_KEY",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    for variable, value in environment.items():
+        monkeypatch.setenv(variable, value)
+
+    template = Path(__file__).parents[1] / template_name
+    config = load_config(str(template))
+
+    assert config.is_live
+    assert config.trading.bundle_arb_enabled is False
+    assert config.trading.mm_enabled is False
+
+
 def test_live_override_resolves_wallet_key_from_explicit_keychain_label(
     tmp_path, monkeypatch
 ):
@@ -258,6 +338,9 @@ api:
   api_secret: test-secret
   passphrase: test-passphrase
   polymarket_private_key_keychain_label: test-wallet-label
+trading:
+  bundle_arb_enabled: false
+  mm_enabled: false
 mode:
   trading_mode: dry_run
   data_mode: real
@@ -338,6 +421,9 @@ def test_live_mode_accepts_runtime_secrets_with_tracked_config(tmp_path, monkeyp
     config_path = tmp_path / "tracked-live.yaml"
     config_path.write_text(
         """
+trading:
+  bundle_arb_enabled: false
+  mm_enabled: false
 mode:
   trading_mode: live
   data_mode: real

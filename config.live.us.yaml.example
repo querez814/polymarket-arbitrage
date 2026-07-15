@@ -39,7 +39,7 @@ trading:
   markets: []
 
   min_edge: 0.01
-  bundle_arb_enabled: true
+  bundle_arb_enabled: false     # execution is blocked until crash-safe recovery is wired
   bundle_cooldown_seconds: 2.0
 
   min_spread: 0.05

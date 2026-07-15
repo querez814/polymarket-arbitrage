@@ -587,6 +587,11 @@ def validate_config(config: BotConfig) -> None:
             errors.append("mode.data_mode must be 'real' in live mode")
         if config.mode.simulate_fills:
             errors.append("mode.simulate_fills must be false in live mode")
+        if config.trading.bundle_arb_enabled or config.trading.mm_enabled:
+            errors.append(
+                "trading.bundle_arb_enabled and trading.mm_enabled must both be false "
+                "in live mode until execution uses the crash-safe recovery admission path"
+            )
         if config.is_polymarket_us:
             _validate_production_urls(config, POLYMARKET_US_PRODUCTION_URLS, errors)
             if not config.api.polymarket_us_key_id:
