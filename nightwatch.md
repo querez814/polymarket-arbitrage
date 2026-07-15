@@ -20,11 +20,21 @@ No bot, dashboard, scanner, websocket feed, live collector, or other long-runnin
 
 ## Credential and configuration validation
 
-Not attempted yet. This is the mandatory next technical validation. It must inspect `config.polymarket.yaml` only through redacted structural checks, prove the file remains ignored, confirm Keychain item discoverability without printing its value, and attempt only the narrowest official read-only Polymarket authentication check.
+Completed at 2026-07-14 21:51 EDT using redacted checks only:
+
+- `config.polymarket.yaml` exists, is untracked, and is explicitly ignored by `.gitignore:71`. Its permissions were tightened from `0644` to owner-only `0600` during this iteration.
+- A structural YAML inspection printed field names and presence booleans only. The file contains exactly one top-level `api` section with non-empty `api_key`, `api_secret`, and `passphrase` fields. It contains no wallet private key, platform override, chain override, mode setting, Kalshi credential, or Polymarket US credential.
+- The macOS Keychain item labelled `polymarket-trading-wallet` is discoverable. Its value was never printed, logged, serialized, copied, or written to disk.
+- The official Python CLOB v2 SDK successfully authenticated a read-only `get_open_orders(None, True)` request against `https://clob.polymarket.com` by combining the ignored L2 credentials with the Keychain wallet value entirely in process. The response was a list with zero open orders. No create, sign, post, cancel, balance-changing, or allowance-changing method was invoked.
+- This proves that the current L2 credential triplet and matching wallet can authenticate a read-only CLOB query. It does **not** prove order permissions, balances, allowances, funding, live placement, cancellation, profitability, or operational readiness.
+- The application config loader does not retrieve the wallet key from Keychain, and the ignored file intentionally has no `private_key`. Consequently, current application live startup cannot use this credential arrangement without separate environment injection. That mismatch remains part of G4 and will be audited in a later implementation slice.
 
 ## Official documentation consulted
 
-None yet. Official Polymarket CLOB and Kalshi primary-source research follows credential/config validation.
+- [Polymarket CLOB Authentication](https://docs.polymarket.com/api-reference/authentication) — consulted 2026-07-14. The official documentation defines L1 wallet authentication and L2 HMAC authentication; L2 uses API key, secret, passphrase, signer address, timestamp, and request signature. It explicitly includes querying open orders and balances/allowances among L2 operations.
+- [Polymarket Order Overview](https://docs.polymarket.com/trading/orders/overview) — consulted 2026-07-14. The official documentation states that order queries require L2 authentication and shows the Python client query flow. Only the read-only open-order query was exercised here.
+
+Broader current Polymarket and Kalshi protocol research remains pending; these two sources were consulted narrowly to select and verify the credential probe.
 
 ## Findings by severity
 
@@ -44,6 +54,11 @@ No finding is marked resolved on the strength of the source report alone.
 - Converted the HTML production-readiness audit into a structured Markdown audit without changing implementation code.
 - Initialized this durable record with branch/baseline identity, safety constraints, finding inventory, and explicit pending validation.
 
+### 2026-07-14 — Iteration 2
+
+- Tightened the ignored production credential file to owner-only permissions.
+- Completed the mandatory redacted Polymarket credential/config validation and recorded its limits without changing application implementation.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -53,15 +68,28 @@ No finding is marked resolved on the strength of the source report alone.
 - Redacted pattern scan of the two new documents for assigned private keys, API secrets/passphrases, or 64-hex wallet material: **PASS** (no matches).
 - Implementation tests were not run because this iteration changed documentation only. No live workflow was run.
 
+### 2026-07-14 — Iteration 2
+
+- `git check-ignore -v config.polymarket.yaml`: **PASS** — ignored by `.gitignore:71`.
+- `git ls-files --error-unmatch config.polymarket.yaml`: **PASS** — command did not find the file, proving it is untracked.
+- Redacted YAML structural inspection: **PASS** — L2 triplet present; wallet key and unrelated venue credentials absent; no credential values emitted.
+- `security find-generic-password -l polymarket-trading-wallet` with all output suppressed: **PASS** — label discoverable without reading or printing its value.
+- `stat -f ... config.polymarket.yaml`: **PASS** after hardening — mode `-rw-------`, owner `zaki`.
+- Official SDK read-only `ClobClient.get_open_orders(None, True)` probe: **PASS** — authenticated list response, zero open orders; no order or account mutation endpoint invoked.
+- Initial SDK probe using the documentation's generic `get_orders()` name: **EXPECTED NON-MUTATING FAILURE** — installed Python v2 SDK exposes `get_open_orders()` instead. Method signature inspection identified the correct read-only call before the successful probe.
+- `uv run python -c 'import yaml'`: **FAIL** — the repository's default uv environment does not currently contain declared dependency PyYAML. The probe used ephemeral `uv run --with pyyaml --with py-clob-client-v2`; dependency/environment reconciliation remains for later verification.
+- No implementation tests were run because this iteration changed only the durable record and local permissions on an ignored credential file. No live workflow was run.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- Redacted credential/config validation has not yet been performed.
-- Official exchange documentation has not yet been researched and recorded.
+- Broader official Polymarket and Kalshi documentation research has not yet been completed or recorded.
 - G1–G14 have not yet been audited against current code or current official protocol behavior.
+- G4 remains open: the authenticated Keychain-backed arrangement is not integrated with the application config loader, and production startup safety has not yet been reconciled.
+- The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
 - Full static, test, configuration, offline matched-data, ML, and dependency/security verification remains outstanding.
 - Live-only evidence is prohibited during this run and must never be implied.
 
