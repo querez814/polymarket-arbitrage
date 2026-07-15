@@ -92,6 +92,8 @@ class RiskConfig:
     """Risk configuration."""
     max_order_notional: float = 15.0
     max_open_orders: int = 4
+    max_order_attempts_per_minute: int = 10
+    max_daily_order_attempts: int = 100
     max_position_per_market: float = 200.0
     max_global_exposure: float = 5000.0
     max_daily_loss: float = 500.0
@@ -347,6 +349,8 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
             "risk": {
                 "max_order_notional": 20.0,
                 "max_open_orders": 6,
+                "max_order_attempts_per_minute": 20,
+                "max_daily_order_attempts": 250,
                 "max_position_per_market": 25.0,
                 "max_global_exposure": 75.0,
                 "max_daily_loss": 15.0,
@@ -380,6 +384,8 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
             "risk": {
                 "max_order_notional": 30.0,
                 "max_open_orders": 8,
+                "max_order_attempts_per_minute": 30,
+                "max_daily_order_attempts": 500,
                 "max_position_per_market": 35.0,
                 "max_global_exposure": 100.0,
                 "max_daily_loss": 20.0,
@@ -452,6 +458,11 @@ def validate_config(config: BotConfig) -> None:
         or config.risk.max_open_orders <= 0
     ):
         errors.append("risk.max_open_orders must be a positive integer")
+
+    for field_name in ("max_order_attempts_per_minute", "max_daily_order_attempts"):
+        value = getattr(config.risk, field_name)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            errors.append(f"risk.{field_name} must be a positive integer")
 
     if config.risk.max_position_per_market <= 0:
         errors.append("risk.max_position_per_market must be positive")

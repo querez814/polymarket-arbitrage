@@ -6,7 +6,7 @@ from core.execution import ExecutionConfig, ExecutionEngine
 from core.portfolio import Portfolio
 from core.risk_manager import RiskConfig, RiskManager
 from polymarket_client import PolymarketClient
-from polymarket_client.models import Order, OrderSide, OrderStatus, TokenType, Trade
+from polymarket_client.models import Order, OrderSide, OrderStatus, Signal, TokenType, Trade
 from utils.paper_trade_store import PaperTradeStore
 
 
@@ -32,6 +32,43 @@ async def test_placement_error_is_not_blindly_retried():
 
     assert order is None
     client.place_order.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_placement_consumes_attempt_cap_before_client_call():
+    client = AsyncMock()
+    client.place_order.side_effect = TimeoutError("acceptance state unknown")
+    risk_manager = RiskManager(RiskConfig(
+        max_order_attempts_per_minute=1,
+        max_daily_order_attempts=10,
+        trade_only_high_volume=False,
+    ))
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=risk_manager,
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+    signal = Signal(
+        signal_id="signal-1",
+        action="place_orders",
+        market_id="market-1",
+        orders=[{
+            "token_type": TokenType.YES,
+            "side": OrderSide.BUY,
+            "price": 0.50,
+            "size": 10.0,
+            "strategy_tag": "bundle_arb",
+        }],
+    )
+
+    await engine._handle_place_orders(signal)
+    signal.signal_id = "signal-2"
+    await engine._handle_place_orders(signal)
+
+    client.place_order.assert_awaited_once()
+    assert risk_manager.get_summary()["order_attempts_last_minute"] == 1
+    assert engine.stats.risk_rejections == 1
 
 
 @pytest.mark.asyncio

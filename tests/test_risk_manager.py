@@ -2,6 +2,8 @@
 Tests for the Risk Manager
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from polymarket_client.models import Order, OrderSide, OrderStatus, TokenType, Trade
@@ -194,6 +196,37 @@ class TestOrderValidation:
         assert manager.within_global_limits() is True
         manager.reserve_open_order("open-4", "fourth_market", 5.0)
         assert manager.within_global_limits() is False
+
+    def test_rolling_order_attempt_cap_charges_ambiguous_attempts(self):
+        manager = RiskManager(RiskConfig(
+            max_order_attempts_per_minute=2,
+            max_daily_order_attempts=10,
+            trade_only_high_volume=False,
+        ))
+        start = datetime(2026, 7, 15, 12, 0, 0)
+
+        assert manager.admit_order_attempt(start) is True
+        assert manager.admit_order_attempt(start + timedelta(seconds=59)) is True
+        assert manager.admit_order_attempt(start + timedelta(seconds=59)) is False
+        assert manager.admit_order_attempt(start + timedelta(seconds=60)) is True
+
+        summary = manager.get_summary()
+        assert summary["order_attempts_last_minute"] == 2
+        assert summary["daily_order_attempts"] == 3
+
+    def test_daily_order_attempt_cap_resets_on_utc_date_change(self):
+        manager = RiskManager(RiskConfig(
+            max_order_attempts_per_minute=10,
+            max_daily_order_attempts=2,
+            trade_only_high_volume=False,
+        ))
+        day_one = datetime(2026, 7, 15, 23, 58, 0)
+
+        assert manager.admit_order_attempt(day_one) is True
+        assert manager.admit_order_attempt(day_one + timedelta(minutes=1)) is True
+        assert manager.admit_order_attempt(day_one + timedelta(minutes=1)) is False
+        assert manager.admit_order_attempt(day_one + timedelta(minutes=2)) is True
+        assert manager.get_summary()["daily_order_attempts"] == 1
 
 
 class TestKillSwitch:

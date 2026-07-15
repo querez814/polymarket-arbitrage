@@ -388,6 +388,44 @@ class ExecutionEngine:
                         reason_detail="Order rejected by risk manager.",
                     )
                     continue
+
+                # Charge the attempt before the only client call. A timeout or
+                # transport failure may follow venue acceptance, so ambiguous
+                # attempts conservatively continue to consume both budgets.
+                if not self.risk_manager.admit_order_attempt():
+                    self.stats.signals_rejected += 1
+                    self.stats.risk_rejections += 1
+                    logger.warning(
+                        "Order rejected by placement-attempt cap: %s", order_spec
+                    )
+                    self._record_decision(
+                        outcome=DecisionOutcome.REJECT,
+                        reason_code="order_attempt_limit",
+                        explanation="Rejected order because a local placement-attempt cap was reached.",
+                        market_id=signal.market_id,
+                        evidence={
+                            "signal_id": signal.signal_id,
+                            "risk": self.risk_manager.get_summary(),
+                            "order": order_spec,
+                        },
+                        orders=[order_spec],
+                        related_id=signal.signal_id,
+                    )
+                    self._record_paper_event(
+                        event_type="rejected",
+                        signal_id=signal.signal_id,
+                        market_id=signal.market_id,
+                        market_question=signal.market_question,
+                        token_type=self._enum_value(token_type),
+                        side=self._enum_value(side),
+                        price=price,
+                        size=size,
+                        notional=proposed_order.notional,
+                        strategy_tag=strategy_tag,
+                        reason_code="order_attempt_limit",
+                        reason_detail="Local placement-attempt cap reached.",
+                    )
+                    continue
                 
                 # Place the order
                 order = await self._place_order(

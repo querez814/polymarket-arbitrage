@@ -7,6 +7,7 @@ Enforces position limits, loss limits, and other risk constraints.
 
 import logging
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Set
@@ -23,6 +24,8 @@ class RiskConfig:
     # Position limits
     max_order_notional: float = 15.0  # Max dollars committed by one order
     max_open_orders: int = 4  # Max acknowledged orders with residual exposure
+    max_order_attempts_per_minute: int = 10
+    max_daily_order_attempts: int = 100
     max_position_per_market: float = 200.0  # Max notional per market
     max_global_exposure: float = 5000.0  # Max total exposure
     
@@ -72,6 +75,9 @@ class RiskManager:
         self._market_exposure: dict[str, float] = {}
         self._strategy_exposure: dict[str, float] = {}
         self._open_order_exposure: dict[str, tuple[str, float]] = {}
+        self._order_attempt_times: deque[datetime] = deque()
+        self._daily_order_attempts = 0
+        self._daily_order_attempt_date = datetime.utcnow().date()
         
         # Volume cache
         self._market_volumes: dict[str, float] = {}
@@ -84,6 +90,8 @@ class RiskManager:
             f"RiskManager initialized | "
             f"max_order={config.max_order_notional} | "
             f"max_open_orders={config.max_open_orders} | "
+            f"max_attempts_per_minute={config.max_order_attempts_per_minute} | "
+            f"max_daily_attempts={config.max_daily_order_attempts} | "
             f"max_per_market={config.max_position_per_market} | "
             f"max_global={config.max_global_exposure} | "
             f"max_daily_loss={config.max_daily_loss}"
@@ -210,6 +218,42 @@ class RiskManager:
                 self._trigger_kill_switch("Drawdown limit exceeded")
             return False
         
+        return True
+
+    def admit_order_attempt(self, now: Optional[datetime] = None) -> bool:
+        """Atomically charge one placement attempt against local safety caps.
+
+        Call this immediately before the one exchange placement call. Attempts
+        remain charged when the venue response is an error or ambiguous because
+        either outcome may still represent venue-side exposure.
+        """
+        attempted_at = now or datetime.utcnow()
+        cutoff = attempted_at - timedelta(minutes=1)
+        while self._order_attempt_times and self._order_attempt_times[0] <= cutoff:
+            self._order_attempt_times.popleft()
+
+        attempted_date = attempted_at.date()
+        if attempted_date != self._daily_order_attempt_date:
+            self._daily_order_attempt_date = attempted_date
+            self._daily_order_attempts = 0
+
+        if len(self._order_attempt_times) >= self.config.max_order_attempts_per_minute:
+            logger.warning(
+                "Order rejected: rolling placement-attempt limit reached | "
+                f"attempts={len(self._order_attempt_times)} >= "
+                f"{self.config.max_order_attempts_per_minute}"
+            )
+            return False
+        if self._daily_order_attempts >= self.config.max_daily_order_attempts:
+            logger.warning(
+                "Order rejected: daily placement-attempt limit reached | "
+                f"attempts={self._daily_order_attempts} >= "
+                f"{self.config.max_daily_order_attempts}"
+            )
+            return False
+
+        self._order_attempt_times.append(attempted_at)
+        self._daily_order_attempts += 1
         return True
     
     def update_position(
@@ -405,6 +449,10 @@ class RiskManager:
             "open_order_exposure": open_order_exposure,
             "open_order_count": open_order_count,
             "max_open_orders": self.config.max_open_orders,
+            "order_attempts_last_minute": len(self._order_attempt_times),
+            "max_order_attempts_per_minute": self.config.max_order_attempts_per_minute,
+            "daily_order_attempts": self._daily_order_attempts,
+            "max_daily_order_attempts": self.config.max_daily_order_attempts,
             "strategy_exposure": self._strategy_exposure.copy(),
             "session_trade_count": len(self._session_trades),
             "within_limits": self.within_global_limits(),

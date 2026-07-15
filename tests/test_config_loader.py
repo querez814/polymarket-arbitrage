@@ -34,6 +34,8 @@ mode:
     assert config.risk.max_position_per_market == 35.0
     assert config.risk.max_order_notional == 30.0
     assert config.risk.max_open_orders == 8
+    assert config.risk.max_order_attempts_per_minute == 30
+    assert config.risk.max_daily_order_attempts == 500
     assert config.risk.strategy_exposure_limits["market_making"] == 35.0
 
 
@@ -109,6 +111,26 @@ mode:
 
     with pytest.raises(
         ConfigError, match="risk.max_open_orders must be a positive integer"
+    ):
+        load_config(str(config_path))
+
+
+@pytest.mark.parametrize("field_name", ["max_order_attempts_per_minute", "max_daily_order_attempts"])
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "true"])
+def test_rejects_invalid_order_attempt_caps(tmp_path, field_name, value):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+risk:
+  {field_name}: {value}
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError, match=rf"risk.{field_name} must be a positive integer"
     ):
         load_config(str(config_path))
 
