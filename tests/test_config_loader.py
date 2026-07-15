@@ -246,3 +246,173 @@ mode:
 
     assert "verify the item exists and access is approved" in str(error.value)
     assert "secret-looking-subprocess-output" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "override"),
+    [
+        ("polymarket_rest_url", "https://clob.example.test"),
+        ("polymarket_ws_url", "wss://ws.example.test/market"),
+        ("gamma_api_url", "https://gamma.example.test"),
+    ],
+)
+def test_live_global_rejects_non_production_polymarket_endpoints(
+    tmp_path, field_name, override
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+api:
+  {field_name}: {override}
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-wallet-key
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: false
+  kalshi_enabled: false
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=field_name):
+        load_config(str(config_path))
+
+
+def test_live_global_rejects_non_polygon_chain(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-wallet-key
+  chain_id: 1
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: false
+  kalshi_enabled: false
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="chain_id must be 137"):
+        load_config(str(config_path))
+
+
+@pytest.mark.parametrize(
+    ("field_name", "override"),
+    [
+        ("polymarket_us_api_url", "https://api.example.test"),
+        ("polymarket_us_gateway_url", "https://gateway.example.test"),
+    ],
+)
+def test_live_us_rejects_non_production_polymarket_endpoints(
+    tmp_path, field_name, override
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+api:
+  polymarket_platform: us
+  {field_name}: {override}
+  polymarket_us_key_id: test-key-id
+  polymarket_us_secret_key: test-secret-key
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: false
+  kalshi_enabled: false
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match=field_name):
+        load_config(str(config_path))
+
+
+def test_live_kalshi_monitoring_rejects_non_production_endpoint(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  api_key: test-key
+  api_secret: test-secret
+  passphrase: test-passphrase
+  private_key: test-wallet-key
+  kalshi_api_url: https://demo-api.kalshi.co/trade-api/v2
+mode:
+  trading_mode: live
+  data_mode: real
+  cross_platform_enabled: true
+  kalshi_enabled: true
+  simulate_fills: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="kalshi_api_url"):
+        load_config(str(config_path))
+
+
+def test_cross_platform_mode_requires_kalshi_monitoring(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mode:
+  trading_mode: dry_run
+  cross_platform_enabled: true
+  kalshi_enabled: false
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="kalshi_enabled must be true"):
+        load_config(str(config_path))
+
+
+@pytest.mark.parametrize(
+    "api_config",
+    [
+        "kalshi_api_key_id: test-key-id",
+        "kalshi_private_key_path: /tmp/test-kalshi-key.pem",
+    ],
+)
+def test_kalshi_credentials_must_be_configured_as_a_pair(tmp_path, api_config):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+api:
+  {api_config}
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must be configured together"):
+        load_config(str(config_path))
+
+
+def test_kalshi_private_key_path_must_exist(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+api:
+  kalshi_api_key_id: test-key-id
+  kalshi_private_key_path: missing.pem
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="existing regular file"):
+        load_config(str(config_path))

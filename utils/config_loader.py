@@ -14,6 +14,18 @@ from typing import Any, Optional
 import yaml
 
 
+POLYMARKET_GLOBAL_PRODUCTION_URLS = {
+    "api.polymarket_rest_url": "https://clob.polymarket.com",
+    "api.polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+    "api.gamma_api_url": "https://gamma-api.polymarket.com",
+}
+POLYMARKET_US_PRODUCTION_URLS = {
+    "api.polymarket_us_api_url": "https://api.polymarket.us",
+    "api.polymarket_us_gateway_url": "https://gateway.polymarket.us",
+}
+KALSHI_PRODUCTION_URL = "https://api.elections.kalshi.com/trade-api/v2"
+
+
 class ConfigError(Exception):
     """Configuration error."""
     pass
@@ -443,6 +455,22 @@ def validate_config(config: BotConfig) -> None:
 
     if config.mode.data_mode.lower() not in ("real", "simulation"):
         errors.append("mode.data_mode must be 'real' or 'simulation'")
+
+    if config.mode.cross_platform_enabled and not config.mode.kalshi_enabled:
+        errors.append(
+            "mode.kalshi_enabled must be true when mode.cross_platform_enabled is true"
+        )
+
+    kalshi_key_id = config.api.kalshi_api_key_id.strip()
+    kalshi_private_key_path = config.api.kalshi_private_key_path.strip()
+    if bool(kalshi_key_id) != bool(kalshi_private_key_path):
+        errors.append(
+            "api.kalshi_api_key_id and api.kalshi_private_key_path must be configured together"
+        )
+    elif kalshi_private_key_path and not Path(kalshi_private_key_path).expanduser().is_file():
+        errors.append(
+            "api.kalshi_private_key_path must reference an existing regular file"
+        )
     
     # Live mode checks
     if config.is_live:
@@ -451,11 +479,17 @@ def validate_config(config: BotConfig) -> None:
         if config.mode.simulate_fills:
             errors.append("mode.simulate_fills must be false in live mode")
         if config.is_polymarket_us:
+            _validate_production_urls(config, POLYMARKET_US_PRODUCTION_URLS, errors)
             if not config.api.polymarket_us_key_id:
                 errors.append("api.polymarket_us_key_id is required for live Polymarket US trading")
             if not config.api.polymarket_us_secret_key:
                 errors.append("api.polymarket_us_secret_key is required for live Polymarket US trading")
         else:
+            _validate_production_urls(config, POLYMARKET_GLOBAL_PRODUCTION_URLS, errors)
+            if config.api.chain_id != 137:
+                errors.append(
+                    "api.chain_id must be 137 for live Polymarket Global trading"
+                )
             if not config.api.api_key or config.api.api_key == "YOUR_API_KEY_HERE":
                 errors.append("api.api_key is required for live Polymarket Global trading")
             if not config.api.api_secret or config.api.api_secret == "YOUR_API_SECRET_HERE":
@@ -465,11 +499,32 @@ def validate_config(config: BotConfig) -> None:
             if not config.api.private_key or config.api.private_key == "YOUR_PRIVATE_KEY_HERE":
                 errors.append("api.private_key is required for live Polymarket Global trading")
 
+        if config.mode.kalshi_enabled:
+            actual_kalshi_url = config.api.kalshi_api_url.rstrip("/")
+            if actual_kalshi_url != KALSHI_PRODUCTION_URL:
+                errors.append(
+                    "api.kalshi_api_url must be "
+                    f"{KALSHI_PRODUCTION_URL!r} when Kalshi is enabled in live mode"
+                )
+
     if config.api.polymarket_platform.lower() not in ("global", "us"):
         errors.append("api.polymarket_platform must be 'global' or 'us'")
     
     if errors:
         raise ConfigError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+
+
+def _validate_production_urls(
+    config: BotConfig, expected_urls: dict[str, str], errors: list[str]
+) -> None:
+    """Reject accidental test, proxy, or cross-venue endpoints in live mode."""
+    for field_name, expected_url in expected_urls.items():
+        attribute = field_name.removeprefix("api.")
+        actual_url = str(getattr(config.api, attribute)).rstrip("/")
+        if actual_url != expected_url:
+            errors.append(
+                f"{field_name} must be {expected_url!r} in live mode"
+            )
 
 
 def save_config(config: BotConfig, config_path: str = "config.yaml") -> None:

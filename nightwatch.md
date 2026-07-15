@@ -108,6 +108,13 @@ No finding is marked resolved on the strength of the source report alone.
 - Live startup now rejects ambiguous simultaneous direct-key and Keychain-label configuration and fails with actionable, output-redacted errors when Keychain access is unavailable, denied, missing, or empty.
 - Updated tracked templates to document the Keychain alternative without embedding any secret. G4 remains open for tracked-versus-ignored credential-source enforcement, venue/host consistency, Kalshi credential completeness, and conservative production defaults.
 
+### 2026-07-14 — Iteration 7 (22:07 EDT)
+
+- Continued G4 with fail-closed venue and credential coherence before any client construction. Live Polymarket Global now requires the documented production CLOB, websocket, and Gamma endpoints plus Polygon chain ID 137; live Polymarket US requires its configured production API and gateway endpoints; live Kalshi monitoring requires the documented production Trade API V2 base URL.
+- Rejected contradictory `cross_platform_enabled: true` / `kalshi_enabled: false` settings in every mode.
+- Kalshi authentication remains optional for public-only monitoring, which is the only Kalshi behavior currently wired into the dashboard. If either credential fragment is supplied, configuration now requires both the API key ID and RSA private-key path and verifies that the referenced path is an existing regular file. No key content is read by configuration validation.
+- G4 remains open only for tracked-versus-ignored credential-source enforcement and a final conservative-default audit; Kalshi order capability and authenticated credential validation remain correctly assigned to G2 rather than being represented as complete here.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -168,15 +175,27 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS**.
 - No bot, dashboard, scanner, websocket, collector, exchange client, order/signing flow, or network request was started. No background process was created.
 
+### 2026-07-14 — Iteration 7 (22:07 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_config_loader.py -q`: **PASS** — 21 tests passed, including Global and US production endpoint/chain pinning, cross-platform mode coherence, paired Kalshi credential fragments, and missing private-key-file rejection.
+- `uv run --with-requirements requirements.txt python -m pytest tests test_real_data.py -q`: **PASS** — 128 maintained tests passed with 266 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PARTIAL / PRE-EXISTING COLLECTION DEFECT** — 129 tests passed; the same manually oriented root-level `test_kalshi_connection.py::test_kalshi_connection` failed because its async function has no pytest async marker.
+- `uv run --with-requirements requirements.txt python -m py_compile $(git ls-files '*.py')`: **PASS**.
+- `uv run --with-requirements requirements.txt black --check tests/test_config_loader.py`: **PASS**. The broader loader check still reports that the pre-existing `utils/config_loader.py` file would be reformatted wholesale; this bounded change did not introduce a new project-wide formatting baseline.
+- `uv run --with-requirements requirements.txt mypy --ignore-missing-imports utils/config_loader.py`: **PASS**.
+- Redacted Keychain-backed effective-config validation against ignored `config.polymarket.yaml`: **PASS** with the new production endpoint, Polygon chain, mode-coherence, and Kalshi checks. The probe emitted only a generic pass message and created no client or network request.
+- `git check-ignore -v config.polymarket.yaml`: **PASS** — still ignored by `.gitignore:71`; `git diff --check`: **PASS**.
+- No bot, dashboard, scanner, websocket, collector, exchange client, authenticated request, key parsing, order/signing flow, or network request was started. No background process was created.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G3 and G5–G14 have not yet been audited against current code or current official protocol behavior. G4 has the live-override, simulation-mode, and Keychain-source hardening recorded in iterations 5–6 but is not complete.
+- G1–G3 and G5–G14 have not yet been audited against current code or current official protocol behavior. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
-- G4 remains open: tracked-versus-ignored credential-source enforcement, venue/host consistency, Kalshi credential fragments, and conservative production defaults have not yet been fully reconciled.
+- G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.
 - The unfiltered root-level pytest command collects an unmarked async function in `test_kalshi_connection.py` and therefore reports one failure even though the 114-test maintained suite plus `test_real_data.py` passes.
 - Full static, test, configuration, offline matched-data, ML, and dependency/security verification remains outstanding.
