@@ -168,6 +168,12 @@ No finding is marked resolved on the strength of the source report alone.
 - Configuration now rejects non-integer, Boolean, zero, and negative caps. Conservative, balanced, and aggressive defaults are 4, 6, and 8; the tracked aggressive dry-run config uses 8, while both live templates use a stricter cap of 3. Both runtime entrypoints and offline backtest construction carry the validated cap into `RiskManager`.
 - This closes G5's in-process position-count policy only. It does not make the ledger crash-durable or cross-process/cross-venue, prove venue reconciliation, or provide two-leg atomicity; those remain unresolved G3/G5/G7 requirements.
 
+### 2026-07-15 — Iteration 17 (07:01 EDT)
+
+- Hardened G7 cancellation accounting so a successful live cancel request no longer releases residual exposure by itself. `ExecutionEngine.cancel_order()` now performs one authoritative order refresh, applies any fills that raced with cancellation, and releases the remaining reservation only after the venue reports a terminal cancelled, expired, or rejected state (or the racing fill fully closes the order).
+- If reconciliation fails or the refreshed order remains open or partially filled, cancellation returns failure and deliberately retains local order tracking plus pending and strategy exposure. The timeout monitor, shutdown cancellation, market cancellation, and strategy cancellation paths all use this same fail-closed boundary.
+- Mocked regression coverage proves both sides of the lifecycle: a non-terminal refresh retains the entire residual, while a terminal cancellation with a racing partial fill books the filled exposure before releasing only the cancelled residual. This narrows G7's optimistic-cancellation gap; it does not provide restart discovery, durable state, stable placement idempotency, cross-venue reconciliation, or two-leg residual hedging.
+
 ## Verification evidence
 
 ### 2026-07-14 — Iteration 1
@@ -337,13 +343,23 @@ No finding is marked resolved on the strength of the source report alone.
 - `git diff --check`: **PASS** before the documentation update and repeated after it below.
 - Verification was entirely offline. Unit tests instantiated only internal unsigned order models and in-memory risk state; no bot, dashboard, scanner, websocket, collector, connectivity diagnostic, real exchange client, authenticated request, exchange-order payload/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
 
+### 2026-07-15 — Iteration 17 (07:01 EDT)
+
+- `uv run --with-requirements requirements.txt python -m pytest tests/test_execution_visibility.py -q`: **PASS** — 8 focused offline tests passed, including non-terminal cancel reconciliation retaining residual exposure and terminal cancellation applying a racing partial fill before release.
+- `uv run --with-requirements requirements.txt python -m pytest -q`: **PASS** — the complete discovered offline suite passed with 169 tests and 394 pre-existing deprecation warnings.
+- `uv run --with-requirements requirements.txt python -m compileall -q core polymarket_client utils main.py run_with_dashboard.py`: **PASS**.
+- `uv run --with-requirements requirements.txt mypy --follow-imports=skip --ignore-missing-imports core/execution.py tests/test_execution_visibility.py`: **PASS** — no issues in the changed execution and regression-test slice.
+- `uv run --with-requirements requirements.txt black --check tests/test_execution_visibility.py`: **PASS** after formatting the touched test file. The legacy `core/execution.py` formatting baseline was not broadened.
+- `git diff --check`: **PASS** before and after the documentation update.
+- Verification used `AsyncMock` exchange boundaries and internal unsigned order/trade models only. No bot, dashboard, scanner, websocket, collector, connectivity diagnostic, real exchange client, authenticated request, exchange-order construction/signing/submission/cancellation, simulated submission, network request, credential access, account mutation, or background process was started or performed.
+
 ## ML data and evaluation evidence
 
 Not evaluated yet. The source audit reports snapshot-building and collection code but no trained model, training CLI, or inference pipeline. This claim remains unverified.
 
 ## Remaining blockers
 
-- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, but still lacks stable idempotency keys, reconciliation, two-leg residual-exposure handling, and crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, in-process open-order and distinct-position caps, and in-process rolling/daily placement-attempt caps, but remains open for cross-venue shared-ledger accounting and reconciliation-backed restart recovery.
+- G1–G2 and G6–G14 have not yet been fully audited against current code or current official protocol behavior. G3 now fails closed instead of blindly retrying ambiguous placement errors, and live cancellation retains residual exposure until one terminal refresh, but it still lacks stable idempotency keys, startup/open-order discovery, sustained reconciliation, two-leg residual-exposure handling, and crash recovery. G4 now has live-override, simulation-mode, Keychain-source, production venue/chain, mode-coherence, and Kalshi-fragment hardening, but is not complete. G5 has verified per-order notional, single-venue pending-order exposure accounting, in-process open-order and distinct-position caps, and in-process rolling/daily placement-attempt caps, but remains open for cross-venue shared-ledger accounting and reconciliation-backed restart recovery.
 - The authoritative Kalshi fee-schedule PDF is blocked by an external HTTP 429 browser challenge in this environment. Exact schedule retrieval remains required before any production fee model can be validated; code must also consume current series and event fee metadata rather than relying on the PDF alone.
 - G4 remains open: tracked-versus-ignored credential-source enforcement and conservative production defaults have not yet been fully reconciled. Actual Kalshi authenticated credential validation remains part of G2 because no Kalshi order lifecycle is implemented.
 - The default `uv run` environment currently lacks PyYAML despite its declaration in `requirements.txt`; the canonical installed environment and dependency checks remain unresolved.

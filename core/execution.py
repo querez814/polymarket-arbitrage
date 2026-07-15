@@ -662,10 +662,52 @@ class ExecutionEngine:
                     self._orders_by_strategy[order.strategy_tag].remove(order_id)
     
     async def cancel_order(self, order_id: str) -> bool:
-        """Cancel a specific order."""
+        """Cancel an order and release exposure only after terminal state is known.
+
+        In live mode, a successful cancel request is not authoritative evidence
+        that the order's full residual was removed. Reconcile the order once,
+        apply any fills that raced with cancellation, and retain local tracking
+        unless the venue reports a terminal state.
+        """
         try:
             await self.client.cancel_order(order_id)
             order = self._open_orders.get(order_id)
+
+            if order and not self.config.dry_run:
+                try:
+                    remote_order, trades = await self.client.refresh_order(order)
+                except Exception as exc:
+                    logger.error(
+                        "Cancel requested for %s but reconciliation failed; "
+                        "retaining residual exposure: %s",
+                        order_id,
+                        exc,
+                    )
+                    return False
+
+                for trade in trades:
+                    self.handle_fill(trade)
+
+                if order_id not in self._open_orders:
+                    logger.info("Order %s became fully filled during cancellation", order_id)
+                    return True
+
+                if remote_order.status not in {
+                    OrderStatus.CANCELLED,
+                    OrderStatus.EXPIRED,
+                    OrderStatus.REJECTED,
+                }:
+                    logger.error(
+                        "Cancel requested for %s but venue still reports %s; "
+                        "retaining residual exposure",
+                        order_id,
+                        remote_order.status.value,
+                    )
+                    return False
+
+                order.status = remote_order.status
+                order.updated_at = remote_order.updated_at
+
             if order:
                 self.risk_manager.release_strategy_exposure(order.strategy_tag, order.notional)
                 self._record_paper_event(

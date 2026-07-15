@@ -6,7 +6,14 @@ from core.execution import ExecutionConfig, ExecutionEngine
 from core.portfolio import Portfolio
 from core.risk_manager import RiskConfig, RiskManager
 from polymarket_client import PolymarketClient
-from polymarket_client.models import Order, OrderSide, OrderStatus, Signal, TokenType, Trade
+from polymarket_client.models import (
+    Order,
+    OrderSide,
+    OrderStatus,
+    Signal,
+    TokenType,
+    Trade,
+)
 from utils.paper_trade_store import PaperTradeStore
 
 
@@ -38,11 +45,13 @@ async def test_placement_error_is_not_blindly_retried():
 async def test_ambiguous_placement_consumes_attempt_cap_before_client_call():
     client = AsyncMock()
     client.place_order.side_effect = TimeoutError("acceptance state unknown")
-    risk_manager = RiskManager(RiskConfig(
-        max_order_attempts_per_minute=1,
-        max_daily_order_attempts=10,
-        trade_only_high_volume=False,
-    ))
+    risk_manager = RiskManager(
+        RiskConfig(
+            max_order_attempts_per_minute=1,
+            max_daily_order_attempts=10,
+            trade_only_high_volume=False,
+        )
+    )
     engine = ExecutionEngine(
         client=client,
         risk_manager=risk_manager,
@@ -53,13 +62,15 @@ async def test_ambiguous_placement_consumes_attempt_cap_before_client_call():
         signal_id="signal-1",
         action="place_orders",
         market_id="market-1",
-        orders=[{
-            "token_type": TokenType.YES,
-            "side": OrderSide.BUY,
-            "price": 0.50,
-            "size": 10.0,
-            "strategy_tag": "bundle_arb",
-        }],
+        orders=[
+            {
+                "token_type": TokenType.YES,
+                "side": OrderSide.BUY,
+                "price": 0.50,
+                "size": 10.0,
+                "strategy_tag": "bundle_arb",
+            }
+        ],
     )
 
     await engine._handle_place_orders(signal)
@@ -69,6 +80,105 @@ async def test_ambiguous_placement_consumes_attempt_cap_before_client_call():
     client.place_order.assert_awaited_once()
     assert risk_manager.get_summary()["order_attempts_last_minute"] == 1
     assert engine.stats.risk_rejections == 1
+
+
+@pytest.mark.asyncio
+async def test_live_cancel_retains_residual_when_reconciliation_is_not_terminal():
+    client = AsyncMock()
+    risk_manager = RiskManager(RiskConfig(trade_only_high_volume=False))
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=risk_manager,
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+    order = Order(
+        order_id="order-1",
+        market_id="market-1",
+        token_type=TokenType.YES,
+        side=OrderSide.BUY,
+        price=0.50,
+        size=10.0,
+        status=OrderStatus.OPEN,
+        strategy_tag="bundle_arb",
+    )
+    engine._track_order(order)
+    risk_manager.reserve_strategy_exposure(order.strategy_tag, order.notional)
+    client.refresh_order.return_value = (
+        Order(
+            order_id=order.order_id,
+            market_id=order.market_id,
+            token_type=order.token_type,
+            side=order.side,
+            price=order.price,
+            size=order.size,
+            status=OrderStatus.OPEN,
+            strategy_tag=order.strategy_tag,
+        ),
+        [],
+    )
+
+    cancelled = await engine.cancel_order(order.order_id)
+
+    assert cancelled is False
+    assert engine.get_open_orders() == [order]
+    assert risk_manager.get_open_order_exposure() == 5.0
+    assert risk_manager.get_strategy_exposure("bundle_arb") == 5.0
+    assert engine.stats.orders_cancelled == 0
+
+
+@pytest.mark.asyncio
+async def test_live_cancel_applies_racing_fill_before_confirmed_residual_release():
+    client = AsyncMock()
+    risk_manager = RiskManager(RiskConfig(trade_only_high_volume=False))
+    engine = ExecutionEngine(
+        client=client,
+        risk_manager=risk_manager,
+        portfolio=Portfolio(),
+        config=ExecutionConfig(dry_run=False),
+    )
+    order = Order(
+        order_id="order-1",
+        market_id="market-1",
+        token_type=TokenType.YES,
+        side=OrderSide.BUY,
+        price=0.50,
+        size=10.0,
+        status=OrderStatus.OPEN,
+        strategy_tag="bundle_arb",
+    )
+    engine._track_order(order)
+    risk_manager.reserve_strategy_exposure(order.strategy_tag, order.notional)
+    remote_order = Order(
+        order_id=order.order_id,
+        market_id=order.market_id,
+        token_type=order.token_type,
+        side=order.side,
+        price=order.price,
+        size=order.size,
+        filled_size=4.0,
+        status=OrderStatus.CANCELLED,
+        strategy_tag=order.strategy_tag,
+    )
+    racing_fill = Trade(
+        trade_id="trade-1",
+        order_id=order.order_id,
+        market_id=order.market_id,
+        token_type=order.token_type,
+        side=order.side,
+        price=0.49,
+        size=4.0,
+    )
+    client.refresh_order.return_value = (remote_order, [racing_fill])
+
+    cancelled = await engine.cancel_order(order.order_id)
+
+    assert cancelled is True
+    assert engine.get_open_orders() == []
+    assert risk_manager.get_open_order_exposure() == 0.0
+    assert risk_manager.state.global_exposure == 1.96
+    assert risk_manager.get_strategy_exposure("bundle_arb") == 0.0
+    assert engine.stats.orders_cancelled == 1
 
 
 @pytest.mark.asyncio
