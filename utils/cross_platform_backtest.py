@@ -122,6 +122,9 @@ def run_cross_platform_replay(
         polymarket_taker_fee=polymarket_taker_fee,
         kalshi_taker_fee=kalshi_taker_fee,
         gas_cost=gas_cost,
+        # Historical timestamps are bounded against one another by
+        # max_time_delta below, not against the current wall clock.
+        max_observation_age=None,
     )
 
     skipped_pairs: dict[str, str] = {}

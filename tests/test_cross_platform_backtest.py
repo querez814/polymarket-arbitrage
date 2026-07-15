@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -133,11 +133,20 @@ def token_book(token_type, bid, ask, bid_size=100, ask_size=100):
     )
 
 
-def xplat_orderbook(market_id, yes_bid, yes_ask, no_bid, no_ask):
+def xplat_orderbook(
+    market_id,
+    yes_bid,
+    yes_ask,
+    no_bid,
+    no_ask,
+    *,
+    timestamp=None,
+):
     return OrderBook(
         market_id=market_id,
         yes=token_book(TokenType.YES, yes_bid, yes_ask),
         no=token_book(TokenType.NO, no_bid, no_ask),
+        timestamp=timestamp or datetime.now(timezone.utc),
     )
 
 
@@ -165,3 +174,53 @@ def test_cross_platform_engine_returns_multiple_qualifying_directions():
     }
     assert all(opp.suggested_size <= 30.0 for opp in opportunities)
     assert all(opp.suggested_size <= 50.0 for opp in opportunities)
+
+
+@pytest.mark.parametrize("stale_platform", ["polymarket", "kalshi"])
+def test_cross_platform_engine_rejects_stale_observation(stale_platform):
+    engine = CrossPlatformArbEngine(
+        min_edge=0.01,
+        polymarket_taker_fee=0.0,
+        kalshi_taker_fee=0.0,
+        gas_cost=0.0,
+        max_observation_age=timedelta(seconds=5),
+    )
+    pair = MarketPair("poly-1", "kalshi-1", "Poly question", "Kalshi title", 1.0)
+    fresh = datetime.now(timezone.utc)
+    stale = fresh - timedelta(seconds=6)
+    polymarket_ob = xplat_orderbook(
+        "poly-1",
+        yes_bid=0.60,
+        yes_ask=0.40,
+        no_bid=0.60,
+        no_ask=0.40,
+        timestamp=stale if stale_platform == "polymarket" else fresh,
+    )
+    kalshi_ob = xplat_orderbook(
+        "kalshi:kalshi-1",
+        yes_bid=0.55,
+        yes_ask=0.45,
+        no_bid=0.55,
+        no_ask=0.45,
+        timestamp=stale if stale_platform == "kalshi" else fresh,
+    )
+
+    assert engine.check_arbitrages(pair, polymarket_ob, kalshi_ob) == []
+    assert engine.get_stats()["total_opportunities"] == 0
+
+
+@pytest.mark.parametrize("timestamp_kind", ["naive", "future"])
+def test_cross_platform_engine_rejects_untrustworthy_timestamp(timestamp_kind):
+    engine = CrossPlatformArbEngine(max_observation_age=timedelta(seconds=5))
+    pair = MarketPair("poly-1", "kalshi-1", "Poly question", "Kalshi title", 1.0)
+    timestamp = datetime.now(timezone.utc)
+    if timestamp_kind == "naive":
+        timestamp = timestamp.replace(tzinfo=None)
+    else:
+        timestamp += timedelta(minutes=1)
+    polymarket_ob = xplat_orderbook(
+        "poly-1", 0.60, 0.40, 0.60, 0.40, timestamp=timestamp
+    )
+    kalshi_ob = xplat_orderbook("kalshi:kalshi-1", 0.55, 0.45, 0.55, 0.45)
+
+    assert engine.check_arbitrages(pair, polymarket_ob, kalshi_ob) == []

@@ -13,7 +13,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -596,6 +596,7 @@ class CrossPlatformArbEngine:
         max_order_size: float = 100.0,
         edge_size_multiplier: float = 4.0,
         max_liquidity_fraction: float = 1.0,
+        max_observation_age: Optional[timedelta] = timedelta(seconds=5),
     ):
         """
         Initialize cross-platform arb engine.
@@ -605,6 +606,8 @@ class CrossPlatformArbEngine:
             polymarket_taker_fee: Polymarket taker fee rate
             kalshi_taker_fee: Kalshi taker fee rate
             gas_cost: Estimated gas cost per order
+            max_observation_age: Maximum age of each live order-book observation.
+                Historical replay must explicitly disable this wall-clock gate.
         """
         self.min_edge = min_edge
         self.polymarket_taker_fee = polymarket_taker_fee
@@ -613,6 +616,9 @@ class CrossPlatformArbEngine:
         self.max_order_size = max_order_size
         self.edge_size_multiplier = edge_size_multiplier
         self.max_liquidity_fraction = max_liquidity_fraction
+        if max_observation_age is not None and max_observation_age <= timedelta(0):
+            raise ValueError("max_observation_age must be positive or None")
+        self.max_observation_age = max_observation_age
         
         self.matcher = MarketMatcher()
         self._opportunities: list[CrossPlatformOpportunity] = []
@@ -645,6 +651,9 @@ class CrossPlatformArbEngine:
         kalshi_ob: OrderBook,
     ) -> list[CrossPlatformOpportunity]:
         """Return every qualifying cross-platform opportunity for a matched market pair."""
+        if not self._observations_are_fresh(polymarket_ob, kalshi_ob):
+            return []
+
         # Get best prices from both platforms
         poly_yes_ask = polymarket_ob.best_ask_yes
         poly_yes_bid = polymarket_ob.best_bid_yes
@@ -754,6 +763,36 @@ class CrossPlatformArbEngine:
                 logger.info(f"CROSS-PLATFORM ARB: {opportunity}")
         
         return opportunities
+
+    def _observations_are_fresh(
+        self,
+        polymarket_ob: OrderBook,
+        kalshi_ob: OrderBook,
+    ) -> bool:
+        """Fail closed before detection when either wall-clock observation is stale."""
+        max_age = self.max_observation_age
+        if max_age is None:
+            return True
+
+        observed_at = datetime.now(timezone.utc)
+        for platform, orderbook in (
+            ("polymarket", polymarket_ob),
+            ("kalshi", kalshi_ob),
+        ):
+            timestamp = orderbook.timestamp
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                logger.warning("Rejecting %s order book with naive timestamp", platform)
+                return False
+            age = observed_at - timestamp.astimezone(timezone.utc)
+            if age < timedelta(0) or age > max_age:
+                logger.warning(
+                    "Rejecting %s order book outside freshness window (age=%s, max=%s)",
+                    platform,
+                    age,
+                    max_age,
+                )
+                return False
+        return True
     
     def _create_opportunity(
         self,
@@ -811,4 +850,3 @@ class CrossPlatformArbEngine:
                 if self._opportunities else 0
             ),
         }
-
