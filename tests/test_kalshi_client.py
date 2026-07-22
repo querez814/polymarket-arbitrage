@@ -5,6 +5,68 @@ from kalshi_client import KalshiClient
 
 
 @pytest.mark.asyncio
+async def test_list_markets_excludes_multivariate_events_by_default(monkeypatch):
+    client = KalshiClient(dry_run=True)
+    captured_params = None
+
+    async def fake_get(endpoint, params=None):
+        nonlocal captured_params
+        assert endpoint == "/markets"
+        captured_params = params
+        return {"markets": [], "cursor": None}
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    await client.list_markets(status="open", limit=1000)
+
+    assert captured_params["mve_filter"] == "exclude"
+
+
+@pytest.mark.asyncio
+async def test_list_event_markets_preserves_event_context_for_matching(monkeypatch):
+    client = KalshiClient(dry_run=True)
+
+    async def fake_get(endpoint, params=None):
+        assert endpoint == "/events"
+        assert params == {
+            "status": "open",
+            "limit": 200,
+            "with_nested_markets": True,
+        }
+        return {
+            "events": [
+                {
+                    "event_ticker": "KXMLBGAME-26JUL22-NYYMIL",
+                    "series_ticker": "KXMLBGAME",
+                    "title": "New York Yankees at Milwaukee Brewers",
+                    "category": "Sports",
+                    "markets": [
+                        {
+                            "ticker": "KXMLBGAME-26JUL22-NYYMIL-NYY",
+                            "event_ticker": "KXMLBGAME-26JUL22-NYYMIL",
+                            "title": "New York Yankees win?",
+                            "status": "open",
+                        }
+                    ],
+                }
+            ],
+            "cursor": "",
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+
+    markets, cursor = await client.list_event_markets(status="open")
+
+    assert cursor is None
+    assert len(markets) == 1
+    assert markets[0].event_title == "New York Yankees at Milwaukee Brewers"
+    assert markets[0].category == "Sports"
+    assert markets[0].matching_text == (
+        "New York Yankees at Milwaukee Brewers — New York Yankees win?"
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_fee_schedule_prefers_complete_event_override():
     client = KalshiClient(dry_run=True)
     client._get = AsyncMock(

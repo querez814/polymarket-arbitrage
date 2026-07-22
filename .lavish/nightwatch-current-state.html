@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nightwatch — Items 1–6 Complete Offline</title>
+  <title>Nightwatch — Pre-Production Envelope Complete Offline</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
@@ -42,22 +42,22 @@
   <main class="shell space-y-8">
     <nav class="sticky glass border border-base-content/10 rounded-box px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-lg">
       <div class="flex items-center gap-3"><span class="badge badge-success badge-sm">NIGHTWATCH</span><strong class="text-sm">Locked-arbitrage checkpoint</strong></div>
-      <div class="flex gap-2 text-xs"><a class="btn btn-ghost btn-xs" href="#done">1–6</a><a class="btn btn-ghost btn-xs" href="#evidence">Evidence</a><a class="btn btn-ghost btn-xs" href="#next">Next</a></div>
+      <div class="flex gap-2 text-xs"><a class="btn btn-ghost btn-xs" href="#done">1–7</a><a class="btn btn-ghost btn-xs" href="#evidence">Evidence</a><a class="btn btn-ghost btn-xs" href="#next">Next</a></div>
     </nav>
 
     <header class="hero glass border border-base-content/10 rounded-box overflow-hidden">
       <div class="hero-content w-full px-6 py-12 lg:px-12">
         <div class="w-full">
           <div class="flex flex-wrap gap-2 mb-5">
-            <span class="badge badge-success badge-soft">ITEMS 1–6 COMPLETE OFFLINE</span>
-            <span class="badge badge-success badge-soft">336 TESTS PASS</span>
+            <span class="badge badge-success badge-soft">PRE-PRODUCTION ENVELOPE COMPLETE OFFLINE</span>
+            <span class="badge badge-success badge-soft">358 SUITE + 1 PROBE RESTART PASS</span>
             <span class="badge badge-success badge-soft">2 / 2 READ-ONLY AUTH</span>
-            <span class="badge badge-error badge-soft">NOT PRODUCTION READY</span>
+            <span class="badge badge-error badge-soft">NOT LIVE AUTHORIZED</span>
           </div>
           <p class="eyebrow text-success mb-3">Polymarket + Kalshi · isolated Nightwatch fork</p>
-          <h1 class="text-4xl md:text-6xl font-black tracking-tight max-w-5xl">The locked-arbitrage runtime is offline-complete—and still fails closed.</h1>
-          <p class="text-lg text-base-content/65 mt-5 max-w-4xl leading-relaxed">The deployed entrypoint now owns recovery, current pair-bound economics, private lifecycle reconciliation, durable admission, scarce-leg-first execution, external escalation, and authenticated operator control.</p>
-          <div class="alert alert-warning mt-7 max-w-4xl"><span><strong>Honest boundary:</strong> no exchange mutation or live private-stream lifecycle was exercised. Deployment/restart proof, real alert delivery, and a separately authorized minimum-size canary still block production authorization.</span></div>
+          <h1 class="text-4xl md:text-6xl font-black tracking-tight max-w-5xl">The locked-arbitrage runtime and deployment package are offline-complete—and still fail closed.</h1>
+          <p class="text-lg text-base-content/65 mt-5 max-w-4xl leading-relaxed">The entrypoint owns recovery, current pair-bound economics, private lifecycle reconciliation, durable admission, scarce-leg-first execution, external escalation, authenticated operator control, and explicit liveness/readiness.</p>
+          <div class="alert alert-warning mt-7 max-w-4xl"><span><strong>Honest boundary:</strong> no exchange mutation, live private-stream lifecycle, external alert delivery, or target-host deployment was exercised. Those gates plus a separately authorized minimum-size canary still block live authorization.</span></div>
         </div>
       </div>
     </header>
@@ -66,8 +66,8 @@
       <p class="eyebrow text-base-content/45">Current checkpoint</p>
       <h2 class="text-2xl md:text-3xl font-bold mt-1">What changed tonight</h2>
       <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
-        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Full suite</div><div class="stat-value text-success text-3xl">336</div><div class="stat-desc">offline tests</div></div>
-        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Immediate gate</div><div class="stat-value text-success text-3xl">6 / 6</div><div class="stat-desc">complete offline</div></div>
+        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Full suite</div><div class="stat-value text-success text-3xl">358</div><div class="stat-desc">offline tests</div></div>
+        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Dashboard probe</div><div class="stat-value text-success text-3xl">1 / 1</div><div class="stat-desc">SIGTERM + same port</div></div>
         <div class="stat glass metric rounded-box p-4"><div class="stat-title">Adapters</div><div class="stat-value text-info text-3xl">2 / 2</div><div class="stat-desc">production contracts</div></div>
         <div class="stat glass metric rounded-box p-4"><div class="stat-title">Live mutations</div><div class="stat-value text-warning text-3xl">0</div><div class="stat-desc">intentionally</div></div>
       </div>
@@ -75,7 +75,7 @@
 
     <section id="done" class="glass border border-success/30 rounded-box p-6 md:p-8">
       <p class="eyebrow text-success">What must happen next · progress</p>
-      <h2 class="text-2xl md:text-3xl font-bold mt-1">Items 1–6 are green at the offline-code gate</h2>
+      <h2 class="text-2xl md:text-3xl font-bold mt-1">Items 1–7 are green at the offline-code gate</h2>
       <div class="grid md:grid-cols-3 gap-4 mt-6">
         <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">1 · DONE OFFLINE</span><h3 class="card-title">Production venue adapters</h3><p class="text-sm text-base-content/65">Kalshi and Polymarket now implement placement, cancellation, authoritative order reads, account open orders, and normalized positions.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Kalshi stable client IDs</li><li>✓ Polymarket hash journaled before POST</li><li>✓ Complementary NO buys avoid naked shorting</li></ul></div></article>
         <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">2 · DONE OFFLINE</span><h3 class="card-title">Kalshi private lifecycle</h3><p class="text-sm text-base-content/65">Authenticated <span class="code">fill</span> and <span class="code">user_orders</span> parsing, strict fixed point, bounded dedupe, reconnect backoff, and REST gap reconciliation.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Subscribe before REST snapshot</li><li>✓ Queued messages cover the snapshot window</li><li>✓ No stream event authorizes a blind retry</li></ul></div></article>
@@ -83,6 +83,7 @@
         <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">4 · DONE OFFLINE</span><h3 class="card-title">Runtime ownership</h3><p class="text-sm text-base-content/65">The entrypoint owns startup recovery, private-stream callbacks, authoritative detection, durable plan admission, and locked execution.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Halted after restart or disconnect</li><li>✓ Post-recovery freshness + collateral</li><li>✓ One mutation-owning path</li></ul></div></article>
         <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">5 · DONE OFFLINE</span><h3 class="card-title">Authoritative economics</h3><p class="text-sm text-base-content/65">Current Polymarket fee curves and Kalshi event/series schedules are pair-bound, freshness-bounded, and required.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Stale or inconsistent data rejects</li><li>✓ Documented upward precision</li><li>✓ Explicit off-chain order gas</li></ul></div></article>
         <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">6 · DONE OFFLINE</span><h3 class="card-title">Operations and panic</h3><p class="text-sm text-base-content/65">A durable authenticated halt, authenticated HTTPS escalation, explicit market approval, cumulative caps, and persisted attempt budgets are wired.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Alert failure blocks resume</li><li>✓ Both market IDs must be whitelisted</li><li>✓ Production runbook added</li></ul></div></article>
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">7 · DONE OFFLINE</span><h3 class="card-title">Deployment package</h3><p class="text-sm text-base-content/65">Hash-locked dependencies, a single-owner hardened service, loopback probes, non-mutating preflight, and bounded canary configuration are checked in.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Liveness separate from critical readiness</li><li>✓ Exact config and size-bound canary phase</li><li>✓ Dashboard SIGTERM/same-port probe passed</li></ul></div></article>
       </div>
     </section>
 
@@ -116,6 +117,10 @@
             <tr><td>Process restarts while previously armed</td><td>Persist halt; require recovery and explicit re-arm</td><td class="text-success font-bold">PASS</td></tr>
             <tr><td>Resume alert delivery fails</td><td>Revert to durable halt</td><td class="text-success font-bold">PASS</td></tr>
             <tr><td>Attempt budget exhausted</td><td>Reject before venue read or mutation</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Runtime halted or recovery incomplete</td><td>Liveness stays up; readiness returns 503</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Production configuration incomplete</td><td>Named non-mutating preflight checks fail closed</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Dashboard probe receives SIGTERM</td><td>Exit cleanly and restart on the same loopback port</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Deployment artifacts drift</td><td>Lock, unit, and safe example config remain contract-tested</td><td class="text-success font-bold">PASS</td></tr>
           </tbody>
         </table>
       </div>
@@ -124,15 +129,16 @@
     <section id="next" class="glass border border-warning/30 rounded-box p-6 md:p-8">
       <p class="eyebrow text-warning">Production authorization frontier</p>
       <h2 class="text-2xl md:text-3xl font-bold mt-1">What must be proved next</h2>
-      <div class="grid md:grid-cols-3 gap-4 mt-6">
+      <div class="grid md:grid-cols-2 gap-4 mt-6">
         <article class="card bg-base-300/45"><div class="card-body p-5"><span class="badge badge-info badge-sm">Parallel · Data</span><h3 class="card-title">Representative matched corpus</h3><p class="text-sm text-base-content/60">More pairs, regimes, positive/negative after-cost labels, latency evidence, and eventual fill truth.</p></div></article>
-        <article class="card border border-error/30 bg-error/7"><div class="card-body p-5"><span class="badge badge-error badge-sm">Deployment</span><h3 class="card-title">Prove the service envelope</h3><p class="text-sm text-base-content/60">Pinned build, single owner, durable storage/restore, supervised restart drill, TLS access, log retention, and real alert receipt.</p></div></article>
+        <article class="card border border-error/30 bg-error/7"><div class="card-body p-5"><span class="badge badge-error badge-sm">Target host</span><h3 class="card-title">Exercise the real service envelope</h3><p class="text-sm text-base-content/60">Install the pinned release, validate the systemd unit, prove backup/restore and restart, terminate TLS, inspect retained logs, and check clock discipline.</p></div></article>
+        <article class="card border border-warning/30 bg-warning/7"><div class="card-body p-5"><span class="badge badge-warning badge-sm">Live read-only</span><h3 class="card-title">Prove operations wiring</h3><p class="text-sm text-base-content/60">Receive a real authenticated alert and exercise the private-stream connect, gap reconciliation, disconnect, halt, and recovery lifecycle without placing an order.</p></div></article>
         <article class="card border border-warning/30 bg-warning/7"><div class="card-body p-5"><span class="badge badge-warning badge-sm">Separate authorization</span><h3 class="card-title">One minimum-size canary</h3><p class="text-sm text-base-content/60">A staffed, whitelisted lifecycle test that verifies fees, precision, fills, cancellation, stream/REST reconciliation, and operator escalation.</p></div></article>
       </div>
     </section>
 
     <footer class="glass border border-base-content/10 rounded-box p-6 text-sm">
-      <div class="flex flex-wrap justify-between gap-4"><div><strong>Verdict: NOT PRODUCTION AUTHORIZED</strong><p class="text-base-content/50 mt-1">Items 1–6 are implemented and verified offline; deployment and canary proof remain explicit gates.</p></div><div class="text-right"><div class="text-base-content/45">Evidence</div><div class="font-mono">nightwatch.md · 336 passed · July 22, 2026 EDT</div></div></div>
+      <div class="flex flex-wrap justify-between gap-4"><div><strong>Verdict: CODE-COMPLETE PRE-PRODUCTION · NOT LIVE AUTHORIZED</strong><p class="text-base-content/50 mt-1">Items 1–7 are implemented and verified offline; target-host, live operations, and canary proof remain explicit gates.</p></div><div class="text-right"><div class="text-base-content/45">Evidence</div><div class="font-mono">nightwatch.md · 358 suite + 1 dashboard restart probe · July 22, 2026 EDT</div></div></div>
       <p class="text-xs text-base-content/35 mt-5">Design source: the existing project Lavish report’s DaisyUI luxury theme, retained so this reads as the next checkpoint rather than a disconnected artifact.</p>
     </footer>
   </main>

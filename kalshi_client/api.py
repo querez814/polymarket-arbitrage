@@ -517,6 +517,105 @@ class KalshiClient:
     # EVENTS ENDPOINTS
     # =========================================================================
 
+    async def list_event_markets(
+        self,
+        *,
+        status: str = "open",
+        limit: int = 200,
+        cursor: Optional[str] = None,
+    ) -> tuple[list[KalshiMarket], Optional[str]]:
+        """Return ordinary event markets enriched with parent event context.
+
+        Kalshi's ordinary events endpoint excludes multivariate combo events.
+        Nested markets preserve the event title/category needed for safe
+        cross-venue candidate matching.
+        """
+        if not 1 <= limit <= 200:
+            raise ValueError("event page limit must be between 1 and 200")
+        params: dict[str, Any] = {
+            "status": status,
+            "limit": limit,
+            "with_nested_markets": True,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        data = await self._get("/events", params=params)
+        raw_events = data.get("events") if isinstance(data, Mapping) else None
+        if not isinstance(raw_events, list):
+            return [], None
+
+        markets: list[KalshiMarket] = []
+        for event in raw_events:
+            if not isinstance(event, Mapping):
+                continue
+            event_title = event.get("title")
+            event_category = event.get("category")
+            event_series_ticker = event.get("series_ticker")
+            raw_markets = event.get("markets")
+            if not isinstance(raw_markets, list):
+                continue
+            for raw_market in raw_markets:
+                if not isinstance(raw_market, dict):
+                    continue
+                market = self._parse_market(
+                    raw_market,
+                    event_title=(
+                        event_title if isinstance(event_title, str) else ""
+                    ),
+                    event_category=(
+                        event_category if isinstance(event_category, str) else ""
+                    ),
+                    event_series_ticker=(
+                        event_series_ticker
+                        if isinstance(event_series_ticker, str)
+                        else ""
+                    ),
+                )
+                if market and market.ticker:
+                    markets.append(market)
+                    self._markets_cache[market.ticker] = market
+
+        next_cursor = data.get("cursor")
+        return markets, next_cursor if isinstance(next_cursor, str) and next_cursor else None
+
+    async def list_all_event_markets(
+        self,
+        *,
+        status: str = "open",
+        max_events: int = 2_000,
+        max_markets: int = 10_000,
+        on_progress: Optional[Callable[[int], None]] = None,
+    ) -> list[KalshiMarket]:
+        """Page through ordinary events and return their enriched markets."""
+        if max_events <= 0 or max_markets <= 0:
+            raise ValueError("event and market limits must be positive")
+        all_markets: list[KalshiMarket] = []
+        seen_tickers: set[str] = set()
+        cursor: Optional[str] = None
+        events_loaded = 0
+        while events_loaded < max_events and len(all_markets) < max_markets:
+            page_limit = min(200, max_events - events_loaded)
+            markets, next_cursor = await self.list_event_markets(
+                status=status,
+                limit=page_limit,
+                cursor=cursor,
+            )
+            events_loaded += page_limit
+            for market in markets:
+                if market.ticker in seen_tickers:
+                    continue
+                seen_tickers.add(market.ticker)
+                all_markets.append(market)
+                if len(all_markets) >= max_markets:
+                    break
+            if on_progress:
+                on_progress(len(all_markets))
+            if not next_cursor:
+                break
+            cursor = next_cursor
+            await asyncio.sleep(0.2)
+        return all_markets
+
     async def get_event(self, event_ticker: str) -> Optional[KalshiEvent]:
         """
         Get information about an event.
@@ -550,6 +649,7 @@ class KalshiClient:
         event_ticker: Optional[str] = None,
         limit: int = 1000,
         cursor: Optional[str] = None,
+        mve_filter: str = "exclude",
     ) -> tuple[list[KalshiMarket], Optional[str]]:
         """
         List markets with optional filters.
@@ -560,11 +660,19 @@ class KalshiClient:
             event_ticker: Filter by event
             limit: Maximum markets to return (max 1000)
             cursor: Pagination cursor
+            mve_filter: Kalshi multivariate-event policy. Cross-venue matching
+                defaults to ordinary single-event markets only.
 
         Returns:
             Tuple of (list of markets, next cursor or None)
         """
-        params = {"status": status, "limit": min(limit, 1000)}
+        if mve_filter not in {"exclude", "only"}:
+            raise ValueError("mve_filter must be 'exclude' or 'only'")
+        params = {
+            "status": status,
+            "limit": min(limit, 1000),
+            "mve_filter": mve_filter,
+        }
         if series_ticker:
             params["series_ticker"] = series_ticker
         if event_ticker:
@@ -590,6 +698,7 @@ class KalshiClient:
         self,
         status: str = "open",
         max_markets: int = 10000,
+        mve_filter: str = "exclude",
         on_progress: Optional[
             Callable[[int], None]
         ] = None,  # Callback for progress updates
@@ -600,6 +709,7 @@ class KalshiClient:
         Args:
             status: Market status filter
             max_markets: Maximum total markets to fetch
+            mve_filter: Kalshi multivariate-event policy.
             on_progress: Optional callback(loaded_count) for progress updates
 
         Returns:
@@ -613,6 +723,7 @@ class KalshiClient:
                 status=status,
                 limit=1000,
                 cursor=cursor,
+                mve_filter=mve_filter,
             )
 
             if not markets:
@@ -724,7 +835,14 @@ class KalshiClient:
 
         return markets, data.get("cursor")
 
-    def _parse_market(self, data: dict) -> Optional[KalshiMarket]:
+    def _parse_market(
+        self,
+        data: dict,
+        *,
+        event_title: str = "",
+        event_category: str = "",
+        event_series_ticker: str = "",
+    ) -> Optional[KalshiMarket]:
         """Parse market data from API response."""
         try:
             # Prices come in cents, convert to dollars
@@ -757,9 +875,10 @@ class KalshiClient:
             return KalshiMarket(
                 ticker=data.get("ticker", ""),
                 event_ticker=data.get("event_ticker", ""),
-                series_ticker=data.get("series_ticker", ""),
+                series_ticker=data.get("series_ticker", "") or event_series_ticker,
                 title=data.get("title", ""),
                 subtitle=data.get("subtitle", ""),
+                event_title=event_title,
                 yes_price=yes_price,
                 no_price=no_price,
                 status=data.get("status", ""),
@@ -767,7 +886,7 @@ class KalshiClient:
                 volume=int(float(volume or 0)),
                 open_interest=int(float(open_interest or 0)),
                 close_time=close_time,
-                category=data.get("category", ""),
+                category=data.get("category", "") or event_category,
             )
         except Exception as e:
             logger.warning(f"Failed to parse Kalshi market: {e}")

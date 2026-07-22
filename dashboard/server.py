@@ -11,10 +11,10 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping, TYPE_CHECKING, Optional
+from typing import Any, Callable, Mapping, TYPE_CHECKING, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from utils.time_utils import to_utc_iso, utc_now, utc_now_iso
@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 paper_trade_store: Optional["PaperTradeStore"] = None
 display_timezone: str = "America/New_York"
 production_runtime: Any = None
+production_runtime_required: bool = False
+critical_readiness_check: Callable[[], bool] | None = None
+MAX_DASHBOARD_WEBSOCKETS = 16
+
+
+def _same_origin_websocket(websocket: WebSocket) -> bool:
+    """Only allow browser sockets opened by the dashboard's own origin."""
+    origin = (websocket.headers.get("origin") or "").rstrip("/").lower()
+    host = (websocket.headers.get("host") or "").strip().lower()
+    if not origin or not host:
+        return False
+    return origin in {f"http://{host}", f"https://{host}"}
 
 
 def configure_dashboard_runtime(
@@ -36,12 +48,18 @@ def configure_dashboard_runtime(
     store: Optional["PaperTradeStore"] = None,
     timezone: str = "America/New_York",
     runtime: Any = None,
+    production_required: bool = False,
+    readiness_check: Callable[[], bool] | None = None,
 ) -> None:
     """Wire runtime dependencies for dashboard API routes."""
     global paper_trade_store, display_timezone, production_runtime
+    global production_runtime_required
+    global critical_readiness_check
     paper_trade_store = store
     display_timezone = timezone
     production_runtime = runtime
+    production_runtime_required = production_required
+    critical_readiness_check = readiness_check
 
 
 def _operator_token(authorization: str | None) -> str:
@@ -109,10 +127,12 @@ class DashboardState:
             "kalshi_orderbooks": 0,  # Number of Kalshi orderbooks fetched
             "cross_opportunities": [],
             "matched_pairs_data": [],  # Detailed data for display
+            "review_candidate_count": 0,
+            "review_candidates": [],
             "matching_progress": 0,  # Percentage of matching complete
             "matching_checked": 0,  # Number of comparisons done
             "matching_total": 0,  # Total comparisons to do
-            "matching_status": "idle",  # idle, matching, complete
+            "matching_status": "idle",  # idle/loading/matching/complete/no_matches/error
         }
         
         # WebSocket connections
@@ -232,6 +252,65 @@ def create_app() -> FastAPI:
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @app.get("/health/live")
+    async def health_live():
+        """Process liveness only; never couples supervisor restarts to trading state."""
+        return {"status": "alive"}
+
+    @app.get("/health/ready")
+    async def health_ready():
+        """Traffic readiness with fail-closed production-runtime admission."""
+        if not dashboard_state.is_running:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "reason": "bot_not_running"},
+            )
+        try:
+            dependencies_ready = (
+                critical_readiness_check is None or critical_readiness_check()
+            )
+        except Exception:
+            dependencies_ready = False
+        if not dependencies_ready:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "reason": "critical_services_unavailable",
+                },
+            )
+        if not production_runtime_required:
+            return {"status": "ready"}
+        if production_runtime is None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "reason": "production_runtime_unavailable",
+                },
+            )
+        try:
+            runtime_status = production_runtime.status()
+            ready = bool(
+                runtime_status["ready"]
+                if isinstance(runtime_status, Mapping)
+                else runtime_status.ready
+            )
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "reason": "runtime_status_unavailable",
+                },
+            )
+        if not ready:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "reason": "trading_not_admitted"},
+            )
+        return {"status": "ready"}
     
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -373,6 +452,12 @@ def create_app() -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket endpoint for real-time updates."""
+        if not _same_origin_websocket(websocket):
+            await websocket.close(code=1008, reason="untrusted websocket origin")
+            return
+        if len(dashboard_state._connections) >= MAX_DASHBOARD_WEBSOCKETS:
+            await websocket.close(code=1013, reason="dashboard connection limit reached")
+            return
         await websocket.accept()
         dashboard_state._connections.append(websocket)
         
@@ -2565,6 +2650,18 @@ def get_embedded_html() -> str:
                 progressContainer.style.display = 'none';
                 matchStatus.textContent = `✓ ${matchedCount} pairs`;
                 matchStatus.className = 'platform-stat-status ready';
+            } else if (matchingStatus === 'no_matches') {
+                progressContainer.style.display = 'none';
+                matchStatus.textContent = '0 pairs · refresh scheduled';
+                matchStatus.className = 'platform-stat-status';
+            } else if (matchingStatus === 'refreshing') {
+                progressContainer.style.display = 'none';
+                matchStatus.textContent = '↻ Refreshing markets...';
+                matchStatus.className = 'platform-stat-status loading';
+            } else if (matchingStatus === 'error') {
+                progressContainer.style.display = 'none';
+                matchStatus.textContent = '⚠ Discovery error';
+                matchStatus.className = 'platform-stat-status error';
             } else if (polyCount > 0 && kalshiCount > 0) {
                 progressContainer.style.display = 'none';
                 matchStatus.textContent = '⏳ Starting...';
@@ -2764,16 +2861,16 @@ def get_embedded_html() -> str:
                         </div>
                         <div class="opp-title">${truncate(opp.title, 70)}</div>
                         <div class="opp-market-info">
-                            <span style="opacity: 0.6;">📊</span> ${opp.marketInfo}
+                            <span style="opacity: 0.6;">📊</span> ${escapeHtml(opp.marketInfo)}
                             ${hasArb ? '<span style="margin-left: 0.5rem; color: var(--accent-green);">● Active</span>' : ''}
                         </div>
                         <div class="opp-platforms">
                             <div class="opp-platform-row">
                                 <div class="opp-platform-name">
                                     <span class="opp-platform-icon ${opp.platform1.name.toLowerCase().includes('poly') ? 'poly' : 'kalshi'}">
-                                        ${opp.platform1.name.charAt(0)}
+                                        ${escapeHtml(opp.platform1.name.charAt(0))}
                                     </span>
-                                    ${opp.platform1.name}
+                                    ${escapeHtml(opp.platform1.name)}
                                     ${hasArb ? '<span style="margin-left: auto; font-size: 0.65rem; color: var(--accent-green);">↗</span>' : ''}
                                 </div>
                                 <div class="opp-platform-price ${hasArb ? 'buy' : ''}">${formatPct(opp.platform1.price)}</div>
@@ -2781,9 +2878,9 @@ def get_embedded_html() -> str:
                             <div class="opp-platform-row">
                                 <div class="opp-platform-name">
                                     <span class="opp-platform-icon ${opp.platform2.name.toLowerCase().includes('kalshi') ? 'kalshi' : 'poly'}">
-                                        ${opp.platform2.name.charAt(0)}
+                                        ${escapeHtml(opp.platform2.name.charAt(0))}
                                     </span>
-                                    ${opp.platform2.name}
+                                    ${escapeHtml(opp.platform2.name)}
                                     ${hasArb ? '<span style="margin-left: auto; font-size: 0.65rem; color: #ef4444;">↘</span>' : ''}
                                 </div>
                                 <div class="opp-platform-price ${hasArb ? 'sell' : ''}">${formatPct(opp.platform2.price)}</div>
@@ -2821,10 +2918,20 @@ def get_embedded_html() -> str:
             if (val === undefined || val === null) return '??%';
             return (val * 100).toFixed(0) + '%';
         }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#039;');
+        }
         
         function truncate(str, len) {
             if (!str) return '';
-            return str.length > len ? str.substring(0, len) + '...' : str;
+            const shortened = str.length > len ? str.substring(0, len) + '...' : str;
+            return escapeHtml(shortened);
         }
         
         function updateMarkets() {
@@ -2887,7 +2994,7 @@ def get_embedded_html() -> str:
                 
                 return `
                     <div class="market-item">
-                        <span class="market-name">${m.question || id}</span>
+                        <span class="market-name">${escapeHtml(m.question || id)}</span>
                         <span class="market-price">${bid.toFixed(2)}/${ask.toFixed(2)}</span>
                         <span class="market-spread">${(spread * 100).toFixed(1)}c</span>
                     </div>

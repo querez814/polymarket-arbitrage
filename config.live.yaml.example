@@ -8,6 +8,8 @@
 #   export POLYMARKET_API_KEY="..."
 #   export POLYMARKET_API_SECRET="..."
 #   export POLYMARKET_PASSPHRASE="..."
+#   export KALSHI_API_KEY_ID="..."
+#   export KALSHI_PRIVATE_KEY_PATH="/etc/nightwatch/kalshi.pem"
 #   export NIGHTWATCH_OPERATOR_TOKEN="at-least-32-random-characters"
 #   export NIGHTWATCH_ALERT_WEBHOOK_URL="https://alerts.example.com/nightwatch"
 #   export NIGHTWATCH_ALERT_WEBHOOK_TOKEN="..."
@@ -43,7 +45,7 @@ trading:
   markets: []                 # empty = auto-discover (consider whitelisting for live)
 
   min_edge: 0.01
-  bundle_arb_enabled: false     # execution is blocked until crash-safe recovery is wired
+  bundle_arb_enabled: false     # legacy mutation path remains prohibited in live mode
   bundle_cooldown_seconds: 2.0
 
   min_spread: 0.05
@@ -91,16 +93,16 @@ risk:
   strategy_exposure_limits:
     bundle_arb: 20
     market_making: 10
-    cross_platform_arb: 0     # set a small positive cap only for an approved canary
+    cross_platform_arb: 10    # bounded while execution stays disabled; reduce for canary
   kill_switch_enabled: true
   auto_unwind_on_breach: false
 
 mode:
   trading_mode: "live"
   data_mode: "real"
-  cross_platform_enabled: false   # detection only today — keep off for first live run
+  cross_platform_enabled: true    # read-only matching/scanning while execution is disabled
   cross_platform_execution_enabled: false  # requires operator arming and a separately approved canary
-  kalshi_enabled: false
+  kalshi_enabled: true
   min_match_similarity: 0.7
   dry_run_initial_balance: 500
   simulate_fills: false
@@ -125,8 +127,8 @@ monitoring:
   display_timezone: "America/New_York"
 
 production:
-  execution_journal_path: "data/execution_journal.sqlite3"
-  operator_state_path: "data/operator_state.sqlite3"
+  execution_journal_path: "/var/lib/nightwatch/execution_journal.sqlite3"
+  operator_state_path: "/var/lib/nightwatch/operator_state.sqlite3"
   economics_max_age_seconds: 30
   alert_timeout_seconds: 10
   operator_token: ""           # NIGHTWATCH_OPERATOR_TOKEN only

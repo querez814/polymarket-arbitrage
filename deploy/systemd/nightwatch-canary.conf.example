@@ -1,0 +1,8 @@
+[Service]
+# Install only for a separately approved staffed canary, then daemon-reload.
+# These values bind preflight and ExecStart to the same reviewed config.
+Environment=NIGHTWATCH_CONFIG=/etc/nightwatch/config.canary.yaml
+Environment=NIGHTWATCH_PREFLIGHT_PHASE=canary
+# Contract count and per-order dollar notional, respectively.
+Environment=NIGHTWATCH_CANARY_MAX_CONTRACTS=1
+Environment=NIGHTWATCH_CANARY_MAX_ORDER_NOTIONAL=10

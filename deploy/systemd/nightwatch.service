@@ -1,0 +1,47 @@
+[Unit]
+Description=Nightwatch locked cross-venue arbitrage
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=nightwatch
+Group=nightwatch
+WorkingDirectory=/opt/nightwatch/current
+EnvironmentFile=/etc/nightwatch/nightwatch.env
+Environment=PYTHONUNBUFFERED=1
+Environment=NIGHTWATCH_CONFIG=/etc/nightwatch/config.live.yaml
+Environment=NIGHTWATCH_PREFLIGHT_PHASE=deployment
+Environment=NIGHTWATCH_CANARY_MAX_CONTRACTS=0
+Environment=NIGHTWATCH_CANARY_MAX_ORDER_NOTIONAL=0
+UMask=0077
+
+ExecStartPre=/opt/nightwatch/current/.venv/bin/python scripts/verify_locked_environment.py --lock requirements.lock
+ExecStartPre=/opt/nightwatch/current/.venv/bin/python scripts/production_preflight.py --config ${NIGHTWATCH_CONFIG} --config-owner-uid 0 --phase ${NIGHTWATCH_PREFLIGHT_PHASE} --working-directory /opt/nightwatch/current --state-directory /var/lib/nightwatch --secret-file /etc/nightwatch/nightwatch.env --secret-file-owner-uid 0 --canary-max-contracts ${NIGHTWATCH_CANARY_MAX_CONTRACTS} --canary-max-order-notional ${NIGHTWATCH_CANARY_MAX_ORDER_NOTIONAL}
+ExecStart=/opt/nightwatch/current/.venv/bin/python run_with_dashboard.py --config ${NIGHTWATCH_CONFIG} --live --port 8888
+ExecStartPost=/opt/nightwatch/current/.venv/bin/python scripts/wait_for_health.py --url http://127.0.0.1:8888/health/live --timeout 120
+
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=60
+SuccessExitStatus=0 143
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/nightwatch /var/log/nightwatch
+
+[Install]
+WantedBy=multi-user.target

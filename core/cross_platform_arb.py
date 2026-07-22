@@ -103,6 +103,13 @@ class MarketMatcher:
         "what", "who", "which", "when", "is", "are", "was", "were",
         "market", "prediction", "bet", "odds", "win", "winner"
     }
+
+    INDEX_NOISE_WORDS = NOISE_WORDS | {
+        "yes", "no", "over", "under", "more", "less", "than", "before",
+        "after", "during", "through", "candidate", "elected", "election",
+        "score", "scored", "points", "runs", "goals", "game", "match",
+        "event", "contract", "price", "target",
+    }
     
     # NFL team name mappings (full name -> abbreviations and variants)
     NFL_TEAMS = {
@@ -183,13 +190,20 @@ class MarketMatcher:
         """
         self.min_similarity = min_similarity
         self._matched_pairs: dict[str, MarketPair] = {}
+        self._review_candidates: dict[str, MarketPair] = {}
         
         # Build reverse lookup for team names
         self._team_lookup = {}
         for full_name, variants in {**self.NFL_TEAMS, **self.NBA_TEAMS}.items():
             self._team_lookup[full_name] = full_name
             for variant in variants:
-                self._team_lookup[variant.lower()] = full_name
+                normalized_variant = variant.lower()
+                # A location alone ("New York", "Pittsburgh", etc.) is not a
+                # team identity. Treating it as one made unrelated teams and
+                # player props in the same city look like exact matchups.
+                if full_name.startswith(f"{normalized_variant} "):
+                    continue
+                self._team_lookup[normalized_variant] = full_name
     
     def normalize_text(self, text: str) -> str:
         """Normalize text for comparison."""
@@ -198,6 +212,12 @@ class MarketMatcher:
         words = text.split()
         words = [w for w in words if w not in self.NOISE_WORDS]
         return ' '.join(words)
+
+    @staticmethod
+    def kalshi_matching_text(market) -> str:
+        """Use parent-event context when the Kalshi model provides it."""
+        matching_text = getattr(market, "matching_text", "")
+        return matching_text or market.title
     
     def extract_teams(self, text: str) -> list[str]:
         """Extract team names from text."""
@@ -206,12 +226,13 @@ class MarketMatcher:
         
         # Check for team names (longest match first)
         for team_key in sorted(self._team_lookup.keys(), key=len, reverse=True):
-            if team_key in text_lower:
+            pattern = rf"(?<!\w){re.escape(team_key)}(?!\w)"
+            if re.search(pattern, text_lower):
                 canonical = self._team_lookup[team_key]
                 if canonical not in found_teams:
                     found_teams.append(canonical)
                     # Remove from text to avoid double matches
-                    text_lower = text_lower.replace(team_key, "")
+                    text_lower = re.sub(pattern, " ", text_lower)
         
         return found_teams
     
@@ -309,14 +330,6 @@ class MarketMatcher:
                 else:
                     return False, 0.3  # Same teams but different dates - likely different games
             
-            # Check if at least one team matches (and dates match)
-            overlap = teams1_set & teams2_set
-            if len(overlap) >= 1:
-                date1 = self.extract_date(text1)
-                date2 = self.extract_date(text2)
-                if self.dates_match(date1, date2):
-                    return True, 0.7 + (0.2 * len(overlap) / 2)
-        
         return False, 0.0
     
     def is_same_person_event(self, text1: str, text2: str) -> tuple[bool, float]:
@@ -444,8 +457,8 @@ class MarketMatcher:
         if any(x in text_lower for x in sports_keywords):
             return 'sports'
         
-        # Check for team names
-        if any(x in text_lower for x in self._team_lookup.keys()):
+        # Check for whole-token team names and abbreviations.
+        if self.extract_teams(text):
             return 'sports'
         
         # Entertainment
@@ -459,6 +472,36 @@ class MarketMatcher:
             return 'tech'
         
         return 'other'
+
+    def market_category(self, market, text: str) -> str:
+        """Prefer venue category metadata, then classify proposition text."""
+        raw_category = getattr(market, "category", "")
+        if isinstance(raw_category, str):
+            category = raw_category.strip().lower()
+            aliases = {
+                "sports": "sports",
+                "sport": "sports",
+                "politics": "politics",
+                "political": "politics",
+                "crypto": "crypto",
+                "cryptocurrency": "crypto",
+                "finance": "finance",
+                "economics": "finance",
+                "entertainment": "entertainment",
+                "technology": "tech",
+                "tech": "tech",
+            }
+            if category in aliases:
+                return aliases[category]
+        return self._categorize_market(text)
+
+    def candidate_tokens(self, text: str) -> set[str]:
+        """Extract meaningful tokens for conservative candidate generation."""
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", text.casefold())
+            if len(token) >= 3 and token not in self.INDEX_NOISE_WORDS
+        }
     
     async def find_matches(
         self,
@@ -490,14 +533,15 @@ class MarketMatcher:
         
         poly_by_cat: dict[str, list] = {}
         for m in active_poly:
-            cat = self._categorize_market(m.question)
+            cat = self.market_category(m, m.question)
             if cat not in poly_by_cat:
                 poly_by_cat[cat] = []
             poly_by_cat[cat].append(m)
         
         kalshi_by_cat: dict[str, list] = {}
         for m in active_kalshi:
-            cat = self._categorize_market(m.title)
+            kalshi_text = self.kalshi_matching_text(m)
+            cat = self.market_category(m, kalshi_text)
             if cat not in kalshi_by_cat:
                 kalshi_by_cat[cat] = []
             kalshi_by_cat[cat].append(m)
@@ -509,37 +553,69 @@ class MarketMatcher:
             k_count = len(kalshi_by_cat.get(cat, []))
             logger.info(f"  {cat}: Polymarket={p_count}, Kalshi={k_count}")
         
-        # Calculate total comparisons (only within categories)
-        total_comparisons = sum(
-            len(poly_by_cat.get(cat, [])) * len(kalshi_by_cat.get(cat, []))
-            for cat in set(list(poly_by_cat.keys()) + list(kalshi_by_cat.keys()))
-        )
-        
-        logger.info(f"Total comparisons (category-based): {total_comparisons:,}")
-        logger.info(f"(vs {len(active_poly) * len(active_kalshi):,} if matching all-to-all)")
-        
-        checked = 0
-        
-        # Match within each category (skip 'other' - too noisy)
+        # Build an inverted token index within each trusted category. This
+        # avoids comparing every politics/sports contract to every other one.
         priority_categories = ['sports', 'politics', 'crypto', 'finance', 'entertainment', 'tech']
-        
+        candidate_batches: dict[str, list[tuple[object, list[object]]]] = {}
+        total_comparisons = 0
         for category in priority_categories:
             poly_markets = poly_by_cat.get(category, [])
             kalshi_markets_cat = kalshi_by_cat.get(category, [])
-            
             if not poly_markets or not kalshi_markets_cat:
                 continue
-            
-            logger.info(f"Matching {category}: {len(poly_markets)} x {len(kalshi_markets_cat)}")
-            
+
+            token_index: dict[str, set[int]] = {}
+            for index, kalshi_market in enumerate(kalshi_markets_cat):
+                for token in self.candidate_tokens(
+                    self.kalshi_matching_text(kalshi_market)
+                ):
+                    token_index.setdefault(token, set()).add(index)
+
+            max_posting_size = max(10, int(len(kalshi_markets_cat) * 0.10))
+            batches: list[tuple[object, list[object]]] = []
             for poly_market in poly_markets:
+                candidate_indexes: set[int] = set()
+                for token in self.candidate_tokens(poly_market.question):
+                    postings = token_index.get(token, set())
+                    if len(postings) <= max_posting_size:
+                        candidate_indexes.update(postings)
+                candidates = [
+                    kalshi_markets_cat[index]
+                    for index in sorted(candidate_indexes)
+                ]
+                batches.append((poly_market, candidates))
+                total_comparisons += len(candidates)
+            candidate_batches[category] = batches
+
+        logger.info(
+            "Total comparisons (indexed candidates): %s", f"{total_comparisons:,}"
+        )
+        logger.info(
+            "(vs %s if matching all-to-all)",
+            f"{len(active_poly) * len(active_kalshi):,}",
+        )
+
+        checked = 0
+        for category in priority_categories:
+            batches = candidate_batches.get(category, [])
+            if not batches:
+                continue
+
+            logger.info(
+                "Matching %s: %s indexed candidates",
+                category,
+                sum(len(candidates) for _, candidates in batches),
+            )
+
+            for poly_market, candidates in batches:
                 best_match = None
                 best_score = 0.0
-                
-                for kalshi_market in kalshi_markets_cat:
+
+                for kalshi_market in candidates:
+                    kalshi_text = self.kalshi_matching_text(kalshi_market)
                     score = self.calculate_similarity(
                         poly_market.question,
-                        kalshi_market.title
+                        kalshi_text,
                     )
                     
                     if score > best_score:
@@ -547,20 +623,27 @@ class MarketMatcher:
                         best_match = kalshi_market
                     
                     checked += 1
-                
-                # Yield VERY frequently to keep event loop responsive
-                if checked % 500 == 0:
-                    await asyncio.sleep(0.01)  # Small sleep to let web requests through
-                    pct = (checked / total_comparisons * 100) if total_comparisons > 0 else 0
-                    
-                    if checked % 5000 == 0:
-                        logger.info(f"Progress: {checked:,}/{total_comparisons:,} ({pct:.1f}%) - {len(matches)} matches")
-                    
-                    if on_progress:
-                        try:
-                            on_progress(checked, total_comparisons, len(matches))
-                        except:
-                            pass
+                    # Yield inside the hot loop so market matching cannot
+                    # starve order-book processing or the dashboard server.
+                    if checked % 500 == 0:
+                        await asyncio.sleep(0.01)
+                        pct = (
+                            checked / total_comparisons * 100
+                            if total_comparisons > 0
+                            else 0
+                        )
+
+                        if checked % 5000 == 0:
+                            logger.info(
+                                f"Progress: {checked:,}/{total_comparisons:,} "
+                                f"({pct:.1f}%) - {len(matches)} matches"
+                            )
+
+                        if on_progress:
+                            try:
+                                on_progress(checked, total_comparisons, len(matches))
+                            except Exception:
+                                logger.debug("Market-match progress callback failed")
                 
                 # After checking all Kalshi markets for this Poly market
                 if best_match and best_score >= self.min_similarity:
@@ -568,7 +651,7 @@ class MarketMatcher:
                         polymarket_id=poly_market.market_id,
                         kalshi_ticker=best_match.ticker,
                         polymarket_question=poly_market.question,
-                        kalshi_title=best_match.title,
+                        kalshi_title=self.kalshi_matching_text(best_match),
                         similarity_score=best_score,
                         category=category,
                         polymarket_condition_id=poly_market.condition_id,
@@ -577,16 +660,48 @@ class MarketMatcher:
                     self._matched_pairs[pair.pair_id] = pair
                     
                     logger.info(
-                        f"MATCHED [{category}]: '{poly_market.question[:35]}...' <-> '{best_match.title[:35]}...' "
+                        f"MATCHED [{category}]: '{poly_market.question[:35]}...' <-> "
+                        f"'{self.kalshi_matching_text(best_match)[:35]}...' "
                         f"(score: {best_score:.2f})"
                     )
-        
+                elif best_match and best_score >= max(
+                    0.65, self.min_similarity - 0.20
+                ):
+                    candidate = MarketPair(
+                        polymarket_id=poly_market.market_id,
+                        kalshi_ticker=best_match.ticker,
+                        polymarket_question=poly_market.question,
+                        kalshi_title=self.kalshi_matching_text(best_match),
+                        similarity_score=best_score,
+                        category=category,
+                        polymarket_condition_id=poly_market.condition_id,
+                    )
+                    self._review_candidates[candidate.pair_id] = candidate
+
+        if on_progress:
+            try:
+                on_progress(checked, total_comparisons, len(matches))
+            except Exception:
+                logger.debug("Market-match final progress callback failed")
         logger.info(f"=== MATCHING COMPLETE: {len(matches)} pairs found ===")
         return matches
     
     def get_cached_pairs(self) -> list[MarketPair]:
         """Get all cached market pairs."""
         return list(self._matched_pairs.values())
+
+    def clear_cached_pairs(self) -> None:
+        """Discard matches from the prior discovery snapshot."""
+        self._matched_pairs.clear()
+        self._review_candidates.clear()
+
+    def get_review_candidates(self, limit: int = 100) -> list[MarketPair]:
+        """Return strongest subthreshold candidates for manual rules review."""
+        return sorted(
+            self._review_candidates.values(),
+            key=lambda pair: pair.similarity_score,
+            reverse=True,
+        )[:limit]
 
 
 class CrossPlatformArbEngine:

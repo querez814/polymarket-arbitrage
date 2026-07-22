@@ -129,9 +129,14 @@ class ModeConfig:
     cross_platform_execution_enabled: bool = False
     kalshi_enabled: bool = True  # Enable Kalshi market monitoring
     min_match_similarity: float = 0.6  # Minimum similarity score for market matching (0-1)
+    cross_platform_refresh_seconds: float = 300.0
     dry_run_initial_balance: float = 10000.0
     simulate_fills: bool = False
     fill_probability: float = 0.0
+    paper_locked_arb_enabled: bool = False
+    paper_confirmation_observations: int = 2
+    paper_slippage_buffer_per_contract: float = 0.02
+    paper_liquidity_fraction: float = 0.10
 
 
 @dataclass
@@ -613,6 +618,38 @@ def validate_config(config: BotConfig) -> None:
         errors.append(
             "mode.cross_platform_enabled must be true when cross-platform execution is enabled"
         )
+    if (
+        not math.isfinite(config.mode.cross_platform_refresh_seconds)
+        or config.mode.cross_platform_refresh_seconds < 30
+    ):
+        errors.append("mode.cross_platform_refresh_seconds must be at least 30")
+    if config.mode.paper_locked_arb_enabled:
+        if not config.is_dry_run:
+            errors.append("mode.paper_locked_arb_enabled requires dry_run mode")
+        if config.use_simulation:
+            errors.append("paper locked arbitrage requires mode.data_mode real")
+        if not config.mode.cross_platform_enabled or not config.mode.kalshi_enabled:
+            errors.append("paper locked arbitrage requires both cross-platform venues")
+        if config.mode.simulate_fills:
+            errors.append("paper locked arbitrage cannot use random simulated fills")
+        if config.trading.bundle_arb_enabled or config.trading.mm_enabled:
+            errors.append("paper locked arbitrage requires legacy strategies disabled")
+        if config.mode.paper_confirmation_observations < 2:
+            errors.append("paper_confirmation_observations must be at least 2")
+        if (
+            not math.isfinite(config.mode.paper_slippage_buffer_per_contract)
+            or config.mode.paper_slippage_buffer_per_contract < 0
+        ):
+            errors.append(
+                "paper_slippage_buffer_per_contract must be finite and non-negative"
+            )
+        if (
+            not math.isfinite(config.mode.paper_liquidity_fraction)
+            or not 0 < config.mode.paper_liquidity_fraction <= 1
+        ):
+            errors.append("paper_liquidity_fraction must be between 0 and 1")
+        if config.risk.max_order_notional > config.mode.dry_run_initial_balance:
+            errors.append("paper max_order_notional cannot exceed the paper bankroll")
 
     if not config.production.execution_journal_path.strip():
         errors.append("production.execution_journal_path must be non-empty")

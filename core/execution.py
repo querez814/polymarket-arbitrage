@@ -45,6 +45,7 @@ class ExecutionConfig:
     high_edge_slippage_multiplier: float = 1.5
     enable_slippage_check: bool = True
     dry_run: bool = True
+    paper_fee_rate: float = 0.015
 
 
 @dataclass
@@ -389,6 +390,27 @@ class ExecutionEngine:
                     size=size,
                     strategy_tag=strategy_tag,
                 )
+
+                if self.config.dry_run and not self._paper_collateral_available(
+                    proposed_order
+                ):
+                    self.stats.signals_rejected += 1
+                    self.stats.risk_rejections += 1
+                    self._record_paper_event(
+                        event_type="rejected",
+                        signal_id=signal.signal_id,
+                        market_id=signal.market_id,
+                        market_question=signal.market_question,
+                        token_type=self._enum_value(token_type),
+                        side=self._enum_value(side),
+                        price=price,
+                        size=size,
+                        notional=proposed_order.notional,
+                        strategy_tag=strategy_tag,
+                        reason_code="paper_collateral",
+                        reason_detail="Paper order exceeds available cash or inventory.",
+                    )
+                    continue
                 
                 if not self.risk_manager.check_order(proposed_order):
                     self.stats.signals_rejected += 1
@@ -647,6 +669,28 @@ class ExecutionEngine:
                 error,
             )
             return None
+
+    def _paper_collateral_available(self, order: Order) -> bool:
+        if order.side == OrderSide.BUY:
+            pending = sum(
+                existing.remaining_size
+                * existing.price
+                * (1 + self.config.paper_fee_rate)
+                for existing in self._open_orders.values()
+                if existing.side == OrderSide.BUY
+            )
+            required = order.notional * (1 + self.config.paper_fee_rate)
+            return pending + required <= self.portfolio.cash_balance
+        position = self.portfolio.get_position(order.market_id, order.token_type)
+        owned = max(0.0, position.size if position else 0.0)
+        pending_sales = sum(
+            existing.remaining_size
+            for existing in self._open_orders.values()
+            if existing.side == OrderSide.SELL
+            and existing.market_id == order.market_id
+            and existing.token_type == order.token_type
+        )
+        return pending_sales + order.size <= owned
     
     def _track_order(self, order: Order) -> None:
         """Add order to tracking structures."""
@@ -872,11 +916,19 @@ class ExecutionEngine:
     
     def handle_fill(self, trade: Trade) -> None:
         """Handle a trade fill notification."""
+        if self.config.dry_run and trade.is_simulated and trade.side == OrderSide.SELL:
+            position = self.portfolio.get_position(trade.market_id, trade.token_type)
+            if position is None or position.size < trade.size:
+                logger.error(
+                    "Rejected impossible paper fill: sale exceeds owned inventory"
+                )
+                return
         order_id = trade.order_id
         order = self._open_orders.get(order_id)
         
         if order:
-            order.filled_size += trade.size
+            if not (self.config.dry_run and trade.is_simulated):
+                order.filled_size += trade.size
             order.updated_at = utc_now()
             self.risk_manager.release_open_order(order_id, trade.size * order.price)
             

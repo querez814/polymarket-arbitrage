@@ -9,6 +9,11 @@
 
 **Cross-platform arbitrage detection between Polymarket and Kalshi prediction markets**
 
+> **Production status:** the locked-arbitrage path and deployment package are
+> offline-tested, but the target service envelope and exchange mutation are not. Follow
+> `docs/production-operations.md` and `docs/canary-protocol.md`; credentials and
+> offline tests do not authorize a live order.
+
 [Features](#-features) • [Demo](#-demo) • [Quick Start](#-quick-start) • [Dashboard](#-live-dashboard) • [Configuration](#%EF%B8%8F-configuration)
 
 **Author: [ImMike](https://github.com/ImMike)**
@@ -190,6 +195,18 @@ python run_with_dashboard.py
 
 # Open http://localhost:8000 in your browser
 ```
+
+For a production-shaped performance observation with a fixed $1,000 paper
+balance and real public market data, use:
+
+```bash
+uv run --with-requirements requirements.txt python run_with_dashboard.py \
+  --config config.paper.production.yaml --port 8888
+```
+
+This mode does not submit exchange orders. Cross-venue paper fills remain
+disabled until an exact Polymarket condition ID and equivalent Kalshi ticker
+have been reviewed and added to the whitelist.
 
 ### 4. Other Run Modes
 

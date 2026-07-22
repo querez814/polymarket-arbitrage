@@ -48,23 +48,37 @@ In live mode the dashboard binds to `127.0.0.1`. If remote operator access is
 required, expose it only through an authenticated TLS reverse proxy. Do not bind
 the bearer-token routes directly to a plaintext network.
 
-## Operator controls
+The committed Linux deployment definition is
+`deploy/systemd/nightwatch.service`. It runs the non-network production
+preflight before startup, verifies the hash-locked release environment,
+restricts writes to the durable state/log directories, waits for loopback
+liveness, and restarts only on failure. `/health/live` reports process liveness.
+`/health/ready` reports
+critical matcher/scanner availability. In monitoring-only mode it can return 200
+without a production runtime; in canary mode it also requires trading admission
+and returns 503 while operator-halted. A halted but live process must not be
+restarted automatically.
 
-All calls are loopback-only by default:
+The production preflight must run as the `nightwatch` service user so ownership
+checks reflect the runtime identity. Treat systemd's `ExecStartPre` output as
+the canonical evidence; do not run the command manually as root. With execution
+disabled, start the service and capture the gate result:
 
 ```bash
-curl -H "Authorization: Bearer $NIGHTWATCH_OPERATOR_TOKEN" \
-  http://127.0.0.1:8888/api/operator/status
+systemctl start nightwatch
+journalctl -u nightwatch --since "5 minutes ago" --no-pager
+```
 
-curl -X POST -H "Authorization: Bearer $NIGHTWATCH_OPERATOR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"reason":"operator preflight complete"}' \
-  http://127.0.0.1:8888/api/operator/resume
+## Operator controls
 
-curl -X POST -H "Authorization: Bearer $NIGHTWATCH_OPERATOR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"reason":"operator emergency stop"}' \
-  http://127.0.0.1:8888/api/operator/panic
+All calls are loopback-only by default. Use the helper, which reads
+`NIGHTWATCH_OPERATOR_TOKEN` from the environment and never places it in process
+arguments:
+
+```bash
+python scripts/operator_control.py status
+python scripts/operator_control.py resume --reason "operator preflight complete"
+python scripts/operator_control.py panic --reason "operator emergency stop"
 ```
 
 Resume is fail-closed if the external alert cannot be delivered. After any
@@ -81,3 +95,7 @@ minimum-size, whitelisted matched pair during staffed hours. Verify the complete
 private-stream and REST lifecycle, venue fee debits, fill precision, latency,
 cancellation behavior, durable journal replay, and operator alerting. Any
 discrepancy ends the canary and leaves trading halted.
+
+The exact staffed procedure and evidence bundle are defined in
+`docs/canary-protocol.md`. Running its preflight is non-mutating; entering the
+execution window still requires separate human authorization.

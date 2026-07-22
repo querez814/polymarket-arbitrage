@@ -73,3 +73,6 @@ config.polymarket.yaml
 # Kalshi RSA private keys (download once from Kalshi — never commit)
 kalshi*.pem
 kalshi*.key
+
+# Local paper-performance ledger
+data/paper_performance.db

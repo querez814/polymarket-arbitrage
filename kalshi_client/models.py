@@ -19,6 +19,7 @@ class KalshiMarket:
     series_ticker: str              # e.g., "KXHIGHNY"
     title: str                      # Full question
     subtitle: str = ""              # Additional context
+    event_title: str = ""           # Parent event context used for matching
     
     # Prices (in dollars, converted from cents)
     yes_price: float = 0.0          # Last YES price
@@ -38,6 +39,17 @@ class KalshiMarket:
     
     # Category
     category: str = ""
+
+    @property
+    def matching_text(self) -> str:
+        """Return proposition text with its parent event context."""
+        event_title = self.event_title.strip()
+        title = self.title.strip()
+        if not event_title:
+            return title
+        if not title or title.casefold() == event_title.casefold():
+            return event_title
+        return f"{event_title} — {title}"
     
     @property
     def is_active(self) -> bool:

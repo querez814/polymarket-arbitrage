@@ -1,0 +1,61 @@
+# Production-shaped, non-mutating performance test.
+# Real public market data; no exchange order construction or submission.
+trading:
+  risk_profile: conservative
+  min_edge: 0.02
+  bundle_arb_enabled: false
+  mm_enabled: false
+  cross_platform_max_order_size: 50
+  cross_platform_edge_size_multiplier: 4
+  cross_platform_max_liquidity_fraction: 0.25
+
+risk:
+  max_order_notional: 100
+  max_open_orders: 2
+  max_open_positions: 10
+  max_order_attempts_per_minute: 10
+  max_daily_order_attempts: 100
+  max_position_per_market: 100
+  max_global_exposure: 1000
+  max_daily_loss: 50
+  max_drawdown_pct: 0.10
+  trade_only_high_volume: false
+  # Empty means observation-only. Add exactly one reviewed Polymarket condition
+  # id and its equivalent Kalshi ticker before shadow fills can be recorded.
+  whitelist: []
+  blacklist: []
+  strategy_exposure_limits:
+    cross_platform_arb: 1000
+  kill_switch_enabled: true
+
+mode:
+  trading_mode: dry_run
+  data_mode: real
+  cross_platform_enabled: true
+  cross_platform_execution_enabled: false
+  kalshi_enabled: true
+  min_match_similarity: 0.90
+  cross_platform_refresh_seconds: 300
+  dry_run_initial_balance: 1000
+  simulate_fills: false
+  fill_probability: 0
+  paper_locked_arb_enabled: true
+  paper_confirmation_observations: 3
+  paper_slippage_buffer_per_contract: 0.02
+  paper_liquidity_fraction: 0.10
+
+logging:
+  console_level: INFO
+  file_level: DEBUG
+  log_dir: logs
+  main_log_file: paper-performance.log
+  trades_log_file: paper-performance-trades.log
+  opportunities_log_file: paper-performance-opportunities.log
+
+monitoring:
+  snapshot_interval: 60
+  heartbeat_interval: 30
+  track_latency: true
+  track_fill_rates: true
+  paper_trade_db_path: data/paper_performance.db
+  display_timezone: America/New_York

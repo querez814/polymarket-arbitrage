@@ -720,3 +720,28 @@ mode:
 
     with pytest.raises(ConfigError, match="existing regular file"):
         load_config(str(config_path))
+
+
+def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
+    config = load_config(
+        str(Path(__file__).parents[1] / "config.paper.production.yaml")
+    )
+
+    assert config.is_dry_run is True
+    assert config.use_simulation is False
+    assert config.mode.dry_run_initial_balance == 1_000
+    assert config.mode.paper_locked_arb_enabled is True
+    assert config.mode.simulate_fills is False
+    assert config.trading.bundle_arb_enabled is False
+    assert config.trading.mm_enabled is False
+
+
+def test_paper_locked_arb_rejects_random_fill_mode():
+    config = BotConfig()
+    config.mode.paper_locked_arb_enabled = True
+    config.mode.simulate_fills = True
+    config.trading.bundle_arb_enabled = False
+    config.trading.mm_enabled = False
+
+    with pytest.raises(ConfigError, match="cannot use random simulated fills"):
+        validate_config(config)

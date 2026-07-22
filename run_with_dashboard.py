@@ -37,6 +37,7 @@ from core.execution_journal import ExecutionJournal
 from core.two_leg_execution import ExecutionPhase
 from core.operations import PersistentOperatorControls, WebhookAlertSink
 from core.production_runtime import ProductionArbitrageRuntime, RuntimeNotReadyError
+from core.paper_locked_arb import PaperLockedArbitrageLedger
 from utils.config_loader import (
     BotConfig,
     load_config,
@@ -70,6 +71,7 @@ class TradingBotWithDashboard:
         self.dashboard_integration = None
         self.decision_journal = DecisionJournal(max_records=1000)
         self.paper_trade_store = None
+        self.paper_locked_arb = None
         
         # Components - Kalshi (cross-platform)
         self.kalshi_client = None
@@ -78,6 +80,8 @@ class TradingBotWithDashboard:
         self._kalshi_markets = []
         self._matched_pairs = []
         self._xplat_scan_task = None
+        self._kalshi_monitor_task = None
+        self._critical_failure_task = None
         self.production_runtime = None
         self.execution_journal = None
         self.operator_controls = None
@@ -107,6 +111,11 @@ class TradingBotWithDashboard:
         configure_dashboard_runtime(
             store=None,
             timezone=self.config.monitoring.display_timezone,
+            production_required=(
+                self.config.is_live
+                and self.config.mode.cross_platform_execution_enabled
+            ),
+            readiness_check=self._critical_dependencies_ready,
         )
         if self.config.is_dry_run:
             self.paper_trade_store = PaperTradeStore(
@@ -115,11 +124,33 @@ class TradingBotWithDashboard:
             configure_dashboard_runtime(
                 store=self.paper_trade_store,
                 timezone=self.config.monitoring.display_timezone,
+                readiness_check=self._critical_dependencies_ready,
             )
             dashboard_state.paper_history = [
                 event.to_dict()
                 for event in self.paper_trade_store.recent_events(limit=200)
             ]
+            if (
+                self.config.mode.paper_locked_arb_enabled
+                and self.config.mode.cross_platform_enabled
+            ):
+                self.paper_locked_arb = PaperLockedArbitrageLedger(
+                    initial_balance=self.config.mode.dry_run_initial_balance,
+                    max_plan_capital=self.config.risk.max_order_notional,
+                    required_observations=(
+                        self.config.mode.paper_confirmation_observations
+                    ),
+                    slippage_buffer_per_contract=(
+                        self.config.mode.paper_slippage_buffer_per_contract
+                    ),
+                    liquidity_fraction=self.config.mode.paper_liquidity_fraction,
+                    min_effective_edge=self.config.trading.min_edge,
+                    approved_market_ids=set(self.config.risk.whitelist),
+                    store=self.paper_trade_store,
+                )
+                dashboard_state.cross_platform["paper_performance"] = (
+                    self.paper_locked_arb.summary()
+                )
         
         # Initialize Polymarket API client
         self.client = create_polymarket_client(self.config)
@@ -153,12 +184,16 @@ class TradingBotWithDashboard:
                 ),
             )
             self.market_matcher = self.cross_platform_engine.matcher
+            self.market_matcher.min_similarity = self.config.mode.min_match_similarity
 
             if self.config.is_live and self.config.mode.cross_platform_execution_enabled:
                 await self._start_production_runtime()
             
             # Start Kalshi monitoring in background
-            asyncio.create_task(self._start_kalshi_monitoring())
+            self._kalshi_monitor_task = asyncio.create_task(
+                self._start_kalshi_monitoring()
+            )
+            self._kalshi_monitor_task.add_done_callback(self._critical_task_done)
         
         # Initialize portfolio
         initial_balance = (
@@ -348,6 +383,8 @@ class TradingBotWithDashboard:
             store=self.paper_trade_store,
             timezone=self.config.monitoring.display_timezone,
             runtime=runtime,
+            production_required=True,
+            readiness_check=self._critical_dependencies_ready,
         )
         logger.warning(
             "Production runtime recovered and is HALTED pending authenticated operator arming"
@@ -424,143 +461,227 @@ class TradingBotWithDashboard:
                 logger.error(f"Fill simulation error: {e}")
     
     async def _start_kalshi_monitoring(self) -> None:
-        """Start monitoring Kalshi markets for cross-platform arbitrage."""
+        """Continuously refresh eligible markets and equivalent pair discovery."""
         if not self.kalshi_client:
             return
-        
+
         logger.info("Starting Kalshi market monitoring...")
-        
-        # Set up dashboard for loading state
         dashboard_state.cross_platform["enabled"] = True
         dashboard_state.cross_platform["matching_status"] = "loading"
-        
-        # Fetch Kalshi markets with progress updates
-        logger.info("Fetching Kalshi markets...")
-        
-        def on_kalshi_progress(count):
-            dashboard_state.cross_platform["kalshi_markets"] = count
-        
-        self._kalshi_markets = await self.kalshi_client.list_all_markets(
-            status="open",
-            max_markets=5000,
-            on_progress=on_kalshi_progress,
-        )
-        logger.info(f"✓ Loaded {len(self._kalshi_markets)} Kalshi markets")
-        
-        # Update dashboard state
-        dashboard_state.cross_platform["kalshi_markets"] = len(self._kalshi_markets)
-        
-        # Wait for at least SOME Polymarket markets to load (start matching quickly!)
-        logger.info("Waiting for Polymarket markets...")
-        for i in range(30):  # Wait up to 30 seconds
-            await asyncio.sleep(1)
-            poly_count = len(self.data_feed._markets) if self.data_feed else 0
-            
-            # Update dashboard with current loading progress
-            dashboard_state.cross_platform["polymarket_markets"] = poly_count
-            
-            # Start matching as soon as we have some markets from both platforms
-            if poly_count >= 50:
-                logger.info(f"Got {poly_count} Polymarket markets - starting matching!")
-                break
-                
-            if i % 5 == 0:
-                logger.info(f"Polymarket: {poly_count} markets loaded...")
-        
-        # Match markets between platforms (run in background so dashboard stays responsive)
-        if self.data_feed and self._kalshi_markets:
-            polymarket_markets = list(self.data_feed._markets.values())
-            logger.info(f"Starting background matching: {len(polymarket_markets)} Polymarket x {len(self._kalshi_markets)} Kalshi")
-            
-            # Set initial status
-            dashboard_state.cross_platform["matching_status"] = "starting"
-            
-            # Start matching as a background task (dashboard will show progress)
-            asyncio.create_task(self._run_matching_background(polymarket_markets))
+
+        first_cycle = True
+        while self._running:
+            dashboard_state.cross_platform["matching_status"] = (
+                "loading" if first_cycle else "refreshing"
+            )
+            dashboard_state.cross_platform["eligible_market_filter"] = (
+                "single_event_only"
+            )
+            logger.info("Fetching eligible single-event Kalshi markets...")
+
+            def on_kalshi_progress(count):
+                dashboard_state.cross_platform["kalshi_markets"] = count
+
+            self._kalshi_markets = await self.kalshi_client.list_all_event_markets(
+                status="open",
+                max_events=2_000,
+                max_markets=10_000,
+                on_progress=on_kalshi_progress,
+            )
+            dashboard_state.cross_platform["kalshi_markets"] = len(
+                self._kalshi_markets
+            )
+            logger.info(
+                "Loaded %s eligible Kalshi markets (MVE excluded)",
+                len(self._kalshi_markets),
+            )
+
+            if first_cycle:
+                logger.info("Waiting for Polymarket markets...")
+                for index in range(30):
+                    await asyncio.sleep(1)
+                    poly_count = (
+                        len(self.data_feed._markets) if self.data_feed else 0
+                    )
+                    dashboard_state.cross_platform["polymarket_markets"] = poly_count
+                    if poly_count >= 50:
+                        logger.info(
+                            "Got %s Polymarket markets - starting matching!",
+                            poly_count,
+                        )
+                        break
+                    if index % 5 == 0:
+                        logger.info("Polymarket: %s markets loaded...", poly_count)
+
+            if self.data_feed and self._kalshi_markets:
+                polymarket_markets = list(self.data_feed._markets.values())
+                dashboard_state.cross_platform["polymarket_markets"] = len(
+                    polymarket_markets
+                )
+                logger.info(
+                    "Starting matching: %s Polymarket x %s eligible Kalshi",
+                    len(polymarket_markets),
+                    len(self._kalshi_markets),
+                )
+                await self._run_matching_background(polymarket_markets)
+
+            first_cycle = False
+            refresh_seconds = self.config.mode.cross_platform_refresh_seconds
+            dashboard_state.cross_platform["next_discovery_refresh_seconds"] = (
+                refresh_seconds
+            )
+            await asyncio.sleep(refresh_seconds)
     
     async def _run_matching_background(self, polymarket_markets: list) -> None:
-        """Run market matching in a thread pool so dashboard stays fully responsive."""
-        import concurrent.futures
-        
+        """Match one venue snapshot while yielding to live dashboard work."""
         try:
             dashboard_state.cross_platform["matching_status"] = "matching"
-            total = len(polymarket_markets) * len(self._kalshi_markets)
-            dashboard_state.cross_platform["matching_total"] = total
-            
-            # Run matching in thread pool to avoid blocking event loop
-            loop = asyncio.get_event_loop()
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            
-            def run_matching_sync():
-                """Synchronous matching that runs in thread."""
-                import asyncio
-                # Create new event loop for this thread
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                
-                try:
-                    def on_progress(checked, total, matches_found):
-                        dashboard_state.cross_platform["matching_checked"] = checked
-                        dashboard_state.cross_platform["matching_progress"] = int(checked / total * 100) if total > 0 else 0
-                        dashboard_state.cross_platform["matched_pairs"] = matches_found
-                        
-                        # Update display data incrementally (show latest matches)
-                        cached_pairs = self.market_matcher.get_cached_pairs()
-                        if cached_pairs:
-                            display_data = []
-                            for pair in cached_pairs[-50:]:  # Show latest 50
-                                display_data.append({
-                                    "poly_question": pair.polymarket_question,
-                                    "kalshi_title": pair.kalshi_title,
-                                    "similarity": pair.similarity_score,
-                                    "category": pair.category,
-                                })
-                            dashboard_state.cross_platform["matched_pairs_data"] = display_data
-                    
-                    result = new_loop.run_until_complete(
-                        self.market_matcher.find_matches(
-                            polymarket_markets,
-                            self._kalshi_markets,
-                            on_progress=on_progress,
-                        )
-                    )
-                    return result
-                finally:
-                    new_loop.close()
-            
-            self._matched_pairs = await loop.run_in_executor(executor, run_matching_sync)
-            
-            dashboard_state.cross_platform["matching_status"] = "complete"
+            dashboard_state.cross_platform["matching_checked"] = 0
+            dashboard_state.cross_platform["matching_total"] = 0
+            dashboard_state.cross_platform["matching_progress"] = 0
+            dashboard_state.cross_platform["matched_pairs"] = 0
+            dashboard_state.cross_platform["matched_pairs_data"] = []
+            clear_cached_pairs = getattr(self.market_matcher, "clear_cached_pairs", None)
+            if clear_cached_pairs:
+                clear_cached_pairs()
+
+            def on_progress(checked, total, matches_found):
+                dashboard_state.cross_platform["matching_checked"] = checked
+                dashboard_state.cross_platform["matching_total"] = total
+                dashboard_state.cross_platform["matching_progress"] = (
+                    int(checked / total * 100) if total > 0 else 0
+                )
+                dashboard_state.cross_platform["matched_pairs"] = matches_found
+
+                cached_pairs = self.market_matcher.get_cached_pairs()
+                if cached_pairs:
+                    dashboard_state.cross_platform["matched_pairs_data"] = [
+                        {
+                            "poly_question": pair.polymarket_question,
+                            "kalshi_title": pair.kalshi_title,
+                            "similarity": pair.similarity_score,
+                            "category": pair.category,
+                        }
+                        for pair in cached_pairs[-50:]
+                    ]
+
+            self._matched_pairs = await self.market_matcher.find_matches(
+                polymarket_markets,
+                self._kalshi_markets,
+                on_progress=on_progress,
+            )
+
             dashboard_state.cross_platform["matching_progress"] = 100
             dashboard_state.cross_platform["matched_pairs"] = len(self._matched_pairs)
-            
-            logger.info(f"✓ Matching complete! Found {len(self._matched_pairs)} pairs")
-            
+            dashboard_state.cross_platform["last_matching_completed_at"] = (
+                datetime.utcnow().isoformat()
+            )
+
             # Prepare matched pairs data for dashboard display
-            matched_pairs_display = []
-            for pair in self._matched_pairs[:50]:
-                matched_pairs_display.append({
+            dashboard_state.cross_platform["matched_pairs_data"] = [
+                {
                     "poly_question": pair.polymarket_question,
                     "kalshi_title": pair.kalshi_title,
                     "similarity": pair.similarity_score,
                     "category": pair.category,
-                })
-            
-            dashboard_state.cross_platform["matched_pairs_data"] = matched_pairs_display
+                }
+                for pair in self._matched_pairs[:50]
+            ]
+            review_candidates = self.market_matcher.get_review_candidates()
+            dashboard_state.cross_platform["review_candidate_count"] = len(
+                review_candidates
+            )
+            dashboard_state.cross_platform["review_candidates"] = [
+                {
+                    "polymarket_id": pair.polymarket_execution_id,
+                    "kalshi_ticker": pair.kalshi_ticker,
+                    "poly_question": pair.polymarket_question,
+                    "kalshi_title": pair.kalshi_title,
+                    "similarity": pair.similarity_score,
+                    "category": pair.category,
+                    "trade_eligible": False,
+                }
+                for pair in review_candidates
+            ]
+
+            if not self._matched_pairs:
+                dashboard_state.cross_platform["matching_status"] = "no_matches"
+                logger.info("Matching complete: no equivalent single-event pairs found")
+                self._record_cross_platform_decision(
+                    outcome=DecisionOutcome.WAIT,
+                    reason_code="no_equivalent_pairs",
+                    explanation=(
+                        "No equivalent Polymarket/Kalshi single-event pairs were "
+                        "found; discovery will refresh automatically."
+                    ),
+                    evidence={
+                        "matched_pairs": 0,
+                        "review_candidates": len(review_candidates),
+                    },
+                )
+                return
+
+            dashboard_state.cross_platform["matching_status"] = "complete"
+            logger.info(f"Matching complete! Found {len(self._matched_pairs)} pairs")
             self._record_cross_platform_decision(
                 outcome=DecisionOutcome.WAIT,
                 reason_code="matched_pairs_ready",
-                explanation=f"Matched {len(self._matched_pairs)} Polymarket/Kalshi pairs; starting live price scan.",
+                explanation=(
+                    f"Matched {len(self._matched_pairs)} Polymarket/Kalshi pairs; "
+                    "price scanning is active."
+                ),
                 evidence={"matched_pairs": len(self._matched_pairs)},
             )
-            if self._matched_pairs and not self._xplat_scan_task:
-                self._xplat_scan_task = asyncio.create_task(self._scan_cross_platform_pairs())
-            
+            if self._xplat_scan_task is None or self._xplat_scan_task.done():
+                self._xplat_scan_task = asyncio.create_task(
+                    self._scan_cross_platform_pairs()
+                )
         except Exception as e:
             logger.error(f"Matching error: {e}")
             import traceback
             traceback.print_exc()
             dashboard_state.cross_platform["matching_status"] = "error"
+
+    def _critical_dependencies_ready(self) -> bool:
+        """Report whether the configured cross-platform discovery path is alive."""
+        if not (
+            self.config.mode.cross_platform_enabled
+            and self.config.mode.kalshi_enabled
+        ):
+            return True
+        return bool(
+            self._kalshi_monitor_task
+            and not self._kalshi_monitor_task.done()
+            and dashboard_state.cross_platform.get("matching_status") == "complete"
+            and self._matched_pairs
+            and self._xplat_scan_task
+            and not self._xplat_scan_task.done()
+        )
+
+    def _critical_task_done(self, task: asyncio.Task) -> None:
+        if not self._running or task.cancelled():
+            return
+        error = task.exception()
+        reason = (
+            f"critical cross-platform task failed: {type(error).__name__}"
+            if error
+            else "critical cross-platform task stopped unexpectedly"
+        )
+        logger.critical(reason)
+        dashboard_state.cross_platform["matching_status"] = "error"
+        if self.production_runtime:
+            self._critical_failure_task = asyncio.create_task(
+                self._halt_after_critical_failure(reason)
+            )
+
+    async def _halt_after_critical_failure(self, reason: str) -> None:
+        try:
+            await self.production_runtime.panic(
+                self.config.production.operator_token,
+                reason=reason,
+            )
+        except Exception:
+            logger.exception("Failed to deliver critical-task halt alert")
     
     def _record_cross_platform_decision(
         self,
@@ -606,12 +727,23 @@ class TradingBotWithDashboard:
                 pair, polymarket_book, kalshi_book
             )
             return evaluation.opportunity, evaluation
-        return (
-            self.cross_platform_engine.check_arbitrage(
-                pair, polymarket_book, kalshi_book
-            ),
-            None,
+        opportunity = self.cross_platform_engine.check_arbitrage(
+            pair, polymarket_book, kalshi_book
         )
+        if opportunity is not None and self.paper_locked_arb is not None:
+            paper_trade = self.paper_locked_arb.observe(opportunity)
+            dashboard_state.cross_platform["paper_performance"] = (
+                self.paper_locked_arb.summary()
+            )
+            if paper_trade is not None:
+                logger.info(
+                    "SHADOW LOCKED TRADE: %s contracts on %s | capital=$%.2f | projected locked pnl=$%.2f",
+                    paper_trade.contracts,
+                    paper_trade.pair_id,
+                    paper_trade.committed_capital,
+                    paper_trade.projected_locked_pnl,
+                )
+        return opportunity, None
     
     async def _scan_cross_platform_pairs(self) -> None:
         """Continuously evaluate matched Polymarket/Kalshi pairs for real cross-platform arbitrage."""
@@ -776,6 +908,17 @@ class TradingBotWithDashboard:
                 await self._xplat_scan_task
             except asyncio.CancelledError:
                 pass
+        if self._kalshi_monitor_task:
+            self._kalshi_monitor_task.cancel()
+            try:
+                await self._kalshi_monitor_task
+            except asyncio.CancelledError:
+                pass
+        if self._critical_failure_task:
+            try:
+                await self._critical_failure_task
+            except asyncio.CancelledError:
+                pass
 
         if self.production_runtime:
             await self.production_runtime.stop()
@@ -799,6 +942,7 @@ class TradingBotWithDashboard:
             self.operator_controls.close()
             self.operator_controls = None
         self.production_runtime = None
+        self.paper_locked_arb = None
         if self.paper_trade_store:
             self.paper_trade_store.close()
             self.paper_trade_store = None
@@ -806,10 +950,22 @@ class TradingBotWithDashboard:
             store=None,
             timezone=self.config.monitoring.display_timezone,
             runtime=None,
+            production_required=False,
+            readiness_check=None,
         )
         
         if self._server:
             self._server.should_exit = True
+        if self._server_task:
+            try:
+                await asyncio.wait_for(self._server_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                logger.error("Dashboard server did not stop within 30 seconds")
+                self._server_task.cancel()
+                try:
+                    await self._server_task
+                except asyncio.CancelledError:
+                    pass
         
         # Final summary
         if self.portfolio:
