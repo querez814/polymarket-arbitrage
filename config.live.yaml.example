@@ -8,6 +8,9 @@
 #   export POLYMARKET_API_KEY="..."
 #   export POLYMARKET_API_SECRET="..."
 #   export POLYMARKET_PASSPHRASE="..."
+#   export NIGHTWATCH_OPERATOR_TOKEN="at-least-32-random-characters"
+#   export NIGHTWATCH_ALERT_WEBHOOK_URL="https://alerts.example.com/nightwatch"
+#   export NIGHTWATCH_ALERT_WEBHOOK_TOKEN="..."
 #
 # Generate API credentials from your wallet:
 #   uv run python scripts/generate_polymarket_credentials.py \
@@ -83,12 +86,12 @@ risk:
   max_drawdown_pct: 0.10
   trade_only_high_volume: true
   min_24h_volume: 50000
-  whitelist: []
+  whitelist: []                # execution requires both condition id and Kalshi ticker
   blacklist: []
   strategy_exposure_limits:
     bundle_arb: 20
     market_making: 10
-    cross_platform_arb: 0     # cross-platform execution not wired yet
+    cross_platform_arb: 0     # set a small positive cap only for an approved canary
   kill_switch_enabled: true
   auto_unwind_on_breach: false
 
@@ -96,6 +99,7 @@ mode:
   trading_mode: "live"
   data_mode: "real"
   cross_platform_enabled: false   # detection only today — keep off for first live run
+  cross_platform_execution_enabled: false  # requires operator arming and a separately approved canary
   kalshi_enabled: false
   min_match_similarity: 0.7
   dry_run_initial_balance: 500
@@ -119,3 +123,12 @@ monitoring:
   track_fill_rates: true
   paper_trade_db_path: "data/paper_trades.db"
   display_timezone: "America/New_York"
+
+production:
+  execution_journal_path: "data/execution_journal.sqlite3"
+  operator_state_path: "data/operator_state.sqlite3"
+  economics_max_age_seconds: 30
+  alert_timeout_seconds: 10
+  operator_token: ""           # NIGHTWATCH_OPERATOR_TOKEN only
+  alert_webhook_url: ""        # NIGHTWATCH_ALERT_WEBHOOK_URL only
+  alert_webhook_token: ""      # NIGHTWATCH_ALERT_WEBHOOK_TOKEN only

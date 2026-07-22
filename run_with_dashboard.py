@@ -18,12 +18,13 @@ import logging
 import signal
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import uvicorn
 
-from polymarket_client import create_polymarket_client
-from kalshi_client import KalshiClient
+from polymarket_client import PolymarketClient, PolymarketVenueAdapter, create_polymarket_client
+from kalshi_client import KalshiClient, KalshiPrivateStream, KalshiVenueAdapter
 from core.data_feed import DataFeed
 from core.arb_engine import ArbEngine, ArbConfig
 from core.execution import ExecutionEngine, ExecutionConfig
@@ -31,6 +32,11 @@ from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketMatcher
 from core.decision_journal import DecisionJournal, DecisionOutcome
+from core.execution_economics import AuthoritativeEconomicsProvider
+from core.execution_journal import ExecutionJournal
+from core.two_leg_execution import ExecutionPhase
+from core.operations import PersistentOperatorControls, WebhookAlertSink
+from core.production_runtime import ProductionArbitrageRuntime, RuntimeNotReadyError
 from utils.config_loader import (
     BotConfig,
     load_config,
@@ -72,10 +78,19 @@ class TradingBotWithDashboard:
         self._kalshi_markets = []
         self._matched_pairs = []
         self._xplat_scan_task = None
+        self.production_runtime = None
+        self.execution_journal = None
+        self.operator_controls = None
         
         # Server
         self._server = None
         self._server_task = None
+
+    @property
+    def dashboard_host(self) -> str:
+        # Bearer-protected operator mutations must not cross a plaintext LAN.
+        # Remote production access belongs behind an authenticated TLS proxy.
+        return "127.0.0.1" if self.config.is_live else "0.0.0.0"
     
     async def start(self) -> None:
         """Start the bot and dashboard."""
@@ -129,8 +144,18 @@ class TradingBotWithDashboard:
                 max_order_size=self.config.trading.cross_platform_max_order_size,
                 edge_size_multiplier=self.config.trading.cross_platform_edge_size_multiplier,
                 max_liquidity_fraction=self.config.trading.cross_platform_max_liquidity_fraction,
+                require_authoritative_economics=(
+                    self.config.is_live
+                    and self.config.mode.cross_platform_execution_enabled
+                ),
+                economics_max_age=timedelta(
+                    seconds=self.config.production.economics_max_age_seconds
+                ),
             )
             self.market_matcher = self.cross_platform_engine.matcher
+
+            if self.config.is_live and self.config.mode.cross_platform_execution_enabled:
+                await self._start_production_runtime()
             
             # Start Kalshi monitoring in background
             asyncio.create_task(self._start_kalshi_monitoring())
@@ -243,13 +268,97 @@ class TradingBotWithDashboard:
         await self._start_server()
         
         logger.info("Bot and dashboard started successfully!")
-        logger.info(f"Open http://localhost:{self.port} in your browser")
+
+    async def _start_production_runtime(self) -> None:
+        """Own all live cross-venue resources for this process."""
+        if not isinstance(self.client, PolymarketClient):
+            raise RuntimeError(
+                "live cross-platform execution requires the Polymarket Global client"
+            )
+        if self.kalshi_client is None or self.cross_platform_engine is None:
+            raise RuntimeError("live cross-platform clients are not initialized")
+
+        alert_sink = WebhookAlertSink(
+            self.config.production.alert_webhook_url,
+            bearer_token=self.config.production.alert_webhook_token,
+            timeout_seconds=self.config.production.alert_timeout_seconds,
+        )
+        controls = PersistentOperatorControls(
+            Path(self.config.production.operator_state_path),
+            auth_token=self.config.production.operator_token,
+            alert_sink=alert_sink,
+        )
+        try:
+            journal = ExecutionJournal(
+                Path(self.config.production.execution_journal_path)
+            )
+        except BaseException:
+            controls.close()
+            raise
+
+        runtime = ProductionArbitrageRuntime(
+            journal=journal,
+            adapters={
+                "polymarket": PolymarketVenueAdapter(self.client),
+                "kalshi": KalshiVenueAdapter(self.kalshi_client),
+            },
+            controls=controls,
+            min_net_edge=self.config.trading.min_edge,
+            max_order_notional=self.config.risk.max_order_notional,
+            economics_max_age=timedelta(
+                seconds=self.config.production.economics_max_age_seconds
+            ),
+            max_order_attempts_per_minute=(
+                self.config.risk.max_order_attempts_per_minute
+            ),
+            max_daily_order_attempts=self.config.risk.max_daily_order_attempts,
+            max_strategy_exposure=(
+                self.config.risk.strategy_exposure_limits["cross_platform_arb"]
+            ),
+            max_global_exposure=self.config.risk.max_global_exposure,
+            max_position_per_market=self.config.risk.max_position_per_market,
+            max_open_positions=self.config.risk.max_open_positions,
+            market_whitelist=tuple(self.config.risk.whitelist),
+            market_blacklist=tuple(self.config.risk.blacklist),
+            opportunity_max_age=(
+                self.cross_platform_engine.max_observation_age
+                or timedelta(seconds=5)
+            ),
+            require_collateral=True,
+            economics_provider=AuthoritativeEconomicsProvider(
+                self.client, self.kalshi_client
+            ),
+            detector=self.cross_platform_engine,
+            private_stream=KalshiPrivateStream(
+                api_key_id=self.config.api.kalshi_api_key_id,
+                private_key_path=self.config.api.kalshi_private_key_path,
+            ),
+        )
+        try:
+            await runtime.start()
+        except BaseException:
+            journal.close()
+            controls.close()
+            raise
+
+        self.operator_controls = controls
+        self.execution_journal = journal
+        self.production_runtime = runtime
+        configure_dashboard_runtime(
+            store=self.paper_trade_store,
+            timezone=self.config.monitoring.display_timezone,
+            runtime=runtime,
+        )
+        logger.warning(
+            "Production runtime recovered and is HALTED pending authenticated operator arming"
+        )
+        logger.info(f"Open http://{self.dashboard_host}:{self.port} in your browser")
     
     async def _start_server(self) -> None:
         """Start the uvicorn server."""
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=self.dashboard_host,
             port=self.port,
             log_level="warning",
             access_log=False,
@@ -483,6 +592,26 @@ class TradingBotWithDashboard:
             orders=orders or [],
             related_id=market_pair.pair_id if market_pair else None,
         )
+
+    async def evaluate_cross_platform_pair(
+        self, pair, polymarket_book, kalshi_book
+    ):
+        """Route one live pair through the sole mutation-owning runtime."""
+        if self.cross_platform_engine is None:
+            raise RuntimeError("cross-platform detector is not initialized")
+        if self.config.is_live and self.config.mode.cross_platform_execution_enabled:
+            if self.production_runtime is None:
+                raise RuntimeError("production runtime ownership is missing")
+            evaluation = await self.production_runtime.evaluate_pair(
+                pair, polymarket_book, kalshi_book
+            )
+            return evaluation.opportunity, evaluation
+        return (
+            self.cross_platform_engine.check_arbitrage(
+                pair, polymarket_book, kalshi_book
+            ),
+            None,
+        )
     
     async def _scan_cross_platform_pairs(self) -> None:
         """Continuously evaluate matched Polymarket/Kalshi pairs for real cross-platform arbitrage."""
@@ -530,7 +659,20 @@ class TradingBotWithDashboard:
                         )
                         continue
                     
-                    opportunity = self.cross_platform_engine.check_arbitrage(pair, poly_ob, kalshi_ob)
+                    try:
+                        opportunity, evaluation = await self.evaluate_cross_platform_pair(
+                            pair, poly_ob, kalshi_ob
+                        )
+                    except RuntimeNotReadyError as exc:
+                        dashboard_state.cross_platform["scan_status"] = "operator_halted"
+                        self._record_cross_platform_decision(
+                            outcome=DecisionOutcome.SKIP,
+                            reason_code="production_runtime_not_ready",
+                            explanation=str(exc),
+                            market_pair=pair,
+                        )
+                        await asyncio.sleep(2.0)
+                        continue
                     evidence = {
                         "similarity": pair.similarity_score,
                         "polymarket_yes_bid": poly_ob.best_bid_yes,
@@ -561,10 +703,30 @@ class TradingBotWithDashboard:
                             "max_size": opportunity.max_size,
                             "similarity": pair.similarity_score,
                         }
+                        if evaluation is not None and evaluation.execution is not None:
+                            opp_dict["execution_id"] = evaluation.execution.execution_id
+                            opp_dict["execution_phase"] = evaluation.execution.phase.value
                         dashboard_state.add_cross_platform_opportunity(opp_dict)
+                        emergency_phase = (
+                            evaluation is not None
+                            and evaluation.execution is not None
+                            and evaluation.execution.phase
+                            in {
+                                ExecutionPhase.RECOVERY_REQUIRED,
+                                ExecutionPhase.RESIDUAL_EXPOSURE,
+                            }
+                        )
                         self._record_cross_platform_decision(
-                            outcome=DecisionOutcome.TRADE,
-                            reason_code="cross_platform_edge",
+                            outcome=(
+                                DecisionOutcome.ERROR
+                                if emergency_phase
+                                else DecisionOutcome.TRADE
+                            ),
+                            reason_code=(
+                                "cross_platform_execution_emergency"
+                                if emergency_phase
+                                else "cross_platform_edge"
+                            ),
                             explanation=(
                                 f"Cross-platform arbitrage found: buy {opportunity.token} on "
                                 f"{opportunity.buy_platform} and sell on {opportunity.sell_platform}; "
@@ -614,6 +776,9 @@ class TradingBotWithDashboard:
                 await self._xplat_scan_task
             except asyncio.CancelledError:
                 pass
+
+        if self.production_runtime:
+            await self.production_runtime.stop()
         
         if self.data_feed:
             await self.data_feed.stop()
@@ -627,8 +792,21 @@ class TradingBotWithDashboard:
         if self.kalshi_client:
             await self.kalshi_client.__aexit__(None, None, None)
 
+        if self.execution_journal:
+            self.execution_journal.close()
+            self.execution_journal = None
+        if self.operator_controls:
+            self.operator_controls.close()
+            self.operator_controls = None
+        self.production_runtime = None
         if self.paper_trade_store:
             self.paper_trade_store.close()
+            self.paper_trade_store = None
+        configure_dashboard_runtime(
+            store=None,
+            timezone=self.config.monitoring.display_timezone,
+            runtime=None,
+        )
         
         if self._server:
             self._server.should_exit = True

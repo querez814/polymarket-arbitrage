@@ -63,6 +63,7 @@ class AuthoritativeOrder:
             LegPhase.PLANNED,
             LegPhase.SUBMITTING,
             LegPhase.UNKNOWN,
+            LegPhase.SKIPPED,
         }:
             raise ValueError("authoritative order phase must be venue-observed")
         if (
@@ -200,7 +201,7 @@ async def reconcile_restart(
     for execution in executions:
         for leg_id in sorted(execution.legs):
             leg = execution.legs[leg_id]
-            if leg.phase is LegPhase.PLANNED:
+            if leg.phase in {LegPhase.PLANNED, LegPhase.SKIPPED}:
                 continue
             reader = _reader_for(normalized_readers, leg.intent.venue)
             lookup = OrderLookup(

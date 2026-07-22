@@ -55,11 +55,20 @@ class ExecutionJournal:
         self._validate_destination()
         self._ownership_fd = self._acquire_ownership()
         try:
-            self._connection = sqlite3.connect(
-                self.path,
-                isolation_level=None,
-                timeout=5.0,
-            )
+            path_guard = self._open_path_guard()
+            try:
+                self._connection = sqlite3.connect(
+                    self.path,
+                    isolation_level=None,
+                    timeout=5.0,
+                )
+                opened = self.path.stat()
+                guarded = os.fstat(path_guard)
+            finally:
+                os.close(path_guard)
+            if (opened.st_dev, opened.st_ino) != (guarded.st_dev, guarded.st_ino):
+                self._connection.close()
+                raise ValueError("execution journal changed while opening")
             os.chmod(self.path, 0o600)
             self._connection.row_factory = sqlite3.Row
             self._connection.execute("PRAGMA foreign_keys = ON")
@@ -138,6 +147,32 @@ class ExecutionJournal:
             execution_id,
             {"event": "submission_ambiguous", "leg_id": leg_id},
             lambda execution: execution.mark_submission_ambiguous(leg_id),
+        )
+
+    def skip_unsubmitted_leg(
+        self, execution_id: str, leg_id: str
+    ) -> TwoLegExecution:
+        """Durably close a leg that was never sent to a venue."""
+        return self._transition(
+            execution_id,
+            {"event": "unsubmitted_leg_skipped", "leg_id": leg_id},
+            lambda execution: execution.skip_unsubmitted_leg(leg_id),
+        )
+
+    def record_prepared_order_id(
+        self, execution_id: str, leg_id: str, venue_order_id: str
+    ) -> TwoLegExecution:
+        """Durably record a locally computable venue id before POST."""
+        return self._transition(
+            execution_id,
+            {
+                "event": "prepared_order_recorded",
+                "leg_id": leg_id,
+                "venue_order_id": venue_order_id,
+            },
+            lambda execution: execution.record_prepared_order_id(
+                leg_id, venue_order_id
+            ),
         )
 
     def reconcile_leg(
@@ -232,6 +267,18 @@ class ExecutionJournal:
             return
         if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
             raise ValueError("execution journal must be a regular file, not a symlink")
+
+    def _open_path_guard(self) -> int:
+        flags = os.O_RDWR | os.O_CREAT
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(self.path, flags, 0o600)
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            os.close(fd)
+            raise ValueError("execution journal must be a regular file")
+        os.fchmod(fd, 0o600)
+        return fd
 
     def _acquire_ownership(self) -> int:
         try:
@@ -460,6 +507,17 @@ def _apply_event(
     elif event == "submission_ambiguous":
         _require_exact_keys(payload, {"event", "leg_id"})
         execution.mark_submission_ambiguous(
+            _require_string(payload["leg_id"], "leg_id")
+        )
+    elif event == "prepared_order_recorded":
+        _require_exact_keys(payload, {"event", "leg_id", "venue_order_id"})
+        execution.record_prepared_order_id(
+            _require_string(payload["leg_id"], "leg_id"),
+            _require_string(payload["venue_order_id"], "venue_order_id"),
+        )
+    elif event == "unsubmitted_leg_skipped":
+        _require_exact_keys(payload, {"event", "leg_id"})
+        execution.skip_unsubmitted_leg(
             _require_string(payload["leg_id"], "leg_id")
         )
     elif event == "leg_reconciled":

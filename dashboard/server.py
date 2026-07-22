@@ -6,18 +6,20 @@ FastAPI-based web server for the trading dashboard.
 """
 
 import asyncio
+from dataclasses import asdict, is_dataclass
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import Any, Mapping, TYPE_CHECKING, Optional
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from utils.time_utils import to_utc_iso, utc_now, utc_now_iso
 from dashboard.trade_history import build_trade_history_payload, get_trade_history_html
+from core.operations import AlertDeliveryError, OperatorAuthenticationError
 
 if TYPE_CHECKING:
     from utils.paper_trade_store import PaperTradeStore
@@ -26,17 +28,50 @@ logger = logging.getLogger(__name__)
 
 paper_trade_store: Optional["PaperTradeStore"] = None
 display_timezone: str = "America/New_York"
+production_runtime: Any = None
 
 
 def configure_dashboard_runtime(
     *,
     store: Optional["PaperTradeStore"] = None,
     timezone: str = "America/New_York",
+    runtime: Any = None,
 ) -> None:
     """Wire runtime dependencies for dashboard API routes."""
-    global paper_trade_store, display_timezone
+    global paper_trade_store, display_timezone, production_runtime
     paper_trade_store = store
     display_timezone = timezone
+    production_runtime = runtime
+
+
+def _operator_token(authorization: str | None) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="operator bearer token required")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="operator bearer token required")
+    return token
+
+
+def _operator_runtime() -> Any:
+    if production_runtime is None:
+        raise HTTPException(status_code=503, detail="production runtime is unavailable")
+    return production_runtime
+
+
+def _payload(value: Any) -> dict[str, Any]:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError("operator response is not serializable")
+
+
+def _reason(body: Mapping[str, Any]) -> str:
+    value = body.get("reason")
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=422, detail="reason must be non-empty text")
+    return value.strip()
 
 
 class DashboardState:
@@ -276,6 +311,46 @@ def create_app() -> FastAPI:
     async def get_timing():
         """Get opportunity timing statistics."""
         return dashboard_state.timing
+
+    @app.get("/api/operator/status")
+    async def get_operator_status(authorization: str | None = Header(default=None)):
+        runtime = _operator_runtime()
+        token = _operator_token(authorization)
+        try:
+            operator = runtime.operator_status(token)
+        except OperatorAuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        return {"operator": _payload(operator), "runtime": _payload(runtime.status())}
+
+    @app.post("/api/operator/panic")
+    async def panic_operator(
+        body: dict[str, Any], authorization: str | None = Header(default=None)
+    ):
+        runtime = _operator_runtime()
+        token = _operator_token(authorization)
+        try:
+            status = await runtime.panic(token, reason=_reason(body))
+        except OperatorAuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"operator": _payload(status), "runtime": _payload(runtime.status())}
+
+    @app.post("/api/operator/resume")
+    async def resume_operator(
+        body: dict[str, Any], authorization: str | None = Header(default=None)
+    ):
+        runtime = _operator_runtime()
+        token = _operator_token(authorization)
+        try:
+            status = await runtime.resume(token, reason=_reason(body))
+        except OperatorAuthenticationError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (AlertDeliveryError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"operator": _payload(status), "runtime": _payload(runtime.status())}
 
     @app.get("/api/paper-history")
     async def get_paper_history(
@@ -2906,4 +2981,3 @@ def get_embedded_html() -> str:
 
 # Create the app
 app = create_app()
-

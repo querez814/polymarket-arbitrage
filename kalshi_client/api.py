@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional, AsyncIterator
+from urllib.parse import quote
 import httpx
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -25,12 +26,32 @@ from kalshi_client.models import (
     KalshiMarket,
     KalshiOrderBook,
     KalshiEvent,
+    KalshiFeeSchedule,
     KalshiSeries,
+)
+from kalshi_client.orders import (
+    CancelOrderV2Result,
+    CreateOrderV2Request,
+    CreateOrderV2Result,
+    KalshiOrder,
+    KalshiOrdersPage,
 )
 from polymarket_client.models import PriceLevel, OrderBook
 
 logger = logging.getLogger(__name__)
 _FIXED_POINT_PATTERN = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
+
+
+def _fee_schedule(fee_type: object, multiplier: object, *, source: str) -> KalshiFeeSchedule:
+    if not isinstance(fee_type, str):
+        raise ValueError("Kalshi fee type must be text")
+    if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool):
+        raise ValueError("Kalshi fee multiplier must be numeric")
+    return KalshiFeeSchedule(fee_type.strip().lower(), float(multiplier), source)
+
+
+class KalshiMutationAmbiguousError(RuntimeError):
+    """A mutation may have reached Kalshi; reconcile before any retry."""
 
 
 def _parse_orderbook_fp_levels(raw_levels: object, side: str) -> list[PriceLevel]:
@@ -84,12 +105,12 @@ def _parse_orderbook_fp_levels(raw_levels: object, side: str) -> list[PriceLevel
 class KalshiClient:
     """
     Async client for Kalshi prediction market API.
-    
+
     Uses Kalshi's current production Trade API root by default.
     """
-    
+
     BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
-    
+
     def __init__(
         self,
         base_url: Optional[str] = None,
@@ -101,7 +122,7 @@ class KalshiClient:
     ):
         """
         Initialize Kalshi client.
-        
+
         Args:
             base_url: Kalshi trade API base URL (includes /trade-api/v2)
             api_key_id: Kalshi API key UUID (KALSHI-ACCESS-KEY)
@@ -125,37 +146,38 @@ class KalshiClient:
     @property
     def is_authenticated(self) -> bool:
         return bool(self.api_key_id and self._private_key)
-        
+
     async def __aenter__(self) -> "KalshiClient":
         """Async context manager entry."""
         self._client = httpx.AsyncClient(
-            timeout=self.timeout,
-            headers={"Accept": "application/json"}
+            timeout=self.timeout, headers={"Accept": "application/json"}
         )
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit."""
         if self._client:
             await self._client.aclose()
             self._client = None
-    
+
     async def _get(self, endpoint: str, params: Optional[dict] = None) -> dict:
         """
         Make a GET request to the Kalshi API.
-        
+
         Args:
             endpoint: API endpoint (without base URL)
             params: Query parameters
-            
+
         Returns:
             JSON response as dictionary
         """
         if not self._client:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
-        
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
+
         url = f"{self.base_url}{endpoint}"
-        
+
         for attempt in range(self.max_retries):
             try:
                 response = await self._client.get(url, params=params)
@@ -163,7 +185,7 @@ class KalshiClient:
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:  # Rate limited
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     logger.warning(f"Rate limited, waiting {wait_time}s before retry")
                     await asyncio.sleep(wait_time)
                 elif e.response.status_code == 404:
@@ -178,7 +200,7 @@ class KalshiClient:
                     await asyncio.sleep(1)
                 else:
                     raise
-        
+
         return {}
 
     def _auth_headers(self, method: str, endpoint: str) -> dict[str, str]:
@@ -207,7 +229,9 @@ class KalshiClient:
         authenticated: bool = False,
     ) -> dict[str, Any]:
         if not self._client:
-            raise RuntimeError("Client not initialized. Use async with context manager.")
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
 
         url = f"{self.base_url}{endpoint}"
         headers: dict[str, str] = {"Accept": "application/json"}
@@ -229,7 +253,7 @@ class KalshiClient:
                 return response.json()
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
-                    wait_time = 2 ** attempt
+                    wait_time = 2**attempt
                     logger.warning(f"Rate limited, waiting {wait_time}s before retry")
                     await asyncio.sleep(wait_time)
                 elif e.response.status_code == 404:
@@ -246,6 +270,48 @@ class KalshiClient:
                     raise
 
         return {}
+
+    async def _mutating_request_once(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        json_body: Optional[dict[str, Any]] = None,
+        params: Optional[dict[str, Any]] = None,
+        reconciliation_id: str,
+    ) -> dict[str, Any]:
+        """Send one authenticated mutation without ambiguous automatic retries."""
+        if not self._client:
+            raise RuntimeError(
+                "Client not initialized. Use async with context manager."
+            )
+
+        url = f"{self.base_url}{endpoint}"
+        headers = {
+            "Accept": "application/json",
+            **self._auth_headers(method, endpoint),
+        }
+        try:
+            response = await self._client.request(
+                method.upper(),
+                url,
+                params=params,
+                json=json_body,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.RequestError as exc:
+            raise KalshiMutationAmbiguousError(
+                "Kalshi mutation outcome is ambiguous; reconcile using "
+                f"{reconciliation_id} before retrying"
+            ) from exc
+
+        if not response.content:
+            return {}
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Kalshi mutation response must be a JSON object")
+        return payload
 
     # =========================================================================
     # EXCHANGE / PORTFOLIO (auth optional for status; balance needs auth)
@@ -280,25 +346,165 @@ class KalshiClient:
             authenticated=True,
         )
         return data.get("market_positions", []) if data else []
-    
+
+    async def get_all_positions(
+        self, *, limit: int = 1000, max_pages: int = 100
+    ) -> list[dict[str, Any]]:
+        """Read every current market position with bounded cursor pagination."""
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if max_pages <= 0:
+            raise ValueError("max_pages must be positive")
+        positions: list[dict[str, Any]] = []
+        cursor: Optional[str] = None
+        seen: set[str] = set()
+        for _ in range(max_pages):
+            params: dict[str, Any] = {"limit": limit}
+            if cursor:
+                params["cursor"] = cursor
+            data = await self._request(
+                "GET", "/portfolio/positions", params=params, authenticated=True
+            )
+            raw = data.get("market_positions") if data else []
+            if not isinstance(raw, list):
+                raise ValueError("Kalshi positions response must contain an array")
+            positions.extend(raw)
+            next_cursor = data.get("cursor", "") if data else ""
+            if not isinstance(next_cursor, str):
+                raise ValueError("Kalshi positions cursor must be a string")
+            if not next_cursor:
+                return positions
+            if next_cursor in seen:
+                raise ValueError("Kalshi positions pagination cursor repeated")
+            seen.add(next_cursor)
+            cursor = next_cursor
+        raise RuntimeError("Kalshi positions pagination exceeded max_pages")
+
+    # =========================================================================
+    # ORDERS (current V2 mutations + authoritative REST reconciliation)
+    # =========================================================================
+
+    async def create_order_v2(
+        self, request: CreateOrderV2Request
+    ) -> CreateOrderV2Result:
+        """Submit one V2 order exactly once; disabled in dry-run mode."""
+        if self.dry_run:
+            raise RuntimeError("Kalshi order submission is disabled in dry-run mode")
+        payload = request.to_payload()
+        data = await self._mutating_request_once(
+            "POST",
+            "/portfolio/events/orders",
+            json_body=payload,
+            reconciliation_id=f"client_order_id={request.client_order_id}",
+        )
+        return CreateOrderV2Result.from_payload(data)
+
+    async def cancel_order_v2(
+        self,
+        order_id: str,
+        *,
+        subaccount: int = 0,
+        exchange_index: int = 0,
+        market_ticker: Optional[str] = None,
+    ) -> CancelOrderV2Result:
+        """Cancel one V2 order exactly once; disabled in dry-run mode."""
+        if self.dry_run:
+            raise RuntimeError("Kalshi order cancellation is disabled in dry-run mode")
+        if not order_id.strip():
+            raise ValueError("order_id must be a non-empty string")
+        if subaccount < 0:
+            raise ValueError("subaccount must be non-negative")
+        if exchange_index not in {-1, 0}:
+            raise ValueError("exchange_index must be -1 (auto) or 0")
+        if exchange_index == -1 and not market_ticker:
+            raise ValueError("market_ticker is required when exchange_index is -1")
+        params: dict[str, Any] = {
+            "subaccount": subaccount,
+            "exchange_index": exchange_index,
+        }
+        if market_ticker:
+            params["market_ticker"] = market_ticker
+        data = await self._mutating_request_once(
+            "DELETE",
+            f"/portfolio/events/orders/{quote(order_id, safe='')}",
+            params=params,
+            reconciliation_id=f"order_id={order_id}",
+        )
+        return CancelOrderV2Result.from_payload(data)
+
+    async def get_order(self, order_id: str) -> Optional[KalshiOrder]:
+        """Read one authoritative order state for recovery/reconciliation."""
+        if not order_id.strip():
+            raise ValueError("order_id must be a non-empty string")
+        data = await self._request(
+            "GET",
+            f"/portfolio/orders/{quote(order_id, safe='')}",
+            authenticated=True,
+        )
+        if not data:
+            return None
+        raw_order = data.get("order")
+        if not isinstance(raw_order, Mapping):
+            raise ValueError("Kalshi get-order response is missing order")
+        return KalshiOrder.from_payload(raw_order)
+
+    async def get_orders(
+        self,
+        *,
+        ticker: Optional[str] = None,
+        event_ticker: Optional[str] = None,
+        status: Optional[str] = None,
+        min_ts: Optional[int] = None,
+        max_ts: Optional[int] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+        subaccount: Optional[int] = None,
+    ) -> KalshiOrdersPage:
+        """Read a typed order page for startup and ambiguous-outcome recovery."""
+        if status is not None and status not in {"resting", "canceled", "executed"}:
+            raise ValueError("status must be resting, canceled, or executed")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if min_ts is not None and max_ts is not None and min_ts > max_ts:
+            raise ValueError("min_ts cannot be after max_ts")
+        if subaccount is not None and subaccount < 0:
+            raise ValueError("subaccount must be non-negative")
+
+        params: dict[str, Any] = {"limit": limit}
+        for key, value in (
+            ("ticker", ticker),
+            ("event_ticker", event_ticker),
+            ("status", status),
+            ("min_ts", min_ts),
+            ("max_ts", max_ts),
+            ("cursor", cursor),
+            ("subaccount", subaccount),
+        ):
+            if value is not None:
+                params[key] = value
+        data = await self._request(
+            "GET", "/portfolio/orders", params=params, authenticated=True
+        )
+        return KalshiOrdersPage.from_payload(data)
+
     # =========================================================================
     # SERIES ENDPOINTS
     # =========================================================================
-    
+
     async def get_series(self, series_ticker: str) -> Optional[KalshiSeries]:
         """
         Get information about a series.
-        
+
         Args:
             series_ticker: Series ticker (e.g., "KXHIGHNY")
-            
+
         Returns:
             KalshiSeries object or None if not found
         """
         data = await self._get(f"/series/{series_ticker}")
         if not data or "series" not in data:
             return None
-        
+
         s = data["series"]
         return KalshiSeries(
             ticker=s.get("ticker", series_ticker),
@@ -306,25 +512,25 @@ class KalshiClient:
             frequency=s.get("frequency", ""),
             category=s.get("category", ""),
         )
-    
+
     # =========================================================================
     # EVENTS ENDPOINTS
     # =========================================================================
-    
+
     async def get_event(self, event_ticker: str) -> Optional[KalshiEvent]:
         """
         Get information about an event.
-        
+
         Args:
             event_ticker: Event ticker (e.g., "KXHIGHNY-25DEC08")
-            
+
         Returns:
             KalshiEvent object or None if not found
         """
         data = await self._get(f"/events/{event_ticker}")
         if not data or "event" not in data:
             return None
-        
+
         e = data["event"]
         return KalshiEvent(
             event_ticker=e.get("ticker", event_ticker),
@@ -332,11 +538,11 @@ class KalshiClient:
             title=e.get("title", ""),
             category=e.get("category", ""),
         )
-    
+
     # =========================================================================
     # MARKETS ENDPOINTS
     # =========================================================================
-    
+
     async def list_markets(
         self,
         status: str = "open",
@@ -347,14 +553,14 @@ class KalshiClient:
     ) -> tuple[list[KalshiMarket], Optional[str]]:
         """
         List markets with optional filters.
-        
+
         Args:
             status: Market status filter (open, closed, settled)
             series_ticker: Filter by series
             event_ticker: Filter by event
             limit: Maximum markets to return (max 1000)
             cursor: Pagination cursor
-            
+
         Returns:
             Tuple of (list of markets, next cursor or None)
         """
@@ -365,93 +571,133 @@ class KalshiClient:
             params["event_ticker"] = event_ticker
         if cursor:
             params["cursor"] = cursor
-        
+
         data = await self._get("/markets", params=params)
         if not data or "markets" not in data:
             return [], None
-        
+
         markets = []
         for m in data["markets"]:
             market = self._parse_market(m)
             if market:
                 markets.append(market)
                 self._markets_cache[market.ticker] = market
-        
+
         next_cursor = data.get("cursor")
         return markets, next_cursor
-    
+
     async def list_all_markets(
         self,
         status: str = "open",
         max_markets: int = 10000,
-        on_progress: Optional[Callable[[int], None]] = None,  # Callback for progress updates
+        on_progress: Optional[
+            Callable[[int], None]
+        ] = None,  # Callback for progress updates
     ) -> list[KalshiMarket]:
         """
         Fetch all markets with pagination.
-        
+
         Args:
             status: Market status filter
             max_markets: Maximum total markets to fetch
             on_progress: Optional callback(loaded_count) for progress updates
-            
+
         Returns:
             List of all markets
         """
         all_markets: list[KalshiMarket] = []
         cursor: Optional[str] = None
-        
+
         while len(all_markets) < max_markets:
             markets, next_cursor = await self.list_markets(
                 status=status,
                 limit=1000,
                 cursor=cursor,
             )
-            
+
             if not markets:
                 break
-            
+
             all_markets.extend(markets)
             logger.info(f"Kalshi: {len(all_markets)} markets loaded...")
-            
+
             # Report progress
             if on_progress:
                 try:
                     on_progress(len(all_markets))
                 except Exception as exc:
                     logger.debug("Kalshi progress callback failed: %s", exc)
-            
+
             if not next_cursor:
                 break
             cursor = next_cursor
-            
+
             # Small delay to avoid rate limiting
             await asyncio.sleep(0.2)
-        
+
         logger.info(f"Kalshi: {len(all_markets)} total markets loaded ✓")
         return all_markets[:max_markets]
-    
+
     async def get_market(self, ticker: str) -> Optional[KalshiMarket]:
         """
         Get a specific market by ticker.
-        
+
         Args:
             ticker: Market ticker
-            
+
         Returns:
             KalshiMarket object or None if not found
         """
         # Check cache first
         if ticker in self._markets_cache:
             return self._markets_cache[ticker]
-        
+
         data = await self._get(f"/markets/{ticker}")
         if not data or "market" not in data:
             return None
-        
+
         market = self._parse_market(data["market"])
         if market:
             self._markets_cache[ticker] = market
         return market
+
+    async def get_fee_schedule(self, ticker: str) -> KalshiFeeSchedule:
+        """Read the current effective public fee metadata for one market.
+
+        A complete event override takes precedence over its parent series. A
+        partial override is rejected because guessing the missing half could
+        understate costs.
+        """
+        if not ticker.strip():
+            raise ValueError("ticker must be non-empty")
+        market_payload = await self._get(f"/markets/{quote(ticker, safe='')}")
+        market = market_payload.get("market") if isinstance(market_payload, Mapping) else None
+        if not isinstance(market, Mapping):
+            raise ValueError("Kalshi market fee metadata is unavailable")
+        event_ticker = market.get("event_ticker")
+        series_ticker = market.get("series_ticker")
+        if not isinstance(event_ticker, str) or not event_ticker:
+            raise ValueError("Kalshi fee metadata is missing event ticker")
+        if not isinstance(series_ticker, str) or not series_ticker:
+            raise ValueError("Kalshi fee metadata is missing series ticker")
+
+        event_payload, series_payload = await asyncio.gather(
+            self._get(f"/events/{quote(event_ticker, safe='')}"),
+            self._get(f"/series/{quote(series_ticker, safe='')}"),
+        )
+        event = event_payload.get("event") if isinstance(event_payload, Mapping) else None
+        series = series_payload.get("series") if isinstance(series_payload, Mapping) else None
+        if not isinstance(event, Mapping) or not isinstance(series, Mapping):
+            raise ValueError("Kalshi fee metadata response is incomplete")
+        override_type = event.get("fee_type_override")
+        override_multiplier = event.get("fee_multiplier_override")
+        if (override_type is None) != (override_multiplier is None):
+            raise ValueError("Kalshi event fee override is incomplete")
+        if override_type is not None:
+            return _fee_schedule(override_type, override_multiplier, source="event")
+        return _fee_schedule(
+            series.get("fee_type"), series.get("fee_multiplier"), source="series"
+        )
 
     async def list_historical_markets(
         self,
@@ -477,26 +723,34 @@ class KalshiClient:
                 self._markets_cache[market.ticker] = market
 
         return markets, data.get("cursor")
-    
+
     def _parse_market(self, data: dict) -> Optional[KalshiMarket]:
         """Parse market data from API response."""
         try:
             # Prices come in cents, convert to dollars
-            yes_price = data.get("yes_price", 0) / 100.0 if data.get("yes_price") else 0.0
+            yes_price = (
+                data.get("yes_price", 0) / 100.0 if data.get("yes_price") else 0.0
+            )
             no_price = data.get("no_price", 0) / 100.0 if data.get("no_price") else 0.0
-            
+
             # If no_price not given, derive from yes_price
             if no_price == 0 and yes_price > 0:
                 no_price = 1.0 - yes_price
-            
+
             # Parse close time
             close_time = None
             if data.get("close_time"):
                 try:
-                    close_time = datetime.fromisoformat(data["close_time"].replace("Z", "+00:00"))
+                    close_time = datetime.fromisoformat(
+                        data["close_time"].replace("Z", "+00:00")
+                    )
                 except (TypeError, ValueError) as exc:
-                    logger.debug("Failed to parse Kalshi close_time %r: %s", data.get("close_time"), exc)
-            
+                    logger.debug(
+                        "Failed to parse Kalshi close_time %r: %s",
+                        data.get("close_time"),
+                        exc,
+                    )
+
             volume = data.get("volume", data.get("volume_fp", 0))
             open_interest = data.get("open_interest", data.get("open_interest_fp", 0))
 
@@ -518,18 +772,18 @@ class KalshiClient:
         except Exception as e:
             logger.warning(f"Failed to parse Kalshi market: {e}")
             return None
-    
+
     # =========================================================================
     # ORDERBOOK ENDPOINTS
     # =========================================================================
-    
+
     async def get_orderbook(self, ticker: str) -> Optional[KalshiOrderBook]:
         """
         Get order book for a market.
-        
+
         Args:
             ticker: Market ticker
-            
+
         Returns:
             KalshiOrderBook object or None if not found
         """
@@ -542,7 +796,9 @@ class KalshiClient:
         # duplicated executable depth.
         ob_fp = data.get("orderbook_fp")
         if not isinstance(ob_fp, Mapping):
-            logger.warning("Invalid Kalshi orderbook for %s: missing orderbook_fp", ticker)
+            logger.warning(
+                "Invalid Kalshi orderbook for %s: missing orderbook_fp", ticker
+            )
             return None
         if "yes_dollars" not in ob_fp or "no_dollars" not in ob_fp:
             logger.warning(
@@ -552,30 +808,26 @@ class KalshiClient:
             return None
 
         try:
-            yes_bids = _parse_orderbook_fp_levels(
-                ob_fp["yes_dollars"], "yes_dollars"
-            )
-            no_bids = _parse_orderbook_fp_levels(
-                ob_fp["no_dollars"], "no_dollars"
-            )
+            yes_bids = _parse_orderbook_fp_levels(ob_fp["yes_dollars"], "yes_dollars")
+            no_bids = _parse_orderbook_fp_levels(ob_fp["no_dollars"], "no_dollars")
         except ValueError as exc:
             logger.warning("Invalid Kalshi orderbook for %s: %s", ticker, exc)
             return None
-        
+
         return KalshiOrderBook(
             ticker=ticker,
             yes_bids=yes_bids,
             no_bids=no_bids,
             timestamp=datetime.now(timezone.utc),
         )
-    
+
     async def get_orderbook_unified(self, ticker: str) -> Optional[OrderBook]:
         """
         Get order book in unified format (compatible with Polymarket).
-        
+
         Args:
             ticker: Market ticker
-            
+
         Returns:
             OrderBook object or None if not found
         """
@@ -636,11 +888,11 @@ class KalshiClient:
             params=params,
         )
         return data.get("candlesticks", []) if isinstance(data, dict) else []
-    
+
     # =========================================================================
     # STREAMING (Polling-based for public API)
     # =========================================================================
-    
+
     async def stream_orderbooks(
         self,
         tickers: list[str],
@@ -649,63 +901,68 @@ class KalshiClient:
     ) -> AsyncIterator[tuple[str, OrderBook]]:
         """
         Stream order books for multiple markets using polling.
-        
+
         Args:
             tickers: List of market tickers to stream
             batch_size: Number of markets to fetch per batch
             rotation_delay: Delay between batches in seconds
-            
+
         Yields:
             Tuple of (ticker, OrderBook) for each update
         """
         logger.info(f"Starting Kalshi orderbook stream for {len(tickers)} markets")
-        
+
         while True:
             for i in range(0, len(tickers), batch_size):
-                batch = tickers[i:i + batch_size]
-                logger.debug(f"Fetching Kalshi orderbooks {i+1}-{min(i+batch_size, len(tickers))} of {len(tickers)}")
-                
+                batch = tickers[i : i + batch_size]
+                logger.debug(
+                    f"Fetching Kalshi orderbooks {i+1}-{min(i+batch_size, len(tickers))} of {len(tickers)}"
+                )
+
                 # Fetch orderbooks in parallel
                 tasks = [self.get_orderbook_unified(ticker) for ticker in batch]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-                
+
                 for ticker, result in zip(batch, results):
                     if isinstance(result, BaseException):
-                        logger.debug(f"Failed to get Kalshi orderbook for {ticker}: {result}")
+                        logger.debug(
+                            f"Failed to get Kalshi orderbook for {ticker}: {result}"
+                        )
                         continue
                     if result:
                         yield (ticker, result)
-                
+
                 await asyncio.sleep(rotation_delay)
-    
+
     # =========================================================================
     # CATEGORY/SEARCH HELPERS
     # =========================================================================
-    
+
     async def get_markets_by_category(self, category: str) -> list[KalshiMarket]:
         """
         Get all open markets in a category.
-        
+
         Common categories: elections, economics, crypto, tech, entertainment
         """
         # Kalshi API doesn't have a direct category filter, so we fetch all
         # and filter client-side
         all_markets = await self.list_all_markets(status="open")
         return [m for m in all_markets if m.category.lower() == category.lower()]
-    
+
     async def search_markets(self, query: str) -> list[KalshiMarket]:
         """
         Search markets by title.
-        
+
         Args:
             query: Search query string
-            
+
         Returns:
             List of matching markets
         """
         all_markets = await self.list_all_markets(status="open")
         query_lower = query.lower()
         return [
-            m for m in all_markets 
+            m
+            for m in all_markets
             if query_lower in m.title.lower() or query_lower in m.subtitle.lower()
         ]

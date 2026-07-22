@@ -34,6 +34,9 @@ LIVE_SECRET_CONFIG_FIELDS = frozenset(
         "polymarket_us_secret_key",
     }
 )
+LIVE_PRODUCTION_SECRET_CONFIG_FIELDS = frozenset(
+    {"operator_token", "alert_webhook_token"}
+)
 
 
 class ConfigError(Exception):
@@ -123,6 +126,7 @@ class ModeConfig:
     trading_mode: str = "dry_run"  # "live" or "dry_run"
     data_mode: str = "real"  # "real" or "simulation" - use simulation for demos
     cross_platform_enabled: bool = True  # Enable cross-platform arbitrage (Polymarket + Kalshi)
+    cross_platform_execution_enabled: bool = False
     kalshi_enabled: bool = True  # Enable Kalshi market monitoring
     min_match_similarity: float = 0.6  # Minimum similarity score for market matching (0-1)
     dry_run_initial_balance: float = 10000.0
@@ -155,6 +159,19 @@ class MonitoringConfig:
 
 
 @dataclass
+class ProductionConfig:
+    """Fail-closed runtime persistence, economics, and operator controls."""
+
+    execution_journal_path: str = "data/execution_journal.sqlite3"
+    operator_state_path: str = "data/operator_state.sqlite3"
+    economics_max_age_seconds: float = 30.0
+    alert_timeout_seconds: float = 10.0
+    operator_token: str = ""
+    alert_webhook_url: str = ""
+    alert_webhook_token: str = ""
+
+
+@dataclass
 class BotConfig:
     """Complete bot configuration."""
     api: ApiConfig = field(default_factory=ApiConfig)
@@ -163,6 +180,7 @@ class BotConfig:
     mode: ModeConfig = field(default_factory=ModeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
+    production: ProductionConfig = field(default_factory=ProductionConfig)
     
     @property
     def is_polymarket_us(self) -> bool:
@@ -216,6 +234,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     mode_data = raw_config.get("mode", {})
     logging_data = raw_config.get("logging", {})
     monitoring_data = raw_config.get("monitoring", {})
+    production_data = raw_config.get("production", {})
     
     # Handle environment variable overrides
     api_data = _apply_env_overrides(api_data, {
@@ -234,6 +253,11 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         "kalshi_api_key_id": "KALSHI_API_KEY_ID",
         "kalshi_private_key_path": "KALSHI_PRIVATE_KEY_PATH",
     })
+    production_data = _apply_env_overrides(production_data, {
+        "operator_token": "NIGHTWATCH_OPERATOR_TOKEN",
+        "alert_webhook_url": "NIGHTWATCH_ALERT_WEBHOOK_URL",
+        "alert_webhook_token": "NIGHTWATCH_ALERT_WEBHOOK_TOKEN",
+    })
     
     _apply_risk_profile_defaults(trading_data, risk_data)
 
@@ -245,11 +269,15 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         mode=_build_dataclass(ModeConfig, mode_data),
         logging=_build_dataclass(LoggingConfig, logging_data),
         monitoring=_build_dataclass(MonitoringConfig, monitoring_data),
+        production=_build_dataclass(ProductionConfig, production_data),
     )
     
     # Validate
     _reject_tracked_live_secrets(
-        path, api_data=raw_config.get("api", {}), config=config
+        path,
+        api_data=raw_config.get("api", {}),
+        production_data=raw_config.get("production", {}),
+        config=config,
     )
     resolve_runtime_secrets(config)
     validate_config(config)
@@ -258,21 +286,33 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
 
 
 def _reject_tracked_live_secrets(
-    config_path: Path, *, api_data: Any, config: BotConfig
+    config_path: Path,
+    *,
+    api_data: Any,
+    production_data: Any,
+    config: BotConfig,
 ) -> None:
     """Keep live secret values out of configuration files tracked by Git."""
-    if not config.is_live or not isinstance(api_data, dict):
+    if not config.is_live:
         return
 
-    embedded_fields = sorted(
-        field_name
-        for field_name in LIVE_SECRET_CONFIG_FIELDS
-        if str(api_data.get(field_name, "")).strip()
-    )
+    embedded_fields: list[str] = []
+    if isinstance(api_data, dict):
+        embedded_fields.extend(
+            f"api.{field_name}"
+            for field_name in sorted(LIVE_SECRET_CONFIG_FIELDS)
+            if str(api_data.get(field_name, "")).strip()
+        )
+    if isinstance(production_data, dict):
+        embedded_fields.extend(
+            f"production.{field_name}"
+            for field_name in sorted(LIVE_PRODUCTION_SECRET_CONFIG_FIELDS)
+            if str(production_data.get(field_name, "")).strip()
+        )
     if not embedded_fields or not _is_git_tracked(config_path):
         return
 
-    qualified_fields = ", ".join(f"api.{name}" for name in embedded_fields)
+    qualified_fields = ", ".join(embedded_fields)
     raise ConfigError(
         "Live configuration files tracked by Git must not contain secret values "
         f"({qualified_fields}); inject them through environment variables, macOS "
@@ -569,6 +609,32 @@ def validate_config(config: BotConfig) -> None:
         errors.append(
             "mode.kalshi_enabled must be true when mode.cross_platform_enabled is true"
         )
+    if config.mode.cross_platform_execution_enabled and not config.mode.cross_platform_enabled:
+        errors.append(
+            "mode.cross_platform_enabled must be true when cross-platform execution is enabled"
+        )
+
+    if not config.production.execution_journal_path.strip():
+        errors.append("production.execution_journal_path must be non-empty")
+    if not config.production.operator_state_path.strip():
+        errors.append("production.operator_state_path must be non-empty")
+    if (
+        config.production.execution_journal_path.strip()
+        == config.production.operator_state_path.strip()
+    ):
+        errors.append(
+            "production execution journal and operator state paths must be different"
+        )
+    if (
+        not math.isfinite(config.production.economics_max_age_seconds)
+        or config.production.economics_max_age_seconds <= 0
+    ):
+        errors.append("production.economics_max_age_seconds must be finite and positive")
+    if (
+        not math.isfinite(config.production.alert_timeout_seconds)
+        or config.production.alert_timeout_seconds <= 0
+    ):
+        errors.append("production.alert_timeout_seconds must be finite and positive")
 
     kalshi_key_id = config.api.kalshi_api_key_id.strip()
     kalshi_private_key_path = config.api.kalshi_private_key_path.strip()
@@ -592,6 +658,41 @@ def validate_config(config: BotConfig) -> None:
                 "trading.bundle_arb_enabled and trading.mm_enabled must both be false "
                 "in live mode until execution uses the crash-safe recovery admission path"
             )
+        if config.mode.cross_platform_execution_enabled:
+            if config.risk.strategy_exposure_limits.get("cross_platform_arb", 0) <= 0:
+                errors.append(
+                    "risk.strategy_exposure_limits.cross_platform_arb must be positive "
+                    "for live cross-platform execution"
+                )
+            if not config.risk.whitelist:
+                errors.append(
+                    "risk.whitelist must explicitly approve both venue market ids "
+                    "for live cross-platform execution"
+                )
+            if config.is_polymarket_us:
+                errors.append(
+                    "live cross-platform execution currently requires Polymarket Global"
+                )
+            if not kalshi_key_id or not kalshi_private_key_path:
+                errors.append(
+                    "authenticated Kalshi credentials are required for live cross-platform execution"
+                )
+            if len(config.production.operator_token) < 32:
+                errors.append(
+                    "production.operator_token must contain at least 32 characters"
+                )
+            if not config.production.alert_webhook_url.startswith("https://"):
+                errors.append(
+                    "production.alert_webhook_url must use HTTPS for live cross-platform execution"
+                )
+            if len(config.production.alert_webhook_token) < 16:
+                errors.append(
+                    "production.alert_webhook_token must contain at least 16 characters"
+                )
+            if not config.risk.kill_switch_enabled:
+                errors.append(
+                    "risk.kill_switch_enabled must be true for live cross-platform execution"
+                )
         if config.is_polymarket_us:
             _validate_production_urls(config, POLYMARKET_US_PRODUCTION_URLS, errors)
             if not config.api.polymarket_us_key_id:

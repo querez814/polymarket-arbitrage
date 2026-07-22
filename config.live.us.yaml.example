@@ -5,6 +5,7 @@
 #   export POLYMARKET_PLATFORM=us
 #   export POLYMARKET_US_KEY_ID="your-key-id"
 #   export POLYMARKET_US_SECRET_KEY="base64-ed25519-secret"
+#   # Nightwatch execution remains unsupported with Polymarket US.
 #
 # Generate keys at: https://polymarket.us/developer
 
@@ -95,6 +96,7 @@ mode:
   trading_mode: "live"
   data_mode: "real"
   cross_platform_enabled: true
+  cross_platform_execution_enabled: false  # Global adapter only; US execution remains fail-closed
   kalshi_enabled: true
   min_match_similarity: 0.7
   dry_run_initial_balance: 500
@@ -118,3 +120,12 @@ monitoring:
   track_fill_rates: true
   paper_trade_db_path: "data/paper_trades.db"
   display_timezone: "America/New_York"
+
+production:
+  execution_journal_path: "data/execution_journal.sqlite3"
+  operator_state_path: "data/operator_state.sqlite3"
+  economics_max_age_seconds: 30
+  alert_timeout_seconds: 10
+  operator_token: ""
+  alert_webhook_url: ""
+  alert_webhook_token: ""

@@ -153,3 +153,21 @@ class KalshiSeries:
     frequency: str  # daily, weekly, etc.
     category: str
 
+
+@dataclass(frozen=True)
+class KalshiFeeSchedule:
+    """Current effective fee metadata for one prediction market."""
+
+    fee_type: str
+    fee_multiplier: float
+    source: str
+
+    def __post_init__(self) -> None:
+        import math
+
+        if self.fee_type not in {"quadratic", "quadratic_with_maker_fees", "flat"}:
+            raise ValueError("unsupported Kalshi fee type")
+        if not math.isfinite(self.fee_multiplier) or self.fee_multiplier < 0:
+            raise ValueError("Kalshi fee multiplier must be finite and non-negative")
+        if self.source not in {"event", "series"}:
+            raise ValueError("Kalshi fee source must be event or series")

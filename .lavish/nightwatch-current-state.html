@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="luxury">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nightwatch — Items 1–6 Complete Offline</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      min-width: 0;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(52, 211, 153, .11), transparent 28rem),
+        radial-gradient(circle at 88% 12%, rgba(245, 158, 11, .10), transparent 30rem),
+        var(--color-base-100);
+    }
+    :where(.grid, .flex) > * { min-width: 0; }
+    :where(p, h1, h2, h3, li, td, th, code, .badge) { overflow-wrap: anywhere; }
+    h1, h2 { line-height: 1.14; padding-bottom: .08em; }
+    .shell { max-width: 1180px; margin-inline: auto; padding: 1.5rem; }
+    .glass { background: color-mix(in oklab, var(--color-base-200) 89%, transparent); backdrop-filter: blur(14px); }
+    .eyebrow { letter-spacing: .17em; text-transform: uppercase; font-size: .72rem; font-weight: 800; }
+    .metric { border: 1px solid color-mix(in oklab, var(--color-base-content) 12%, transparent); }
+    .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; padding: .16rem .4rem; border-radius: .38rem; background: var(--color-base-300); }
+    .flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; }
+    .flow-card { position: relative; border-radius: .9rem; padding: 1rem; border: 1px solid rgba(52, 211, 153, .35); background: rgba(52, 211, 153, .06); }
+    .table { table-layout: fixed; width: 100%; }
+    .table th:nth-child(1) { width: 8rem; }
+    .table th:nth-child(2) { width: 9rem; }
+    .sticky { position: sticky; top: .75rem; z-index: 10; }
+    @media (max-width: 760px) {
+      .shell { padding: .85rem; }
+      .flow { grid-template-columns: minmax(0, 1fr); }
+      .table th:nth-child(3), .table td:nth-child(3) { display: none; }
+    }
+  </style>
+</head>
+<body class="min-h-screen text-base-content">
+  <main class="shell space-y-8">
+    <nav class="sticky glass border border-base-content/10 rounded-box px-4 py-3 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+      <div class="flex items-center gap-3"><span class="badge badge-success badge-sm">NIGHTWATCH</span><strong class="text-sm">Locked-arbitrage checkpoint</strong></div>
+      <div class="flex gap-2 text-xs"><a class="btn btn-ghost btn-xs" href="#done">1–6</a><a class="btn btn-ghost btn-xs" href="#evidence">Evidence</a><a class="btn btn-ghost btn-xs" href="#next">Next</a></div>
+    </nav>
+
+    <header class="hero glass border border-base-content/10 rounded-box overflow-hidden">
+      <div class="hero-content w-full px-6 py-12 lg:px-12">
+        <div class="w-full">
+          <div class="flex flex-wrap gap-2 mb-5">
+            <span class="badge badge-success badge-soft">ITEMS 1–6 COMPLETE OFFLINE</span>
+            <span class="badge badge-success badge-soft">336 TESTS PASS</span>
+            <span class="badge badge-success badge-soft">2 / 2 READ-ONLY AUTH</span>
+            <span class="badge badge-error badge-soft">NOT PRODUCTION READY</span>
+          </div>
+          <p class="eyebrow text-success mb-3">Polymarket + Kalshi · isolated Nightwatch fork</p>
+          <h1 class="text-4xl md:text-6xl font-black tracking-tight max-w-5xl">The locked-arbitrage runtime is offline-complete—and still fails closed.</h1>
+          <p class="text-lg text-base-content/65 mt-5 max-w-4xl leading-relaxed">The deployed entrypoint now owns recovery, current pair-bound economics, private lifecycle reconciliation, durable admission, scarce-leg-first execution, external escalation, and authenticated operator control.</p>
+          <div class="alert alert-warning mt-7 max-w-4xl"><span><strong>Honest boundary:</strong> no exchange mutation or live private-stream lifecycle was exercised. Deployment/restart proof, real alert delivery, and a separately authorized minimum-size canary still block production authorization.</span></div>
+        </div>
+      </div>
+    </header>
+
+    <section>
+      <p class="eyebrow text-base-content/45">Current checkpoint</p>
+      <h2 class="text-2xl md:text-3xl font-bold mt-1">What changed tonight</h2>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
+        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Full suite</div><div class="stat-value text-success text-3xl">336</div><div class="stat-desc">offline tests</div></div>
+        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Immediate gate</div><div class="stat-value text-success text-3xl">6 / 6</div><div class="stat-desc">complete offline</div></div>
+        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Adapters</div><div class="stat-value text-info text-3xl">2 / 2</div><div class="stat-desc">production contracts</div></div>
+        <div class="stat glass metric rounded-box p-4"><div class="stat-title">Live mutations</div><div class="stat-value text-warning text-3xl">0</div><div class="stat-desc">intentionally</div></div>
+      </div>
+    </section>
+
+    <section id="done" class="glass border border-success/30 rounded-box p-6 md:p-8">
+      <p class="eyebrow text-success">What must happen next · progress</p>
+      <h2 class="text-2xl md:text-3xl font-bold mt-1">Items 1–6 are green at the offline-code gate</h2>
+      <div class="grid md:grid-cols-3 gap-4 mt-6">
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">1 · DONE OFFLINE</span><h3 class="card-title">Production venue adapters</h3><p class="text-sm text-base-content/65">Kalshi and Polymarket now implement placement, cancellation, authoritative order reads, account open orders, and normalized positions.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Kalshi stable client IDs</li><li>✓ Polymarket hash journaled before POST</li><li>✓ Complementary NO buys avoid naked shorting</li></ul></div></article>
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">2 · DONE OFFLINE</span><h3 class="card-title">Kalshi private lifecycle</h3><p class="text-sm text-base-content/65">Authenticated <span class="code">fill</span> and <span class="code">user_orders</span> parsing, strict fixed point, bounded dedupe, reconnect backoff, and REST gap reconciliation.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Subscribe before REST snapshot</li><li>✓ Queued messages cover the snapshot window</li><li>✓ No stream event authorizes a blind retry</li></ul></div></article>
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">3 · DONE OFFLINE</span><h3 class="card-title">Two-leg failure matrix</h3><p class="text-sm text-base-content/65">Deterministic tests prove zero, partial, full, rejected, ambiguous, cancellation, restart, and residual-exposure behavior.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Exact partial-fill hedge sizing</li><li>✓ Unexpected open IOC cancelled first</li><li>✓ Ambiguity stops the execution</li></ul></div></article>
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">4 · DONE OFFLINE</span><h3 class="card-title">Runtime ownership</h3><p class="text-sm text-base-content/65">The entrypoint owns startup recovery, private-stream callbacks, authoritative detection, durable plan admission, and locked execution.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Halted after restart or disconnect</li><li>✓ Post-recovery freshness + collateral</li><li>✓ One mutation-owning path</li></ul></div></article>
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">5 · DONE OFFLINE</span><h3 class="card-title">Authoritative economics</h3><p class="text-sm text-base-content/65">Current Polymarket fee curves and Kalshi event/series schedules are pair-bound, freshness-bounded, and required.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Stale or inconsistent data rejects</li><li>✓ Documented upward precision</li><li>✓ Explicit off-chain order gas</li></ul></div></article>
+        <article class="card border border-success/35 bg-success/7"><div class="card-body p-5"><span class="badge badge-success badge-sm">6 · DONE OFFLINE</span><h3 class="card-title">Operations and panic</h3><p class="text-sm text-base-content/65">A durable authenticated halt, authenticated HTTPS escalation, explicit market approval, cumulative caps, and persisted attempt budgets are wired.</p><ul class="text-xs mt-2 space-y-1"><li>✓ Alert failure blocks resume</li><li>✓ Both market IDs must be whitelisted</li><li>✓ Production runbook added</li></ul></div></article>
+      </div>
+    </section>
+
+    <section class="glass border border-base-content/10 rounded-box p-6 md:p-8">
+      <p class="eyebrow text-info">Chosen strategy</p>
+      <h2 class="text-2xl md:text-3xl font-bold mt-1">Locked spread now; never “buy and hope”</h2>
+      <div class="flow mt-6">
+        <div class="flow-card"><span class="badge badge-neutral badge-sm">1</span><h3 class="font-bold mt-3">Confirm executable edge</h3><p class="text-sm text-base-content/60 mt-2">Equivalent contracts, fresh books, after-fee spread, and size supported on both venues.</p></div>
+        <div class="flow-card"><span class="badge badge-neutral badge-sm">2</span><h3 class="font-bold mt-3">Take scarce liquidity IOC</h3><p class="text-sm text-base-content/60 mt-2">One mutation at a time. A partial fill defines the maximum hedge quantity.</p></div>
+        <div class="flow-card"><span class="badge badge-neutral badge-sm">3</span><h3 class="font-bold mt-3">Hedge confirmed fill</h3><p class="text-sm text-base-content/60 mt-2">Complete the complementary exposure or stop, reconcile, and report the residual.</p></div>
+      </div>
+      <div class="alert alert-info mt-5"><span>Directional convergence trading is documented separately in <span class="code">future-convergence-strategy.md</span> with sources and a research queue. It cannot activate as a fallback when an arbitrage hedge fails.</span></div>
+    </section>
+
+    <section id="evidence">
+      <p class="eyebrow text-warning">Failure evidence</p>
+      <h2 class="text-2xl md:text-3xl font-bold mt-1">What the executor now proves</h2>
+      <div class="overflow-x-auto glass border border-base-content/10 rounded-box mt-5">
+        <table class="table table-zebra">
+          <thead><tr><th>Scenario</th><th>Required result</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td>First leg fills zero</td><td>Skip hedge; finish flat</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>First leg partially fills</td><td>Hedge only confirmed quantity</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Second leg partially fills</td><td>Persist exact residual exposure</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Submit result ambiguous</td><td>No retry; require authoritative recovery</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>IOC unexpectedly rests</td><td>Cancel and reconcile before hedge</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Cancellation ambiguous</td><td>Stop before the next mutation</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Process dies after signing</td><td>Replay precomputed Polymarket order hash</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Missed Kalshi stream messages</td><td>REST snapshot before event consumption resumes</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Economics stale or inconsistent</td><td>Reject before journal or venue mutation</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Process restarts while previously armed</td><td>Persist halt; require recovery and explicit re-arm</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Resume alert delivery fails</td><td>Revert to durable halt</td><td class="text-success font-bold">PASS</td></tr>
+            <tr><td>Attempt budget exhausted</td><td>Reject before venue read or mutation</td><td class="text-success font-bold">PASS</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="next" class="glass border border-warning/30 rounded-box p-6 md:p-8">
+      <p class="eyebrow text-warning">Production authorization frontier</p>
+      <h2 class="text-2xl md:text-3xl font-bold mt-1">What must be proved next</h2>
+      <div class="grid md:grid-cols-3 gap-4 mt-6">
+        <article class="card bg-base-300/45"><div class="card-body p-5"><span class="badge badge-info badge-sm">Parallel · Data</span><h3 class="card-title">Representative matched corpus</h3><p class="text-sm text-base-content/60">More pairs, regimes, positive/negative after-cost labels, latency evidence, and eventual fill truth.</p></div></article>
+        <article class="card border border-error/30 bg-error/7"><div class="card-body p-5"><span class="badge badge-error badge-sm">Deployment</span><h3 class="card-title">Prove the service envelope</h3><p class="text-sm text-base-content/60">Pinned build, single owner, durable storage/restore, supervised restart drill, TLS access, log retention, and real alert receipt.</p></div></article>
+        <article class="card border border-warning/30 bg-warning/7"><div class="card-body p-5"><span class="badge badge-warning badge-sm">Separate authorization</span><h3 class="card-title">One minimum-size canary</h3><p class="text-sm text-base-content/60">A staffed, whitelisted lifecycle test that verifies fees, precision, fills, cancellation, stream/REST reconciliation, and operator escalation.</p></div></article>
+      </div>
+    </section>
+
+    <footer class="glass border border-base-content/10 rounded-box p-6 text-sm">
+      <div class="flex flex-wrap justify-between gap-4"><div><strong>Verdict: NOT PRODUCTION AUTHORIZED</strong><p class="text-base-content/50 mt-1">Items 1–6 are implemented and verified offline; deployment and canary proof remain explicit gates.</p></div><div class="text-right"><div class="text-base-content/45">Evidence</div><div class="font-mono">nightwatch.md · 336 passed · July 22, 2026 EDT</div></div></div>
+      <p class="text-xs text-base-content/35 mt-5">Design source: the existing project Lavish report’s DaisyUI luxury theme, retained so this reads as the next checkpoint rather than a disconnected artifact.</p>
+    </footer>
+  </main>
+</body>
+</html>

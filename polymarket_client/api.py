@@ -13,7 +13,8 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Mapping, Optional
+from urllib.parse import quote
 
 import httpx
 import websockets
@@ -126,6 +127,7 @@ class PolymarketClient(BasePolymarketClient):
         rest_url: str = "https://clob.polymarket.com",
         ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market",
         gamma_url: str = "https://gamma-api.polymarket.com",
+        data_url: str = "https://data-api.polymarket.com",
         api_key: Optional[str] = None,
         api_secret: Optional[str] = None,
         passphrase: Optional[str] = None,
@@ -139,6 +141,7 @@ class PolymarketClient(BasePolymarketClient):
         self.rest_url = rest_url.rstrip("/")
         self.ws_url = ws_url
         self.gamma_url = gamma_url.rstrip("/")
+        self.data_url = data_url.rstrip("/")
         self.api_key = api_key
         self.api_secret = api_secret
         self.passphrase = passphrase
@@ -203,13 +206,23 @@ class PolymarketClient(BasePolymarketClient):
         self._clob_bridge.connect()
 
     def _index_market_tokens(self, market: Market) -> None:
+        identity = market.condition_id or market.market_id
         if market.yes_token_id:
-            self._token_index[market.yes_token_id] = (market.market_id, TokenType.YES)
+            self._token_index[market.yes_token_id] = (identity, TokenType.YES)
         if market.no_token_id:
-            self._token_index[market.no_token_id] = (market.market_id, TokenType.NO)
+            self._token_index[market.no_token_id] = (identity, TokenType.NO)
 
     def resolve_token_id(self, market_id: str, token_type: TokenType) -> str:
         market = self._markets_cache.get(market_id)
+        if market is None:
+            market = next(
+                (
+                    candidate
+                    for candidate in self._markets_cache.values()
+                    if candidate.condition_id == market_id
+                ),
+                None,
+            )
         if not market:
             raise ValueError(f"Unknown market_id {market_id}; load markets before placing orders")
         token_id = market.yes_token_id if token_type == TokenType.YES else market.no_token_id
@@ -475,6 +488,8 @@ class PolymarketClient(BasePolymarketClient):
 
     def _cache_market(self, market: Market) -> None:
         self._markets_cache[market.market_id] = market
+        if market.condition_id:
+            self._markets_cache[market.condition_id] = market
         self._index_market_tokens(market)
     
     def _get_placeholder_markets(self) -> list[Market]:
@@ -534,6 +549,35 @@ class PolymarketClient(BasePolymarketClient):
                     active=True,
                 )
             raise
+
+    async def get_fee_rate_bps(self, token_id: str) -> int:
+        """Read the current public per-token taker base fee in basis points."""
+        if not isinstance(token_id, str) or not token_id.strip():
+            raise ValueError("token_id must be non-empty")
+        payload = await self._request(
+            "GET",
+            f"/fee-rate/{quote(token_id, safe='')}",
+            base_url=self.rest_url,
+        )
+        value = payload.get("base_fee") if isinstance(payload, dict) else None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("Polymarket base_fee must be integer basis points")
+        if not 0 <= value <= 10_000:
+            raise ValueError("Polymarket base_fee exceeds safety bounds")
+        return value
+
+    async def get_clob_market_info(self, condition_id: str) -> Mapping[str, Any]:
+        """Read current V2 CLOB market metadata, including its fee curve."""
+        if not isinstance(condition_id, str) or not condition_id.strip():
+            raise ValueError("condition_id must be non-empty")
+        payload = await self._request(
+            "GET",
+            f"/clob-markets/{quote(condition_id, safe='')}",
+            base_url=self.rest_url,
+        )
+        if not isinstance(payload, Mapping):
+            raise ValueError("Polymarket CLOB market metadata must be an object")
+        return payload
     
     async def get_market_by_slug(self, slug: str) -> Market:
         """
@@ -889,18 +933,45 @@ class PolymarketClient(BasePolymarketClient):
             return self._simulated_positions.copy()
         
         try:
-            # Real API call would go here
-            data = await self._request("GET", "/positions")
+            if not self._clob_bridge or not self._http_client:
+                raise RuntimeError("live Polymarket clients are not initialized")
+            address = await self._clob_bridge.get_profile_address()
+            data: list[dict[str, Any]] = []
+            offset = 0
+            while True:
+                response = await self._http_client.get(
+                    f"{self.data_url}/positions",
+                    params={
+                        "user": address,
+                        "sizeThreshold": 0,
+                        "limit": 500,
+                        "offset": offset,
+                    },
+                )
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise ValueError("Polymarket positions response must be an array")
+                data.extend(page)
+                if len(page) < 500:
+                    break
+                offset += len(page)
+                if offset > 10_000:
+                    raise RuntimeError("Polymarket positions exceeded API pagination limit")
             positions: dict[str, dict[TokenType, Position]] = {}
             for item in data:
-                market_id = item["market_id"]
-                token_type = TokenType.YES if item["outcome"] == "Yes" else TokenType.NO
+                market_id = str(item["conditionId"])
+                token_type = (
+                    TokenType.YES
+                    if str(item["outcome"]).strip().lower() == "yes"
+                    else TokenType.NO
+                )
                 positions.setdefault(market_id, {})[token_type] = Position(
                     market_id=market_id,
                     token_type=token_type,
                     size=float(item["size"]),
-                    avg_entry_price=float(item.get("avg_price", 0)),
-                    realized_pnl=float(item.get("realized_pnl", 0)),
+                    avg_entry_price=float(item.get("avgPrice", 0)),
+                    realized_pnl=float(item.get("realizedPnl", 0)),
                 )
             return positions
         except Exception as e:

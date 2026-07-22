@@ -33,10 +33,11 @@ class LegPhase(str, Enum):
     FILLED = "filled"
     CANCELLED = "cancelled"
     REJECTED = "rejected"
+    SKIPPED = "skipped"
 
     @property
     def is_terminal(self) -> bool:
-        return self in {self.FILLED, self.CANCELLED, self.REJECTED}
+        return self in {self.FILLED, self.CANCELLED, self.REJECTED, self.SKIPPED}
 
 
 class ExecutionPhase(str, Enum):
@@ -147,11 +148,36 @@ class TwoLegExecution:
             raise ValueError(f"cannot start submission from {leg.phase.value}")
         leg.phase = LegPhase.SUBMITTING
 
+    def record_prepared_order_id(self, leg_id: str, venue_order_id: str) -> None:
+        """Persist a deterministically known venue id before network mutation.
+
+        Some venues expose the signed order hash before POST. Recording it while
+        the leg is SUBMITTING closes the crash window between request delivery
+        and receipt of the venue response.
+        """
+        leg = self._leg(leg_id)
+        if leg.phase is not LegPhase.SUBMITTING:
+            raise ValueError(
+                f"cannot record a prepared order id from {leg.phase.value}"
+            )
+        if not isinstance(venue_order_id, str) or not venue_order_id.strip():
+            raise ValueError("venue_order_id must be a non-empty string")
+        if leg.venue_order_id and leg.venue_order_id != venue_order_id:
+            raise ValueError("venue_order_id cannot change")
+        leg.venue_order_id = venue_order_id
+
     def mark_submission_ambiguous(self, leg_id: str) -> None:
         leg = self._leg(leg_id)
         if leg.phase not in {LegPhase.SUBMITTING, LegPhase.OPEN}:
             raise ValueError(f"cannot mark {leg.phase.value} submission ambiguous")
         leg.phase = LegPhase.UNKNOWN
+
+    def skip_unsubmitted_leg(self, leg_id: str) -> None:
+        """Close a leg locally when the first IOC produced no hedge quantity."""
+        leg = self._leg(leg_id)
+        if leg.phase is not LegPhase.PLANNED:
+            raise ValueError(f"cannot skip a leg from {leg.phase.value}")
+        leg.phase = LegPhase.SKIPPED
 
     def reconcile_leg(
         self,
@@ -170,7 +196,12 @@ class TwoLegExecution:
         leg = self._leg(leg_id)
         if leg.phase is LegPhase.PLANNED:
             raise ValueError("cannot reconcile a leg before submission starts")
-        if phase in {LegPhase.PLANNED, LegPhase.SUBMITTING, LegPhase.UNKNOWN}:
+        if phase in {
+            LegPhase.PLANNED,
+            LegPhase.SUBMITTING,
+            LegPhase.UNKNOWN,
+            LegPhase.SKIPPED,
+        }:
             raise ValueError("reconciliation phase must be an observed venue state")
         if isinstance(cumulative_filled_size, bool) or not math.isfinite(
             cumulative_filled_size

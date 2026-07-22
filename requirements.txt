@@ -16,7 +16,7 @@ pydantic>=2.5.0
 python-dotenv>=1.0.0
 
 # Polymarket live trading
-py-clob-client-v2>=0.1.0        # Polymarket Global
+py-clob-client-v2>=1.0.2        # Polymarket Global V2 metadata/hash + precision fixes
 polymarket-us>=0.1.0            # Polymarket US (CFTC-regulated)
 
 # Kalshi authenticated API (RSA-PSS signing)
@@ -33,4 +33,3 @@ pytest-asyncio>=0.21.0
 # Development
 black>=23.0.0
 mypy>=1.7.0
-

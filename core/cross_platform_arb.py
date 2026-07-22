@@ -15,9 +15,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from polymarket_client.models import Market, OrderBook, Opportunity, OpportunityType
+
+if TYPE_CHECKING:
+    from core.execution_economics import PairEconomics
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,7 @@ class MarketPair:
     kalshi_title: str
     similarity_score: float
     category: str = ""
+    polymarket_condition_id: str = ""
     
     # Timestamps
     matched_at: datetime = field(default_factory=datetime.utcnow)
@@ -39,6 +43,11 @@ class MarketPair:
     def pair_id(self) -> str:
         """Unique identifier for this pair."""
         return f"poly:{self.polymarket_id}|kalshi:{self.kalshi_ticker}"
+
+    @property
+    def polymarket_execution_id(self) -> str:
+        """CLOB condition id; legacy fixtures fall back to their stored id."""
+        return self.polymarket_condition_id or self.polymarket_id
 
 
 @dataclass
@@ -562,6 +571,7 @@ class MarketMatcher:
                         kalshi_title=best_match.title,
                         similarity_score=best_score,
                         category=category,
+                        polymarket_condition_id=poly_market.condition_id,
                     )
                     matches.append(pair)
                     self._matched_pairs[pair.pair_id] = pair
@@ -597,6 +607,8 @@ class CrossPlatformArbEngine:
         edge_size_multiplier: float = 4.0,
         max_liquidity_fraction: float = 1.0,
         max_observation_age: Optional[timedelta] = timedelta(seconds=5),
+        require_authoritative_economics: bool = False,
+        economics_max_age: timedelta = timedelta(seconds=30),
     ):
         """
         Initialize cross-platform arb engine.
@@ -619,6 +631,10 @@ class CrossPlatformArbEngine:
         if max_observation_age is not None and max_observation_age <= timedelta(0):
             raise ValueError("max_observation_age must be positive or None")
         self.max_observation_age = max_observation_age
+        if economics_max_age <= timedelta(0):
+            raise ValueError("economics_max_age must be positive")
+        self.require_authoritative_economics = require_authoritative_economics
+        self.economics_max_age = economics_max_age
         
         self.matcher = MarketMatcher()
         self._opportunities: list[CrossPlatformOpportunity] = []
@@ -629,6 +645,8 @@ class CrossPlatformArbEngine:
         market_pair: MarketPair,
         polymarket_ob: OrderBook,
         kalshi_ob: OrderBook,
+        *,
+        economics: Optional["PairEconomics"] = None,
     ) -> Optional[CrossPlatformOpportunity]:
         """
         Check for arbitrage opportunity between a matched market pair.
@@ -641,7 +659,9 @@ class CrossPlatformArbEngine:
         Returns:
             CrossPlatformOpportunity if found, None otherwise
         """
-        opportunities = self.check_arbitrages(market_pair, polymarket_ob, kalshi_ob)
+        opportunities = self.check_arbitrages(
+            market_pair, polymarket_ob, kalshi_ob, economics=economics
+        )
         return max(opportunities, key=lambda opportunity: opportunity.net_edge, default=None)
 
     def check_arbitrages(
@@ -649,9 +669,21 @@ class CrossPlatformArbEngine:
         market_pair: MarketPair,
         polymarket_ob: OrderBook,
         kalshi_ob: OrderBook,
+        *,
+        economics: Optional["PairEconomics"] = None,
     ) -> list[CrossPlatformOpportunity]:
         """Return every qualifying cross-platform opportunity for a matched market pair."""
         if not self._observations_are_fresh(polymarket_ob, kalshi_ob):
+            return []
+        if economics is not None:
+            from core.execution_economics import EconomicsUnavailableError
+
+            try:
+                economics.require_pair(market_pair)
+                economics.require_fresh(max_age=self.economics_max_age)
+            except EconomicsUnavailableError:
+                return []
+        elif self.require_authoritative_economics:
             return []
 
         # Get best prices from both platforms
@@ -675,87 +707,67 @@ class CrossPlatformArbEngine:
         
         # 1. Buy YES on Polymarket, sell YES on Kalshi
         if poly_yes_ask and kalshi_yes_bid:
-            gross = kalshi_yes_bid - poly_yes_ask
-            fees = (poly_yes_ask * self.polymarket_taker_fee + 
-                    kalshi_yes_bid * self.kalshi_taker_fee + 
-                    self.gas_cost * 2)
-            net = gross - fees
-            if net >= self.min_edge:
-                opportunities.append(self._create_opportunity(
-                    market_pair=market_pair,
-                    buy_platform="polymarket",
-                    sell_platform="kalshi",
-                    token="YES",
-                    buy_price=poly_yes_ask,
-                    sell_price=kalshi_yes_bid,
-                    gross_edge=gross,
-                    net_edge=net,
-                    buy_liquidity=polymarket_ob.yes.asks.best_size or 0,
-                    sell_liquidity=kalshi_ob.yes.bids.best_size or 0,
-                ))
+            opportunity = self._evaluate_candidate(
+                market_pair=market_pair,
+                buy_platform="polymarket",
+                sell_platform="kalshi",
+                token="YES",
+                buy_price=poly_yes_ask,
+                sell_price=kalshi_yes_bid,
+                buy_liquidity=polymarket_ob.yes.asks.best_size or 0,
+                sell_liquidity=kalshi_ob.yes.bids.best_size or 0,
+                economics=economics,
+            )
+            if opportunity is not None:
+                opportunities.append(opportunity)
         
         # 2. Buy YES on Kalshi, sell YES on Polymarket
         if kalshi_yes_ask and poly_yes_bid:
-            gross = poly_yes_bid - kalshi_yes_ask
-            fees = (kalshi_yes_ask * self.kalshi_taker_fee + 
-                    poly_yes_bid * self.polymarket_taker_fee + 
-                    self.gas_cost * 2)
-            net = gross - fees
-            if net >= self.min_edge:
-                opportunities.append(self._create_opportunity(
-                    market_pair=market_pair,
-                    buy_platform="kalshi",
-                    sell_platform="polymarket",
-                    token="YES",
-                    buy_price=kalshi_yes_ask,
-                    sell_price=poly_yes_bid,
-                    gross_edge=gross,
-                    net_edge=net,
-                    buy_liquidity=kalshi_ob.yes.asks.best_size or 0,
-                    sell_liquidity=polymarket_ob.yes.bids.best_size or 0,
-                ))
+            opportunity = self._evaluate_candidate(
+                market_pair=market_pair,
+                buy_platform="kalshi",
+                sell_platform="polymarket",
+                token="YES",
+                buy_price=kalshi_yes_ask,
+                sell_price=poly_yes_bid,
+                buy_liquidity=kalshi_ob.yes.asks.best_size or 0,
+                sell_liquidity=polymarket_ob.yes.bids.best_size or 0,
+                economics=economics,
+            )
+            if opportunity is not None:
+                opportunities.append(opportunity)
         
         # 3. Buy NO on Polymarket, sell NO on Kalshi
         if poly_no_ask and kalshi_no_bid:
-            gross = kalshi_no_bid - poly_no_ask
-            fees = (poly_no_ask * self.polymarket_taker_fee + 
-                    kalshi_no_bid * self.kalshi_taker_fee + 
-                    self.gas_cost * 2)
-            net = gross - fees
-            if net >= self.min_edge:
-                opportunities.append(self._create_opportunity(
-                    market_pair=market_pair,
-                    buy_platform="polymarket",
-                    sell_platform="kalshi",
-                    token="NO",
-                    buy_price=poly_no_ask,
-                    sell_price=kalshi_no_bid,
-                    gross_edge=gross,
-                    net_edge=net,
-                    buy_liquidity=polymarket_ob.no.asks.best_size or 0,
-                    sell_liquidity=kalshi_ob.no.bids.best_size or 0,
-                ))
+            opportunity = self._evaluate_candidate(
+                market_pair=market_pair,
+                buy_platform="polymarket",
+                sell_platform="kalshi",
+                token="NO",
+                buy_price=poly_no_ask,
+                sell_price=kalshi_no_bid,
+                buy_liquidity=polymarket_ob.no.asks.best_size or 0,
+                sell_liquidity=kalshi_ob.no.bids.best_size or 0,
+                economics=economics,
+            )
+            if opportunity is not None:
+                opportunities.append(opportunity)
         
         # 4. Buy NO on Kalshi, sell NO on Polymarket
         if kalshi_no_ask and poly_no_bid:
-            gross = poly_no_bid - kalshi_no_ask
-            fees = (kalshi_no_ask * self.kalshi_taker_fee + 
-                    poly_no_bid * self.polymarket_taker_fee + 
-                    self.gas_cost * 2)
-            net = gross - fees
-            if net >= self.min_edge:
-                opportunities.append(self._create_opportunity(
-                    market_pair=market_pair,
-                    buy_platform="kalshi",
-                    sell_platform="polymarket",
-                    token="NO",
-                    buy_price=kalshi_no_ask,
-                    sell_price=poly_no_bid,
-                    gross_edge=gross,
-                    net_edge=net,
-                    buy_liquidity=kalshi_ob.no.asks.best_size or 0,
-                    sell_liquidity=polymarket_ob.no.bids.best_size or 0,
-                ))
+            opportunity = self._evaluate_candidate(
+                market_pair=market_pair,
+                buy_platform="kalshi",
+                sell_platform="polymarket",
+                token="NO",
+                buy_price=kalshi_no_ask,
+                sell_price=poly_no_bid,
+                buy_liquidity=kalshi_ob.no.asks.best_size or 0,
+                sell_liquidity=polymarket_ob.no.bids.best_size or 0,
+                economics=economics,
+            )
+            if opportunity is not None:
+                opportunities.append(opportunity)
         
         if opportunities:
             self._opportunities.extend(opportunities)
@@ -763,6 +775,72 @@ class CrossPlatformArbEngine:
                 logger.info(f"CROSS-PLATFORM ARB: {opportunity}")
         
         return opportunities
+
+    def _evaluate_candidate(
+        self,
+        *,
+        market_pair: MarketPair,
+        buy_platform: str,
+        sell_platform: str,
+        token: str,
+        buy_price: float,
+        sell_price: float,
+        buy_liquidity: float,
+        sell_liquidity: float,
+        economics: Optional["PairEconomics"],
+    ) -> Optional[CrossPlatformOpportunity]:
+        gross = sell_price - buy_price
+        max_size = min(buy_liquidity, sell_liquidity)
+        provisional_size = min(
+            max_size * self.max_liquidity_fraction,
+            self.max_order_size,
+        )
+        if provisional_size <= 0:
+            return None
+        if economics is None:
+            fees = (
+                (buy_price if buy_platform == "polymarket" else sell_price)
+                * self.polymarket_taker_fee
+                + (buy_price if buy_platform == "kalshi" else sell_price)
+                * self.kalshi_taker_fee
+                + self.gas_cost * 2
+            )
+            net = gross - fees
+        else:
+            net = economics.net_edge_per_contract(
+                token=token,
+                buy_platform=buy_platform,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                size=provisional_size,
+            )
+        if net < self.min_edge:
+            return None
+        opportunity = self._create_opportunity(
+            market_pair=market_pair,
+            buy_platform=buy_platform,
+            sell_platform=sell_platform,
+            token=token,
+            buy_price=buy_price,
+            sell_price=sell_price,
+            gross_edge=gross,
+            net_edge=net,
+            buy_liquidity=buy_liquidity,
+            sell_liquidity=sell_liquidity,
+        )
+        if economics is not None:
+            net = economics.net_edge_per_contract(
+                token=token,
+                buy_platform=buy_platform,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                size=opportunity.suggested_size,
+            )
+            if net < self.min_edge:
+                return None
+            opportunity.net_edge = net
+            opportunity.edge_pct = net / buy_price if buy_price > 0 else 0
+        return opportunity
 
     def _observations_are_fresh(
         self,

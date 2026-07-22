@@ -5,6 +5,7 @@ from unittest.mock import Mock
 import pytest
 
 from utils.config_loader import (
+    BotConfig,
     ConfigError,
     load_config,
     resolve_runtime_secrets,
@@ -186,6 +187,51 @@ mode:
 
     assert config.monitoring.paper_trade_db_path == "data/paper_trades.db"
     assert config.monitoring.display_timezone == "America/New_York"
+    assert config.production.execution_journal_path == "data/execution_journal.sqlite3"
+    assert config.production.operator_state_path == "data/operator_state.sqlite3"
+
+
+def test_production_runtime_secrets_are_loaded_from_environment(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("mode:\n  trading_mode: dry_run\n", encoding="utf-8")
+    monkeypatch.setenv("NIGHTWATCH_OPERATOR_TOKEN", "x" * 32)
+    monkeypatch.setenv("NIGHTWATCH_ALERT_WEBHOOK_URL", "https://alerts.example.test/nightwatch")
+    monkeypatch.setenv("NIGHTWATCH_ALERT_WEBHOOK_TOKEN", "alert-secret")
+
+    config = load_config(str(config_path))
+
+    assert config.production.operator_token == "x" * 32
+    assert config.production.alert_webhook_url == "https://alerts.example.test/nightwatch"
+    assert config.production.alert_webhook_token == "alert-secret"
+
+
+def test_live_cross_platform_requires_fail_closed_production_controls(tmp_path):
+    config = BotConfig()
+    config.mode.trading_mode = "live"
+    config.mode.data_mode = "real"
+    config.mode.cross_platform_enabled = True
+    config.mode.cross_platform_execution_enabled = True
+    config.mode.kalshi_enabled = True
+    config.mode.simulate_fills = False
+    config.trading.bundle_arb_enabled = False
+    config.trading.mm_enabled = False
+    config.api.api_key = "test-key"
+    config.api.api_secret = "test-secret"
+    config.api.passphrase = "test-passphrase"
+    config.api.private_key = "test-private-key"
+    config.api.kalshi_api_key_id = "test-kalshi-key"
+    config.api.kalshi_private_key_path = str(tmp_path / "kalshi.pem")
+    (tmp_path / "kalshi.pem").write_text("test", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as error:
+        validate_config(config)
+
+    message = str(error.value)
+    assert "production.operator_token" in message
+    assert "production.alert_webhook_url" in message
+    assert "risk.strategy_exposure_limits.cross_platform_arb" in message
+    assert "risk.whitelist" in message
+    assert "production.alert_webhook_token" in message
 
 
 def test_live_cli_override_must_be_revalidated(tmp_path):
@@ -325,6 +371,7 @@ def test_tracked_live_templates_disable_unrecovered_execution(
     assert config.is_live
     assert config.trading.bundle_arb_enabled is False
     assert config.trading.mm_enabled is False
+    assert config.mode.cross_platform_execution_enabled is False
 
 
 def test_live_override_resolves_wallet_key_from_explicit_keychain_label(

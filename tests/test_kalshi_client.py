@@ -1,6 +1,30 @@
 import pytest
+from unittest.mock import AsyncMock
 
 from kalshi_client import KalshiClient
+
+
+@pytest.mark.asyncio
+async def test_get_fee_schedule_prefers_complete_event_override():
+    client = KalshiClient(dry_run=True)
+    client._get = AsyncMock(
+        side_effect=[
+            {"market": {"event_ticker": "EVENT-1", "series_ticker": "SERIES-1"}},
+            {
+                "event": {
+                    "fee_type_override": "quadratic",
+                    "fee_multiplier_override": 2,
+                }
+            },
+            {"series": {"fee_type": "flat", "fee_multiplier": 9}},
+        ]
+    )
+
+    schedule = await client.get_fee_schedule("TICKER-1")
+
+    assert schedule.fee_type == "quadratic"
+    assert schedule.fee_multiplier == 2.0
+    assert schedule.source == "event"
 
 
 @pytest.mark.asyncio

@@ -11,7 +11,46 @@ from polymarket_client.clob_bridge import (
     parse_fixed_amount,
     parse_open_order,
 )
-from polymarket_client.models import Order, OrderSide, OrderStatus, TokenType
+
+
+@pytest.mark.asyncio
+async def test_public_fee_rate_reader_requires_bounded_integer_bps():
+    client = PolymarketClient(dry_run=True)
+    client._request = AsyncMock(return_value={"base_fee": 30})
+
+    assert await client.get_fee_rate_bps("token/1") == 30
+    client._request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_clob_market_info_uses_current_v2_market_endpoint():
+    client = PolymarketClient(dry_run=True)
+    client._request = AsyncMock(
+        return_value={"tbf": 700, "fd": {"r": 0.07, "e": 1, "to": True}}
+    )
+
+    info = await client.get_clob_market_info("condition/1")
+
+    assert info["fd"]["r"] == 0.07
+    client._request.assert_awaited_once_with(
+        "GET", "/clob-markets/condition%2F1", base_url=client.rest_url
+    )
+from polymarket_client.models import Market, Order, OrderSide, OrderStatus, TokenType
+
+
+def test_condition_id_resolves_cached_clob_tokens_for_execution():
+    client = PolymarketClient(dry_run=True)
+    client._cache_market(
+        Market(
+            market_id="gamma-1",
+            condition_id="condition-1",
+            question="Question?",
+            yes_token_id="yes-token",
+            no_token_id="no-token",
+        )
+    )
+
+    assert client.resolve_token_id("condition-1", TokenType.YES) == "yes-token"
 
 
 def test_parse_fixed_amount():

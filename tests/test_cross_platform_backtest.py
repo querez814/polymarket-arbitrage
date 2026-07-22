@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
 from scripts.backtest_cross_platform import _parse_pair, _read_pairs_file
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketPair
+from core.execution_economics import PairEconomics
 from polymarket_client.models import OrderBook, OrderBookSide, PriceLevel, TokenOrderBook, TokenType
 from utils.cross_platform_backtest import (
     HistoricalRecord,
@@ -174,6 +176,38 @@ def test_cross_platform_engine_returns_multiple_qualifying_directions():
     }
     assert all(opp.suggested_size <= 30.0 for opp in opportunities)
     assert all(opp.suggested_size <= 50.0 for opp in opportunities)
+
+
+def test_execution_detection_requires_current_pair_bound_authoritative_economics():
+    engine = CrossPlatformArbEngine(
+        min_edge=0.01,
+        max_order_size=10.0,
+        require_authoritative_economics=True,
+        economics_max_age=timedelta(seconds=30),
+    )
+    pair = MarketPair("poly-1", "kalshi-1", "Poly question", "Kalshi title", 1.0)
+    polymarket_ob = xplat_orderbook("poly-1", 0.39, 0.40, 0.59, 0.60)
+    kalshi_ob = xplat_orderbook("kalshi:kalshi-1", 0.65, 0.66, 0.34, 0.35)
+    economics = PairEconomics(
+        pair_id=pair.pair_id,
+        polymarket_market_id="poly-1",
+        kalshi_ticker="kalshi-1",
+        polymarket_fee_rate=Decimal("0.07"),
+        polymarket_fee_exponent=Decimal("1"),
+        polymarket_taker_only=True,
+        polymarket_order_gas_cost=Decimal("0"),
+        polymarket_gas_source="offchain_clob_order",
+        kalshi_fee_type="quadratic",
+        kalshi_fee_multiplier=Decimal("1"),
+        observed_at=datetime.now(timezone.utc),
+    )
+
+    assert engine.check_arbitrages(pair, polymarket_ob, kalshi_ob) == []
+    opportunities = engine.check_arbitrages(
+        pair, polymarket_ob, kalshi_ob, economics=economics
+    )
+    assert opportunities
+    assert all(item.net_edge < item.gross_edge for item in opportunities)
 
 
 @pytest.mark.parametrize("stale_platform", ["polymarket", "kalshi"])

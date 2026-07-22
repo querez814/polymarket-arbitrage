@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -19,6 +20,21 @@ from polymarket_client.models import Order, OrderSide, OrderStatus, TokenType, T
 logger = logging.getLogger(__name__)
 
 FIXED_DECIMALS = 1_000_000
+
+
+class PolymarketMutationAmbiguousError(RuntimeError):
+    """A CLOB mutation may have arrived and must not be blindly retried."""
+
+
+@dataclass(frozen=True)
+class PreparedClobOrder:
+    signed_order: Any
+    order_id: str
+    metadata: str
+    token_id: str
+    side: OrderSide
+    price: float
+    size: float
 
 
 def parse_fixed_amount(value: Any) -> float:
@@ -222,6 +238,67 @@ class ClobTradingBridge:
             False,
         )
 
+    async def prepare_ioc_order(
+        self,
+        *,
+        token_id: str,
+        side: OrderSide,
+        price: float,
+        size: float,
+        metadata: str,
+    ) -> PreparedClobOrder:
+        """Sign an order and calculate its venue id without posting it."""
+        from py_clob_client_v2.clob_types import OrderArgsV2
+
+        def prepare() -> PreparedClobOrder:
+            order_args = OrderArgsV2(
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=order_side_to_clob_side(side),
+                metadata=metadata,
+            )
+            signed = self._client.create_order(order_args)
+            typed_data = self._client.builder.build_order_typed_data(signed)
+            order_id = self._client.builder.build_order_hash(typed_data)
+            return PreparedClobOrder(
+                signed_order=signed,
+                order_id=order_id,
+                metadata=metadata,
+                token_id=token_id,
+                side=side,
+                price=price,
+                size=size,
+            )
+
+        return await self.run(prepare)
+
+    async def submit_ioc_order(self, prepared: PreparedClobOrder) -> dict[str, Any]:
+        """Post one pre-signed FAK order exactly once."""
+        from py_clob_client_v2.clob_types import OrderType
+
+        try:
+            response = await self.run(
+                self._client.post_order,
+                prepared.signed_order,
+                OrderType.FAK,
+                False,
+                False,
+            )
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                raise
+            raise PolymarketMutationAmbiguousError(
+                "Polymarket submission outcome is ambiguous; reconcile by the "
+                f"precomputed order id {prepared.order_id}"
+            ) from exc
+        if not isinstance(response, dict):
+            raise PolymarketMutationAmbiguousError(
+                "Polymarket returned a non-object mutation response"
+            )
+        return response
+
     async def get_order(self, order_id: str) -> dict[str, Any]:
         return await self.run(self._client.get_order, order_id)
 
@@ -231,7 +308,26 @@ class ClobTradingBridge:
     async def cancel_order(self, order_id: str) -> Any:
         from py_clob_client_v2.clob_types import OrderPayload
 
-        return await self.run(self._client.cancel_order, OrderPayload(orderID=order_id))
+        try:
+            return await self.run(
+                self._client.cancel_order, OrderPayload(orderID=order_id)
+            )
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                raise
+            raise PolymarketMutationAmbiguousError(
+                f"Polymarket cancellation outcome is ambiguous for {order_id}"
+            ) from exc
+
+    async def get_profile_address(self) -> str:
+        def read() -> str:
+            funder = getattr(self._client.builder, "funder", None)
+            if isinstance(funder, str) and funder:
+                return funder
+            return str(self._client.get_address())
+
+        return await self.run(read)
 
     async def cancel_all_orders(self) -> Any:
         return await self.run(self._client.cancel_all)
