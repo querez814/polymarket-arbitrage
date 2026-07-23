@@ -131,3 +131,15 @@ def test_embedded_dashboard_escapes_venue_controlled_text():
     assert "return escapeHtml(shortened);" in html
     assert "${escapeHtml(m.question || id)}" in html
     assert "${escapeHtml(opp.marketInfo)}" in html
+
+
+def test_embedded_dashboard_shows_current_run_timer_pnl_and_transactions():
+    html = get_embedded_html()
+
+    assert 'id="runNumber"' in html
+    assert 'id="runTimer"' in html
+    assert 'id="runTransactions"' in html
+    assert 'id="runPnl"' in html
+    assert 'id="recentRuns"' in html
+    assert "state.run_session || {}" in html
+    assert "state.run_sessions || []" in html

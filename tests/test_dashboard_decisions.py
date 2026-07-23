@@ -9,13 +9,15 @@ from dashboard.server import DashboardState, dashboard_state
 
 def test_dashboard_state_includes_decision_journal_data():
     state = DashboardState()
-    state.add_decision({
-        "decision_id": "dec_1",
-        "strategy": "bundle_arb",
-        "outcome": "skip",
-        "reason_code": "edge_below_threshold",
-        "explanation": "edge too low",
-    })
+    state.add_decision(
+        {
+            "decision_id": "dec_1",
+            "strategy": "bundle_arb",
+            "outcome": "skip",
+            "reason_code": "edge_below_threshold",
+            "explanation": "edge too low",
+        }
+    )
     state.decision_summary = {
         "total": 1,
         "by_outcome": {"skip": 1},
@@ -49,6 +51,26 @@ def test_dashboard_state_includes_active_trade_visibility_data():
     assert data["exposure_breakdown"]["total_active_exposure"] == 15.0
 
 
+def test_dashboard_state_exposes_current_run_timer_and_counters():
+    state = DashboardState()
+    state.run_session = {
+        "run_number": 7,
+        "status": "active",
+        "elapsed_seconds": 125.0,
+        "pnl": 3.25,
+        "transaction_count": 2,
+    }
+    state.run_sessions = [state.run_session]
+
+    data = state.to_dict()
+
+    assert data["run_session"]["run_number"] == 7
+    assert data["run_session"]["elapsed_seconds"] == 125.0
+    assert data["run_session"]["pnl"] == 3.25
+    assert data["run_session"]["transaction_count"] == 2
+    assert data["run_sessions"] == [state.run_session]
+
+
 def test_dashboard_state_limits_visible_paper_order_history():
     state = DashboardState()
     state.paper_orders = [
@@ -79,13 +101,15 @@ async def test_dashboard_integration_updates_paper_mode_fields():
 
 def test_dashboard_state_preserves_trade_timestamp():
     state = DashboardState()
-    state.add_trade({
-        "side": "buy",
-        "price": 0.5,
-        "size": 10.0,
-        "market_id": "market-1",
-        "timestamp": "2026-06-29T14:19:00.123456Z",
-    })
+    state.add_trade(
+        {
+            "side": "buy",
+            "price": 0.5,
+            "size": 10.0,
+            "market_id": "market-1",
+            "timestamp": "2026-06-29T14:19:00.123456Z",
+        }
+    )
 
     assert state.trades[0]["timestamp"] == "2026-06-29T14:19:00.123456Z"
 
@@ -106,7 +130,9 @@ def test_paper_history_api_response_shape(tmp_path):
             reason_code="paper_order_placed",
         )
         configure_dashboard_runtime(store=store, timezone="America/New_York")
-        dashboard_state.paper_history = [event.to_dict() for event in store.recent_events()]
+        dashboard_state.paper_history = [
+            event.to_dict() for event in store.recent_events()
+        ]
 
         client = TestClient(app)
         response = client.get("/api/paper-history?limit=10&event_type=placed")
@@ -117,7 +143,44 @@ def test_paper_history_api_response_shape(tmp_path):
         assert len(payload["events"]) == 1
         assert payload["events"][0]["event_type"] == "placed"
         assert payload["events"][0]["order_id"] == "order-1"
-        assert payload["events"][0]["market_question"] == "Will the Fed cut rates today?"
+        assert (
+            payload["events"][0]["market_question"] == "Will the Fed cut rates today?"
+        )
+    finally:
+        store.close()
+        configure_dashboard_runtime(store=None, timezone="America/New_York")
+
+
+def test_paper_runs_api_returns_active_and_historical_counters(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app, configure_dashboard_runtime, dashboard_state
+    from utils.paper_trade_store import PaperTradeStore
+
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(
+            starting_equity=1000.0,
+            pnl_source="projected_locked_paper",
+        )
+        store.record_event(event_type="filled", order_id="order-1", trade_id="trade-1")
+        store.checkpoint_run(current_equity=1002.5, pnl=2.5)
+        configure_dashboard_runtime(store=store, timezone="America/New_York")
+        active = store.active_run()
+        assert active is not None
+        dashboard_state.run_session = active.to_dict()
+        dashboard_state.run_sessions = [
+            item.to_dict() for item in store.recent_runs(limit=10)
+        ]
+
+        response = TestClient(app).get("/api/paper-runs?limit=10")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["active_run"]["run_id"] == run.run_id
+        assert payload["active_run"]["transaction_count"] == 1
+        assert payload["active_run"]["pnl"] == 2.5
+        assert payload["runs"][0]["run_number"] == run.run_number
     finally:
         store.close()
         configure_dashboard_runtime(store=None, timezone="America/New_York")
@@ -146,16 +209,18 @@ def test_trade_history_page_and_api(tmp_path):
             reason_detail="Simulated fill",
             event_at=datetime(2026, 6, 29, 18, 0, tzinfo=timezone.utc),
         )
-        dashboard_state.decisions = [{
-            "decision_id": "dec-9",
-            "strategy": "execution",
-            "outcome": "trade",
-            "reason_code": "hypothetical_paper_fill",
-            "explanation": "Hypothetical paper fill simulated for strategy evaluation.",
-            "timestamp": "2026-06-29T18:00:01Z",
-            "related_id": "order-9",
-            "evidence": {"order_id": "order-9", "trade_id": "trade-9"},
-        }]
+        dashboard_state.decisions = [
+            {
+                "decision_id": "dec-9",
+                "strategy": "execution",
+                "outcome": "trade",
+                "reason_code": "hypothetical_paper_fill",
+                "explanation": "Hypothetical paper fill simulated for strategy evaluation.",
+                "timestamp": "2026-06-29T18:00:01Z",
+                "related_id": "order-9",
+                "evidence": {"order_id": "order-9", "trade_id": "trade-9"},
+            }
+        ]
         configure_dashboard_runtime(store=store, timezone="America/New_York")
 
         client = TestClient(app)
@@ -167,7 +232,10 @@ def test_trade_history_page_and_api(tmp_path):
         assert api.status_code == 200
         payload = api.json()
         assert payload["entries"][0]["order_id"] == "order-9"
-        assert payload["entries"][0]["market_question"] == "Will Candidate A win the election?"
+        assert (
+            payload["entries"][0]["market_question"]
+            == "Will Candidate A win the election?"
+        )
         assert "Will Candidate A win the election?" in payload["entries"][0]["summary"]
         assert payload["entries"][0]["decisions"][0]["decision_id"] == "dec-9"
         assert payload["entries"][0]["reason_explanation"] == "Simulated fill"

@@ -677,6 +677,13 @@ Matrix result: **0 RESOLVED, 14 PARTIAL, 0 BLOCKED**. Every code-addressable gat
 - Focused paper/matching regressions: **PASS — 36 tests**; focused dashboard/security regressions: **PASS — 38 tests**. Complete discovered offline suite: **PASS — 390 tests** with 510 deprecation warnings. Python compilation and `git diff --check`: **PASS**.
 - The monitor used public market/order-book reads only in dry-run mode. No exchange order was constructed, signed, submitted, cancelled, or simulated as accepted; no account or credential endpoint was used.
 
+### 2026-07-22 — Persistent paper run sessions
+
+- Extended the existing paper SQLite ledger with numbered `paper_run_sessions` and a `paper_trade_events.run_id` association. Each application launch records its start/heartbeat/end timestamps, elapsed seconds, starting/ending equity, run PnL, PnL source, transaction count, and per-event counters.
+- Clean shutdown closes the run as `completed`; startup converts any prior `active` row to `interrupted` at its last persisted heartbeat so application downtime is not counted as runtime.
+- The dashboard exposes the current run number, timer, explicitly labeled projected-at-settlement PnL, transaction count, and recent run summaries. `GET /api/paper-runs` returns the persistent history for comparison across background sessions.
+- Verification after implementation and review: **PASS — 399 tests**, Python compilation, focused mypy for the five changed source modules, and whitespace validation.
+
 ## ML data and evaluation evidence
 
 G14 is **PARTIAL** as of 2026-07-15 08:02 EDT. `utils/ml_dataset.py` and `tests/test_ml_dataset.py` provide and verify the versioned point-in-time example schema, explicit cost/slippage/latency assumptions, future-quote labels, leakage guards, auditable exclusions, purged chronological splits, and a label-free inference observation. `utils/ml_model.py` and `tests/test_ml_model.py` provide deterministic train-only fitting and later-period model-versus-prevalence-baseline evaluation with discrimination and calibration metrics. `utils/ml_artifact.py` and `tests/test_ml_artifact.py` provide versioned provenance, canonical integrity-checked serialization, atomic private persistence, and strict fail-closed loading. `utils/ml_inference.py` and `tests/test_ml_inference.py` provide deterministic ranking/filtering/downsizing subordinate to caller-supplied deterministic gates, point-in-time artifact enforcement, and rejecting behavior for unavailable or invalid models.

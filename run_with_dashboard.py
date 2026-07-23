@@ -23,7 +23,11 @@ from pathlib import Path
 
 import uvicorn
 
-from polymarket_client import PolymarketClient, PolymarketVenueAdapter, create_polymarket_client
+from polymarket_client import (
+    PolymarketClient,
+    PolymarketVenueAdapter,
+    create_polymarket_client,
+)
 from kalshi_client import KalshiClient, KalshiPrivateStream, KalshiVenueAdapter
 from core.data_feed import DataFeed
 from core.arb_engine import ArbEngine, ArbConfig
@@ -49,18 +53,17 @@ from utils.paper_trade_store import PaperTradeStore
 from dashboard.server import app, dashboard_state, configure_dashboard_runtime
 from dashboard.integration import DashboardIntegration
 
-
 logger = logging.getLogger(__name__)
 
 
 class TradingBotWithDashboard:
     """Trading bot with integrated dashboard."""
-    
+
     def __init__(self, config: BotConfig, port: int = 8888):
         self.config = config
         self.port = port
         self._running = False
-        
+
         # Components - Polymarket
         self.client = None
         self.data_feed = None
@@ -72,7 +75,9 @@ class TradingBotWithDashboard:
         self.decision_journal = DecisionJournal(max_records=1000)
         self.paper_trade_store = None
         self.paper_locked_arb = None
-        
+        self._startup_complete = False
+        self._run_failed = False
+
         # Components - Kalshi (cross-platform)
         self.kalshi_client = None
         self.cross_platform_engine = None
@@ -85,7 +90,7 @@ class TradingBotWithDashboard:
         self.production_runtime = None
         self.execution_journal = None
         self.operator_controls = None
-        
+
         # Server
         self._server = None
         self._server_task = None
@@ -95,17 +100,19 @@ class TradingBotWithDashboard:
         # Bearer-protected operator mutations must not cross a plaintext LAN.
         # Remote production access belongs behind an authenticated TLS proxy.
         return "127.0.0.1" if self.config.is_live else "0.0.0.0"
-    
+
     async def start(self) -> None:
         """Start the bot and dashboard."""
         logger.info("=" * 60)
         logger.info("Polymarket + Kalshi Arbitrage Bot")
         logger.info("=" * 60)
         logger.info(f"Mode: {'DRY RUN' if self.config.is_dry_run else 'LIVE'}")
-        logger.info(f"Cross-Platform: {'ENABLED' if self.config.mode.cross_platform_enabled else 'DISABLED'}")
+        logger.info(
+            f"Cross-Platform: {'ENABLED' if self.config.mode.cross_platform_enabled else 'DISABLED'}"
+        )
         logger.info(f"Dashboard: http://localhost:{self.port}")
         logger.info("=" * 60)
-        
+
         self._running = True
 
         configure_dashboard_runtime(
@@ -120,6 +127,20 @@ class TradingBotWithDashboard:
         if self.config.is_dry_run:
             self.paper_trade_store = PaperTradeStore(
                 self.config.monitoring.paper_trade_db_path
+            )
+            active_run = self.paper_trade_store.start_run(
+                starting_equity=self.config.mode.dry_run_initial_balance,
+                pnl_source="projected_locked_paper",
+            )
+            dashboard_state.run_session = active_run.to_dict()
+            dashboard_state.run_sessions = [
+                run.to_dict() for run in self.paper_trade_store.recent_runs(limit=50)
+            ]
+            logger.info(
+                "Paper run #%s started | run_id=%s | starting equity=$%.2f",
+                active_run.run_number,
+                active_run.run_id,
+                active_run.starting_equity,
             )
             configure_dashboard_runtime(
                 store=self.paper_trade_store,
@@ -151,11 +172,11 @@ class TradingBotWithDashboard:
                 dashboard_state.cross_platform["paper_performance"] = (
                     self.paper_locked_arb.summary()
                 )
-        
+
         # Initialize Polymarket API client
         self.client = create_polymarket_client(self.config)
         await self.client.connect()
-        
+
         # Initialize Kalshi client (if cross-platform enabled)
         if self.config.mode.cross_platform_enabled and self.config.mode.kalshi_enabled:
             logger.info("Initializing Kalshi client for cross-platform arbitrage...")
@@ -168,7 +189,7 @@ class TradingBotWithDashboard:
                 dry_run=self.config.is_dry_run,
             )
             await self.kalshi_client.__aenter__()
-            
+
             # Initialize cross-platform arbitrage engine
             self.cross_platform_engine = CrossPlatformArbEngine(
                 min_edge=self.config.trading.min_edge,
@@ -186,20 +207,21 @@ class TradingBotWithDashboard:
             self.market_matcher = self.cross_platform_engine.matcher
             self.market_matcher.min_similarity = self.config.mode.min_match_similarity
 
-            if self.config.is_live and self.config.mode.cross_platform_execution_enabled:
+            if (
+                self.config.is_live
+                and self.config.mode.cross_platform_execution_enabled
+            ):
                 await self._start_production_runtime()
-            
+
             # Start Kalshi monitoring in background
             self._kalshi_monitor_task = asyncio.create_task(
                 self._start_kalshi_monitoring()
             )
             self._kalshi_monitor_task.add_done_callback(self._critical_task_done)
-        
+
         # Initialize portfolio
         initial_balance = (
-            self.config.mode.dry_run_initial_balance 
-            if self.config.is_dry_run 
-            else 0.0
+            self.config.mode.dry_run_initial_balance if self.config.is_dry_run else 0.0
         )
         self.portfolio = Portfolio(initial_balance=initial_balance)
         if self.config.is_live:
@@ -208,26 +230,28 @@ class TradingBotWithDashboard:
                 self.portfolio.cash_balance = live_balance
                 self.portfolio.initial_balance = live_balance
                 logger.info(f"Live USDC balance synced: ${live_balance:.2f}")
-        
+
         # Initialize risk manager
-        self.risk_manager = RiskManager(RiskConfig(
-            max_order_notional=self.config.risk.max_order_notional,
-            max_open_orders=self.config.risk.max_open_orders,
-            max_open_positions=self.config.risk.max_open_positions,
-            max_order_attempts_per_minute=self.config.risk.max_order_attempts_per_minute,
-            max_daily_order_attempts=self.config.risk.max_daily_order_attempts,
-            max_position_per_market=self.config.risk.max_position_per_market,
-            max_global_exposure=self.config.risk.max_global_exposure,
-            max_daily_loss=self.config.risk.max_daily_loss,
-            max_drawdown_pct=self.config.risk.max_drawdown_pct,
-            trade_only_high_volume=self.config.risk.trade_only_high_volume,
-            min_24h_volume=self.config.risk.min_24h_volume,
-            whitelist=self.config.risk.whitelist,
-            blacklist=self.config.risk.blacklist,
-            kill_switch_enabled=self.config.risk.kill_switch_enabled,
-            strategy_exposure_limits=self.config.risk.strategy_exposure_limits,
-        ))
-        
+        self.risk_manager = RiskManager(
+            RiskConfig(
+                max_order_notional=self.config.risk.max_order_notional,
+                max_open_orders=self.config.risk.max_open_orders,
+                max_open_positions=self.config.risk.max_open_positions,
+                max_order_attempts_per_minute=self.config.risk.max_order_attempts_per_minute,
+                max_daily_order_attempts=self.config.risk.max_daily_order_attempts,
+                max_position_per_market=self.config.risk.max_position_per_market,
+                max_global_exposure=self.config.risk.max_global_exposure,
+                max_daily_loss=self.config.risk.max_daily_loss,
+                max_drawdown_pct=self.config.risk.max_drawdown_pct,
+                trade_only_high_volume=self.config.risk.trade_only_high_volume,
+                min_24h_volume=self.config.risk.min_24h_volume,
+                whitelist=self.config.risk.whitelist,
+                blacklist=self.config.risk.blacklist,
+                kill_switch_enabled=self.config.risk.kill_switch_enabled,
+                strategy_exposure_limits=self.config.risk.strategy_exposure_limits,
+            )
+        )
+
         # Initialize execution engine
         self.execution_engine = ExecutionEngine(
             client=self.client,
@@ -253,24 +277,27 @@ class TradingBotWithDashboard:
             paper_trade_store=self.paper_trade_store,
         )
         await self.execution_engine.start()
-        
+
         # Initialize arb engine
-        self.arb_engine = ArbEngine(ArbConfig(
-            min_edge=self.config.trading.min_edge,
-            bundle_arb_enabled=self.config.trading.bundle_arb_enabled,
-            min_spread=self.config.trading.min_spread,
-            mm_enabled=self.config.trading.mm_enabled,
-            tick_size=self.config.trading.tick_size,
-            mm_one_sided_enabled=self.config.trading.mm_one_sided_enabled,
-            default_order_size=self.config.trading.default_order_size,
-            min_order_size=self.config.trading.min_order_size,
-            max_order_size=self.config.trading.max_order_size,
-            edge_size_multiplier=self.config.trading.edge_size_multiplier,
-            max_liquidity_fraction=self.config.trading.max_liquidity_fraction,
-            bundle_cooldown_seconds=self.config.trading.bundle_cooldown_seconds,
-            mm_cooldown_seconds=self.config.trading.mm_cooldown_seconds,
-        ), decision_journal=self.decision_journal)
-        
+        self.arb_engine = ArbEngine(
+            ArbConfig(
+                min_edge=self.config.trading.min_edge,
+                bundle_arb_enabled=self.config.trading.bundle_arb_enabled,
+                min_spread=self.config.trading.min_spread,
+                mm_enabled=self.config.trading.mm_enabled,
+                tick_size=self.config.trading.tick_size,
+                mm_one_sided_enabled=self.config.trading.mm_one_sided_enabled,
+                default_order_size=self.config.trading.default_order_size,
+                min_order_size=self.config.trading.min_order_size,
+                max_order_size=self.config.trading.max_order_size,
+                edge_size_multiplier=self.config.trading.edge_size_multiplier,
+                max_liquidity_fraction=self.config.trading.max_liquidity_fraction,
+                bundle_cooldown_seconds=self.config.trading.bundle_cooldown_seconds,
+                mm_cooldown_seconds=self.config.trading.mm_cooldown_seconds,
+            ),
+            decision_journal=self.decision_journal,
+        )
+
         # Initialize data feed
         market_ids = self.config.trading.markets.copy()
         self.data_feed = DataFeed(
@@ -281,7 +308,7 @@ class TradingBotWithDashboard:
             config=self.config,
         )
         await self.data_feed.start()
-        
+
         # Initialize dashboard integration
         self.dashboard_integration = DashboardIntegration(
             data_feed=self.data_feed,
@@ -292,17 +319,32 @@ class TradingBotWithDashboard:
             mode="dry_run" if self.config.is_dry_run else "live",
             decision_journal=self.decision_journal,
             paper_trade_store=self.paper_trade_store,
+            paper_performance_provider=self._paper_run_performance,
         )
         await self.dashboard_integration.start()
-        
+
         # Start fill simulation for dry run
         if self.config.is_dry_run and self.config.mode.simulate_fills:
             asyncio.create_task(self._simulate_fills())
-        
+
         # Start the web server
         await self._start_server()
-        
+        self._startup_complete = True
         logger.info("Bot and dashboard started successfully!")
+
+    def _paper_run_performance(self) -> tuple[float, float]:
+        """Return current paper equity and PnL using the active strategy ledger."""
+        if self.paper_locked_arb is not None:
+            summary = self.paper_locked_arb.summary()
+            return (
+                float(summary["projected_equity_at_settlement"]),
+                float(summary["projected_locked_pnl"]),
+            )
+        if self.portfolio is not None:
+            summary = self.portfolio.get_summary()
+            pnl = float(summary["pnl"]["total_pnl"])
+            return float(summary["initial_balance"]) + pnl, pnl
+        return float(self.config.mode.dry_run_initial_balance), 0.0
 
     async def _start_production_runtime(self) -> None:
         """Own all live cross-venue resources for this process."""
@@ -356,8 +398,7 @@ class TradingBotWithDashboard:
             market_whitelist=tuple(self.config.risk.whitelist),
             market_blacklist=tuple(self.config.risk.blacklist),
             opportunity_max_age=(
-                self.cross_platform_engine.max_observation_age
-                or timedelta(seconds=5)
+                self.cross_platform_engine.max_observation_age or timedelta(seconds=5)
             ),
             require_collateral=True,
             economics_provider=AuthoritativeEconomicsProvider(
@@ -390,7 +431,7 @@ class TradingBotWithDashboard:
             "Production runtime recovered and is HALTED pending authenticated operator arming"
         )
         logger.info(f"Open http://{self.dashboard_host}:{self.port} in your browser")
-    
+
     async def _start_server(self) -> None:
         """Start the uvicorn server."""
         config = uvicorn.Config(
@@ -402,19 +443,19 @@ class TradingBotWithDashboard:
         )
         self._server = uvicorn.Server(config)
         self._server_task = asyncio.create_task(self._server.serve())
-    
+
     def _on_market_update(self, market_id: str, market_state) -> None:
         """Handle market updates."""
         if not self._running:
             return
-        
+
         # Check risk limits
         if not self.risk_manager.within_global_limits():
             return
-        
+
         # Analyze for opportunities
         signals = self.arb_engine.analyze(market_state)
-        
+
         for signal in signals:
             # Add to dashboard
             if signal.opportunity:
@@ -424,23 +465,23 @@ class TradingBotWithDashboard:
                     edge=signal.opportunity.edge,
                     suggested_size=signal.opportunity.suggested_size,
                 )
-            
+
             self.dashboard_integration.add_signal(
                 action=signal.action,
                 market_id=signal.market_id,
             )
-            
+
             # Submit to execution
             asyncio.create_task(self.execution_engine.submit_signal(signal))
-    
+
     async def _simulate_fills(self) -> None:
         """Simulate order fills in dry run mode."""
         import random
-        
+
         while self._running:
             try:
                 await asyncio.sleep(2.0)
-                
+
                 orders = self.execution_engine.get_open_orders()
                 for order in orders:
                     if random.random() < self.config.mode.fill_probability:
@@ -459,7 +500,7 @@ class TradingBotWithDashboard:
                 break
             except Exception as e:
                 logger.error(f"Fill simulation error: {e}")
-    
+
     async def _start_kalshi_monitoring(self) -> None:
         """Continuously refresh eligible markets and equivalent pair discovery."""
         if not self.kalshi_client:
@@ -488,9 +529,7 @@ class TradingBotWithDashboard:
                 max_markets=10_000,
                 on_progress=on_kalshi_progress,
             )
-            dashboard_state.cross_platform["kalshi_markets"] = len(
-                self._kalshi_markets
-            )
+            dashboard_state.cross_platform["kalshi_markets"] = len(self._kalshi_markets)
             logger.info(
                 "Loaded %s eligible Kalshi markets (MVE excluded)",
                 len(self._kalshi_markets),
@@ -500,9 +539,7 @@ class TradingBotWithDashboard:
                 logger.info("Waiting for Polymarket markets...")
                 for index in range(30):
                     await asyncio.sleep(1)
-                    poly_count = (
-                        len(self.data_feed._markets) if self.data_feed else 0
-                    )
+                    poly_count = len(self.data_feed._markets) if self.data_feed else 0
                     dashboard_state.cross_platform["polymarket_markets"] = poly_count
                     if poly_count >= 50:
                         logger.info(
@@ -531,7 +568,7 @@ class TradingBotWithDashboard:
                 refresh_seconds
             )
             await asyncio.sleep(refresh_seconds)
-    
+
     async def _run_matching_background(self, polymarket_markets: list) -> None:
         """Match one venue snapshot while yielding to live dashboard work."""
         try:
@@ -541,7 +578,9 @@ class TradingBotWithDashboard:
             dashboard_state.cross_platform["matching_progress"] = 0
             dashboard_state.cross_platform["matched_pairs"] = 0
             dashboard_state.cross_platform["matched_pairs_data"] = []
-            clear_cached_pairs = getattr(self.market_matcher, "clear_cached_pairs", None)
+            clear_cached_pairs = getattr(
+                self.market_matcher, "clear_cached_pairs", None
+            )
             if clear_cached_pairs:
                 clear_cached_pairs()
 
@@ -639,14 +678,15 @@ class TradingBotWithDashboard:
         except Exception as e:
             logger.error(f"Matching error: {e}")
             import traceback
+
             traceback.print_exc()
             dashboard_state.cross_platform["matching_status"] = "error"
+            self._run_failed = True
 
     def _critical_dependencies_ready(self) -> bool:
         """Report whether the configured cross-platform discovery path is alive."""
         if not (
-            self.config.mode.cross_platform_enabled
-            and self.config.mode.kalshi_enabled
+            self.config.mode.cross_platform_enabled and self.config.mode.kalshi_enabled
         ):
             return True
         return bool(
@@ -668,6 +708,7 @@ class TradingBotWithDashboard:
             else "critical cross-platform task stopped unexpectedly"
         )
         logger.critical(reason)
+        self._run_failed = True
         dashboard_state.cross_platform["matching_status"] = "error"
         if self.production_runtime:
             self._critical_failure_task = asyncio.create_task(
@@ -682,7 +723,7 @@ class TradingBotWithDashboard:
             )
         except Exception:
             logger.exception("Failed to deliver critical-task halt alert")
-    
+
     def _record_cross_platform_decision(
         self,
         *,
@@ -706,7 +747,8 @@ class TradingBotWithDashboard:
             platform="polymarket+kalshi",
             market_question=(
                 f"{market_pair.polymarket_question} / {market_pair.kalshi_title}"
-                if market_pair else ""
+                if market_pair
+                else ""
             ),
             category=market_pair.category if market_pair else "",
             evidence=evidence or {},
@@ -714,9 +756,7 @@ class TradingBotWithDashboard:
             related_id=market_pair.pair_id if market_pair else None,
         )
 
-    async def evaluate_cross_platform_pair(
-        self, pair, polymarket_book, kalshi_book
-    ):
+    async def evaluate_cross_platform_pair(self, pair, polymarket_book, kalshi_book):
         """Route one live pair through the sole mutation-owning runtime."""
         if self.cross_platform_engine is None:
             raise RuntimeError("cross-platform detector is not initialized")
@@ -744,25 +784,29 @@ class TradingBotWithDashboard:
                     paper_trade.projected_locked_pnl,
                 )
         return opportunity, None
-    
+
     async def _scan_cross_platform_pairs(self) -> None:
         """Continuously evaluate matched Polymarket/Kalshi pairs for real cross-platform arbitrage."""
         if not self.cross_platform_engine or not self.kalshi_client:
             return
-        
+
         logger.info("Starting live cross-platform price scanner...")
         dashboard_state.cross_platform["scan_status"] = "scanning"
         scan_count = 0
         orderbooks_fetched = 0
-        
+
         while self._running:
             started = datetime.utcnow()
             try:
                 for pair in list(self._matched_pairs):
                     if not self._running:
                         break
-                    
-                    poly_ob = self.data_feed.get_order_book(pair.polymarket_id) if self.data_feed else None
+
+                    poly_ob = (
+                        self.data_feed.get_order_book(pair.polymarket_id)
+                        if self.data_feed
+                        else None
+                    )
                     if not poly_ob:
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
@@ -772,31 +816,44 @@ class TradingBotWithDashboard:
                             evidence={"similarity": pair.similarity_score},
                         )
                         continue
-                    
-                    kalshi_ob = await self.kalshi_client.get_orderbook_unified(pair.kalshi_ticker)
+
+                    kalshi_ob = await self.kalshi_client.get_orderbook_unified(
+                        pair.kalshi_ticker
+                    )
                     scan_count += 1
                     if kalshi_ob:
                         orderbooks_fetched += 1
                     dashboard_state.cross_platform["pairs_scanned"] = scan_count
-                    dashboard_state.cross_platform["kalshi_orderbooks"] = orderbooks_fetched
-                    dashboard_state.cross_platform["last_scan_at"] = datetime.utcnow().isoformat()
-                    
+                    dashboard_state.cross_platform["kalshi_orderbooks"] = (
+                        orderbooks_fetched
+                    )
+                    dashboard_state.cross_platform["last_scan_at"] = (
+                        datetime.utcnow().isoformat()
+                    )
+
                     if not kalshi_ob:
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
                             reason_code="missing_kalshi_orderbook",
                             explanation="Skipped cross-platform check because the Kalshi order book was unavailable.",
                             market_pair=pair,
-                            evidence={"similarity": pair.similarity_score, "kalshi_ticker": pair.kalshi_ticker},
+                            evidence={
+                                "similarity": pair.similarity_score,
+                                "kalshi_ticker": pair.kalshi_ticker,
+                            },
                         )
                         continue
-                    
+
                     try:
-                        opportunity, evaluation = await self.evaluate_cross_platform_pair(
-                            pair, poly_ob, kalshi_ob
+                        opportunity, evaluation = (
+                            await self.evaluate_cross_platform_pair(
+                                pair, poly_ob, kalshi_ob
+                            )
                         )
                     except RuntimeNotReadyError as exc:
-                        dashboard_state.cross_platform["scan_status"] = "operator_halted"
+                        dashboard_state.cross_platform["scan_status"] = (
+                            "operator_halted"
+                        )
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
                             reason_code="production_runtime_not_ready",
@@ -817,7 +874,7 @@ class TradingBotWithDashboard:
                         "kalshi_no_ask": kalshi_ob.best_ask_no,
                         "required_net_edge": self.cross_platform_engine.min_edge,
                     }
-                    
+
                     if opportunity:
                         opp_dict = {
                             "opportunity_id": opportunity.opportunity_id,
@@ -837,7 +894,9 @@ class TradingBotWithDashboard:
                         }
                         if evaluation is not None and evaluation.execution is not None:
                             opp_dict["execution_id"] = evaluation.execution.execution_id
-                            opp_dict["execution_phase"] = evaluation.execution.phase.value
+                            opp_dict["execution_phase"] = (
+                                evaluation.execution.phase.value
+                            )
                         dashboard_state.add_cross_platform_opportunity(opp_dict)
                         emergency_phase = (
                             evaluation is not None
@@ -875,9 +934,9 @@ class TradingBotWithDashboard:
                             market_pair=pair,
                             evidence=evidence,
                         )
-                    
+
                     await asyncio.sleep(0.05)
-                
+
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
                 await asyncio.sleep(2.0)
@@ -893,15 +952,15 @@ class TradingBotWithDashboard:
                     evidence={"error": str(e)},
                 )
                 await asyncio.sleep(5.0)
-    
+
     async def stop(self) -> None:
         """Stop everything gracefully."""
         logger.info("Shutting down...")
         self._running = False
-        
+
         if self.dashboard_integration:
             await self.dashboard_integration.stop()
-        
+
         if self._xplat_scan_task:
             self._xplat_scan_task.cancel()
             try:
@@ -922,16 +981,16 @@ class TradingBotWithDashboard:
 
         if self.production_runtime:
             await self.production_runtime.stop()
-        
+
         if self.data_feed:
             await self.data_feed.stop()
-        
+
         if self.execution_engine:
             await self.execution_engine.stop()
-        
+
         if self.client:
             await self.client.disconnect()
-        
+
         if self.kalshi_client:
             await self.kalshi_client.__aexit__(None, None, None)
 
@@ -942,10 +1001,42 @@ class TradingBotWithDashboard:
             self.operator_controls.close()
             self.operator_controls = None
         self.production_runtime = None
-        self.paper_locked_arb = None
         if self.paper_trade_store:
-            self.paper_trade_store.close()
-            self.paper_trade_store = None
+            try:
+                active_run = self.paper_trade_store.active_run()
+                if active_run is not None:
+                    ending_equity, run_pnl = self._paper_run_performance()
+                    finished_run = self.paper_trade_store.finish_run(
+                        ending_equity=ending_equity,
+                        pnl=run_pnl,
+                        status=(
+                            "completed"
+                            if self._startup_complete and not self._run_failed
+                            else "failed"
+                        ),
+                    )
+                    logger.info(
+                        "Paper run #%s %s | elapsed=%.1fs | transactions=%s | projected pnl=$%.2f | ending equity=$%.2f",
+                        finished_run.run_number,
+                        finished_run.status,
+                        finished_run.elapsed_seconds,
+                        finished_run.transaction_count,
+                        finished_run.pnl,
+                        finished_run.ending_equity,
+                    )
+                else:
+                    logger.warning("No active paper run remained to finalize")
+                dashboard_state.run_session = {}
+                dashboard_state.run_sessions = [
+                    run.to_dict()
+                    for run in self.paper_trade_store.recent_runs(limit=50)
+                ]
+            except Exception:
+                logger.exception("Failed to finalize paper run; continuing shutdown")
+            finally:
+                self.paper_trade_store.close()
+                self.paper_trade_store = None
+        self.paper_locked_arb = None
         configure_dashboard_runtime(
             store=None,
             timezone=self.config.monitoring.display_timezone,
@@ -953,7 +1044,7 @@ class TradingBotWithDashboard:
             production_required=False,
             readiness_check=None,
         )
-        
+
         if self._server:
             self._server.should_exit = True
         if self._server_task:
@@ -966,7 +1057,7 @@ class TradingBotWithDashboard:
                     await self._server_task
                 except asyncio.CancelledError:
                     pass
-        
+
         # Final summary
         if self.portfolio:
             summary = self.portfolio.get_summary()
@@ -976,15 +1067,17 @@ class TradingBotWithDashboard:
             logger.info(f"Total PnL: ${summary['pnl']['total_pnl']:.2f}")
             logger.info(f"Trades: {summary['total_trades']}")
             logger.info(f"Win Rate: {summary['win_rate']:.1%}")
-        
+
         # Cross-platform summary
         if self.cross_platform_engine:
             cp_stats = self.cross_platform_engine.get_stats()
-            logger.info(f"Cross-Platform Opportunities: {cp_stats['total_opportunities']}")
+            logger.info(
+                f"Cross-Platform Opportunities: {cp_stats['total_opportunities']}"
+            )
             logger.info(f"Matched Market Pairs: {cp_stats['matched_pairs']}")
-        
+
         logger.info("Shutdown complete")
-    
+
     async def run_forever(self) -> None:
         """Run until interrupted."""
         try:
@@ -1002,7 +1095,7 @@ async def main_async(args: argparse.Namespace) -> None:
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
         sys.exit(1)
-    
+
     # Override mode and revalidate the effective config so --live cannot bypass
     # live-only credential and real-data checks performed during initial load.
     try:
@@ -1015,30 +1108,30 @@ async def main_async(args: argparse.Namespace) -> None:
     except Exception as e:
         logger.error(f"Invalid effective config: {e}")
         sys.exit(1)
-    
+
     # Create and run bot with dashboard
     bot = TradingBotWithDashboard(config, port=args.port)
-    
+
     # Handle shutdown
     loop = asyncio.get_event_loop()
     shutdown_event = asyncio.Event()
-    
+
     def signal_handler():
         logger.info("Shutdown signal received")
         shutdown_event.set()
-    
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, signal_handler)
         except NotImplementedError:
             pass
-    
+
     try:
         await bot.start()
-        
+
         # Wait for shutdown
         await shutdown_event.wait()
-        
+
     except KeyboardInterrupt:
         pass
     finally:
@@ -1050,45 +1143,32 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Polymarket Arbitrage Bot with Live Dashboard"
     )
-    
+
     parser.add_argument(
-        "-c", "--config",
-        default="config.yaml",
-        help="Config file path"
+        "-c", "--config", default="config.yaml", help="Config file path"
     )
-    
+
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8888,
-        help="Dashboard port (default: 8888)"
+        "--port", type=int, default=8888, help="Dashboard port (default: 8888)"
     )
-    
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        help="Run in live mode"
-    )
-    
+
+    parser.add_argument("--live", action="store_true", help="Run in live mode")
+
     parser.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="Run in dry-run mode (default)"
+        help="Run in dry-run mode (default)",
     )
-    
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose logging"
-    )
-    
+
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
+
     args = parser.parse_args()
-    
+
     # Setup logging
     log_level = "DEBUG" if args.verbose else "INFO"
     setup_logging(console_level=log_level)
-    
+
     # Run
     try:
         asyncio.run(main_async(args))

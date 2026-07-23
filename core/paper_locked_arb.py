@@ -162,6 +162,8 @@ class PaperLockedArbitrageLedger:
                 is_simulated=True,
                 simulation_label="conservative_shadow_fill",
                 pnl_source="projected_locked_paper",
+                run_equity=self.initial_balance + self.projected_locked_pnl,
+                run_pnl=self.projected_locked_pnl,
             )
         return trade
 

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import sqlite3
 
 import pytest
 
@@ -96,3 +97,124 @@ def test_recent_events_ordering_and_filtering(store):
     rejected_only = store.recent_events(limit=10, event_type="rejected")
     assert len(rejected_only) == 1
     assert rejected_only[0].reason_code == "slippage"
+
+
+def test_run_session_numbers_launches_and_counts_filled_transactions(store):
+    started_at = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
+
+    run = store.start_run(
+        starting_equity=1000.0,
+        pnl_source="projected_locked_paper",
+        started_at=started_at,
+    )
+    store.record_event(event_type="placed", order_id="order-1")
+    store.record_event(event_type="filled", order_id="order-1", trade_id="trade-1")
+    store.checkpoint_run(
+        current_equity=1012.5,
+        pnl=12.5,
+        checkpoint_at=started_at + timedelta(minutes=5),
+    )
+    finished = store.finish_run(
+        ending_equity=1012.5,
+        pnl=12.5,
+        ended_at=started_at + timedelta(minutes=10),
+    )
+
+    assert run.run_number == 1
+    assert finished.status == "completed"
+    assert finished.elapsed_seconds == 600.0
+    assert finished.transaction_count == 1
+    assert finished.placed_count == 1
+    assert finished.filled_count == 1
+    assert finished.pnl == 12.5
+    assert finished.ending_equity == 1012.5
+    assert store.recent_runs(limit=10) == [finished]
+
+
+def test_new_run_marks_unclosed_predecessor_interrupted(tmp_path):
+    db_path = tmp_path / "paper_trades.db"
+    first_store = PaperTradeStore(str(db_path))
+    first = first_store.start_run(
+        starting_equity=1000.0,
+        pnl_source="projected_locked_paper",
+        started_at=datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc),
+    )
+    first_store.checkpoint_run(
+        current_equity=1004.0,
+        pnl=4.0,
+        checkpoint_at=datetime(2026, 7, 22, 12, 3, tzinfo=timezone.utc),
+    )
+    first_store.close()
+
+    second_store = PaperTradeStore(str(db_path))
+    second = second_store.start_run(
+        starting_equity=1000.0,
+        pnl_source="projected_locked_paper",
+        started_at=datetime(2026, 7, 22, 12, 10, tzinfo=timezone.utc),
+    )
+    runs = second_store.recent_runs(limit=10)
+    second_store.close()
+
+    assert second.run_number == first.run_number + 1
+    assert runs[1].status == "interrupted"
+    assert runs[1].ended_at_utc == "2026-07-22T12:03:00Z"
+    assert runs[1].elapsed_seconds == 180.0
+    assert runs[1].pnl == 4.0
+
+
+def test_existing_event_database_migrates_to_run_sessions_in_place(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("""
+        CREATE TABLE paper_trade_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL,
+            event_at_utc TEXT NOT NULL,
+            order_id TEXT,
+            trade_id TEXT,
+            signal_id TEXT,
+            market_id TEXT,
+            market_question TEXT,
+            token_type TEXT,
+            side TEXT,
+            price REAL,
+            size REAL,
+            notional REAL,
+            fee REAL,
+            strategy_tag TEXT,
+            status TEXT,
+            reason_code TEXT,
+            reason_detail TEXT,
+            is_simulated INTEGER NOT NULL DEFAULT 1,
+            simulation_label TEXT,
+            pnl_source TEXT
+        )
+        """)
+    connection.commit()
+    connection.close()
+
+    migrated = PaperTradeStore(str(db_path))
+    run = migrated.start_run(
+        starting_equity=1000.0,
+        pnl_source="projected_locked_paper",
+    )
+    event = migrated.record_event(event_type="placed", order_id="order-legacy")
+    migrated.close()
+
+    assert run.run_number == 1
+    assert event is not None
+    assert event.run_id == run.run_id
+
+
+def test_database_allows_only_one_run_writer_process(tmp_path):
+    db_path = tmp_path / "paper.db"
+    first = PaperTradeStore(str(db_path))
+    try:
+        with pytest.raises(RuntimeError, match="already has an active process"):
+            PaperTradeStore(str(db_path))
+    finally:
+        first.close()
+
+    reopened = PaperTradeStore(str(db_path))
+    reopened.close()

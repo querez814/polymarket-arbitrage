@@ -108,6 +108,7 @@ async def test_critical_background_task_completion_durably_panics_runtime():
     bot._critical_task_done(task)
     await bot._critical_failure_task
 
+    assert bot._run_failed is True
     assert calls == [
         ("operator-token", "critical cross-platform task stopped unexpectedly")
     ]
@@ -193,3 +194,38 @@ async def test_bot_shutdown_waits_for_dashboard_server_to_exit():
 
     assert server.should_exit is True
     assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_bot_shutdown_continues_when_no_active_paper_run_exists(tmp_path):
+    from utils.paper_trade_store import PaperTradeStore
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.paper_trade_store = PaperTradeStore(str(tmp_path / "paper.db"))
+
+    await bot.stop()
+
+    assert bot.paper_trade_store is None
+
+
+@pytest.mark.asyncio
+async def test_critical_failure_marks_persisted_run_failed(tmp_path):
+    from utils.paper_trade_store import PaperTradeStore
+
+    db_path = tmp_path / "paper.db"
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.paper_trade_store = PaperTradeStore(str(db_path))
+    bot.paper_trade_store.start_run(
+        starting_equity=1000.0,
+        pnl_source="projected_locked_paper",
+    )
+    bot._startup_complete = True
+    bot._run_failed = True
+
+    await bot.stop()
+
+    reopened = PaperTradeStore(str(db_path))
+    try:
+        assert reopened.recent_runs(limit=1)[0].status == "failed"
+    finally:
+        reopened.close()

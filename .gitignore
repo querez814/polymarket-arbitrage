@@ -76,3 +76,6 @@ kalshi*.key
 
 # Local paper-performance ledger
 data/paper_performance.db
+data/paper_performance.db.run.lock
+data/paper_performance.db-shm
+data/paper_performance.db-wal

@@ -102,6 +102,8 @@ class DashboardState:
         self.orders: list = []
         self.paper_orders: list = []
         self.paper_history: list = []
+        self.run_session: dict = {}
+        self.run_sessions: list = []
         self.trades: list = []
         self.positions: list = []
         self.active_trades: list = []
@@ -148,6 +150,8 @@ class DashboardState:
             "orders": self.orders,
             "paper_orders": self.paper_orders[-100:],
             "paper_history": self.paper_history[-200:],
+            "run_session": self.run_session,
+            "run_sessions": self.run_sessions[-50:],
             "trades": self.trades[-100:],  # Last 100
             "positions": self.positions,
             "active_trades": self.active_trades,
@@ -446,6 +450,15 @@ def create_app() -> FastAPI:
         events = paper_trade_store.recent_events(limit=limit, event_type=event_type)
         return {
             "events": [event.to_dict() for event in events],
+            "display_timezone": display_timezone,
+        }
+
+    @app.get("/api/paper-runs")
+    async def get_paper_runs(limit: int = Query(default=50, ge=1, le=200)):
+        """Get persisted paper application-run summaries."""
+        return {
+            "runs": dashboard_state.run_sessions[:limit],
+            "active_run": dashboard_state.run_session or None,
             "display_timezone": display_timezone,
         }
     
@@ -1514,6 +1527,53 @@ def get_embedded_html() -> str:
             font-family: 'JetBrains Mono', monospace;
             color: var(--accent-green);
         }
+
+        .run-session-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin-top: 0.75rem;
+        }
+
+        .run-session-stat {
+            padding: 0.75rem;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .run-session-label {
+            color: var(--text-secondary);
+            font-size: 0.65rem;
+            letter-spacing: 0.08em;
+        }
+
+        .run-session-value {
+            color: var(--accent-green);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1rem;
+            font-weight: 700;
+            margin-top: 0.25rem;
+        }
+
+        .recent-runs {
+            margin-top: 0.75rem;
+            display: grid;
+            gap: 0.35rem;
+        }
+
+        .recent-run-row {
+            display: grid;
+            grid-template-columns: 0.7fr 1fr 1fr 1fr 1fr;
+            gap: 0.5rem;
+            align-items: center;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            padding: 0.45rem 0.65rem;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+        }
         
         /* Timing Card */
         .timing-card {
@@ -1944,9 +2004,28 @@ def get_embedded_html() -> str:
                     </div>
                 </div>
                 <div class="uptime-display">
-                    <span style="color: var(--text-secondary); font-size: 0.75rem;">UPTIME: </span>
+                    <span style="color: var(--text-secondary); font-size: 0.75rem;">PROCESS UPTIME: </span>
                     <span class="uptime-value" id="uptime">00:00:00</span>
                 </div>
+                <div class="run-session-grid">
+                    <div class="run-session-stat">
+                        <div class="run-session-label">RUN</div>
+                        <div class="run-session-value" id="runNumber">--</div>
+                    </div>
+                    <div class="run-session-stat">
+                        <div class="run-session-label">RUN TIMER</div>
+                        <div class="run-session-value" id="runTimer">00:00:00</div>
+                    </div>
+                    <div class="run-session-stat">
+                        <div class="run-session-label">TRANSACTIONS</div>
+                        <div class="run-session-value" id="runTransactions">0</div>
+                    </div>
+                    <div class="run-session-stat">
+                        <div class="run-session-label">PROJECTED RUN PNL</div>
+                        <div class="run-session-value" id="runPnl">$0.00</div>
+                    </div>
+                </div>
+                <div class="recent-runs" id="recentRuns"></div>
             </div>
         </section>
         
@@ -2552,6 +2631,27 @@ def get_embedded_html() -> str:
             if (state.uptime_seconds) {
                 document.getElementById('uptime').textContent = formatUptime(state.uptime_seconds);
             }
+
+            const run = state.run_session || {};
+            document.getElementById('runNumber').textContent = run.run_number ? `#${run.run_number}` : '--';
+            document.getElementById('runTimer').textContent = formatUptime(run.elapsed_seconds || 0);
+            document.getElementById('runTransactions').textContent = run.transaction_count || 0;
+            const runPnl = Number(run.pnl || 0);
+            const runPnlEl = document.getElementById('runPnl');
+            runPnlEl.textContent = formatCurrency(runPnl);
+            runPnlEl.style.color = runPnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)';
+
+            const runs = state.run_sessions || [];
+            document.getElementById('recentRuns').innerHTML = runs.slice(0, 5).map(item => {
+                const pnl = Number(item.pnl || 0);
+                return `<div class="recent-run-row">
+                    <span>#${Number(item.run_number || 0)}</span>
+                    <span>${escapeHtml(item.status || 'unknown')}</span>
+                    <span>${formatUptime(Number(item.elapsed_seconds || 0))}</span>
+                    <span>${Number(item.transaction_count || 0)} tx</span>
+                    <span style="color: ${pnl >= 0 ? 'var(--accent-green)' : 'var(--accent-red)'}">${formatCurrency(pnl)}</span>
+                </div>`;
+            }).join('');
         }
         
         function formatNumber(num) {

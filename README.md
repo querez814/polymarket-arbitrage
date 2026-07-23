@@ -208,6 +208,11 @@ This mode does not submit exchange orders. Cross-venue paper fills remain
 disabled until an exact Polymarket condition ID and equivalent Kalshi ticker
 have been reviewed and added to the whitelist.
 
+Each launch creates a numbered run in the configured paper SQLite database.
+The dashboard shows the active run timer, projected-at-settlement run PnL,
+transaction count, and five most recent runs. Full run history is available from `GET /api/paper-runs`;
+an uncleanly stopped run is retained as `interrupted` at its last heartbeat.
+
 ### 4. Other Run Modes
 
 ```bash
