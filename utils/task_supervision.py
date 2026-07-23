@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -36,6 +37,7 @@ def is_transient_upstream_error(error: BaseException) -> bool:
             CircuitOpenError,
             asyncio.TimeoutError,
             ConnectionError,
+            ssl.SSLError,
         ),
     )
 

@@ -1,5 +1,6 @@
 import httpx
 import pytest
+import ssl
 
 from utils.task_supervision import RestartingTaskSupervisor
 
@@ -65,3 +66,30 @@ async def test_authentication_failure_is_fatal_and_not_retried():
         await supervisor.run(worker, should_run=lambda: True)
 
     assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_tls_transport_failure_restarts_worker():
+    attempts = 0
+    delays = []
+    running = True
+
+    async def worker():
+        nonlocal attempts, running
+        attempts += 1
+        if attempts == 1:
+            raise ssl.SSLError("tls record failed")
+        running = False
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+
+    supervisor = RestartingTaskSupervisor(
+        "semantic matching",
+        sleep=fake_sleep,
+    )
+
+    await supervisor.run(worker, should_run=lambda: running)
+
+    assert attempts == 2
+    assert delays == [2.0]

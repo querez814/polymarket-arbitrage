@@ -1505,12 +1505,22 @@ class TradingBotWithDashboard:
                 await self._xplat_scan_task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.warning(
+                    "Cross-platform scanner had already failed before shutdown",
+                    exc_info=True,
+                )
         if self._kalshi_monitor_task:
             self._kalshi_monitor_task.cancel()
             try:
                 await self._kalshi_monitor_task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.warning(
+                    "Cross-platform discovery had already failed before shutdown",
+                    exc_info=True,
+                )
         if self._critical_failure_task:
             try:
                 await self._critical_failure_task
