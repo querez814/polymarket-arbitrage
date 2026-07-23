@@ -241,6 +241,24 @@ class OpportunityLogger:
             f"spread={spread:.4f} | bid={bid:.4f} | ask={ask:.4f} | size={suggested_size:.2f}"
         )
 
+    def log_combinatorial_opportunity(
+        self,
+        *,
+        opportunity_id: str,
+        event_id: str,
+        kind: str,
+        edge: float,
+        total_price: float,
+        legs: int,
+        max_size: float,
+    ) -> None:
+        self.logger.log(
+            OPPORTUNITY,
+            f"COMBINATORIAL_ARB | id={opportunity_id} | event={event_id} | "
+            f"type={kind} | edge={edge:.4f} | total={total_price:.4f} | "
+            f"legs={legs} | max_size={max_size:.2f}"
+        )
+
 
 class PerformanceLogger:
     """Logger for performance metrics."""
@@ -272,4 +290,3 @@ class PerformanceLogger:
 trade_logger = TradeLogger()
 opportunity_logger = OpportunityLogger()
 performance_logger = PerformanceLogger()
-

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import math
+from typing import Callable
 
 from core.cross_platform_arb import CrossPlatformOpportunity
 from utils.paper_trade_store import PaperTradeStore
@@ -38,6 +39,10 @@ class PaperLockedArbitrageLedger:
         liquidity_fraction: float = 0.10,
         min_effective_edge: float = 0.01,
         approved_market_ids: set[str] | frozenset[str] | None = None,
+        allow_verified_auto_approval: bool = False,
+        auto_approval_confidence: float = 0.94,
+        pair_cooldown_seconds: float = 300.0,
+        clock: Callable[[], datetime] | None = None,
         store: PaperTradeStore | None = None,
     ):
         values = (
@@ -46,6 +51,8 @@ class PaperLockedArbitrageLedger:
             slippage_buffer_per_contract,
             liquidity_fraction,
             min_effective_edge,
+            auto_approval_confidence,
+            pair_cooldown_seconds,
         )
         if not all(math.isfinite(value) for value in values):
             raise ValueError("paper ledger limits must be finite")
@@ -57,6 +64,10 @@ class PaperLockedArbitrageLedger:
             raise ValueError("liquidity_fraction must be in (0, 1]")
         if slippage_buffer_per_contract < 0 or min_effective_edge < 0:
             raise ValueError("paper edge deductions must be non-negative")
+        if not 0 <= auto_approval_confidence <= 1:
+            raise ValueError("auto_approval_confidence must be in [0, 1]")
+        if pair_cooldown_seconds <= 0:
+            raise ValueError("pair_cooldown_seconds must be positive")
         self.initial_balance = initial_balance
         self.max_plan_capital = max_plan_capital
         self.required_observations = required_observations
@@ -66,11 +77,16 @@ class PaperLockedArbitrageLedger:
         self.approved_market_ids = (
             None if approved_market_ids is None else frozenset(approved_market_ids)
         )
+        self.allow_verified_auto_approval = allow_verified_auto_approval
+        self.auto_approval_confidence = auto_approval_confidence
+        self.pair_cooldown_seconds = pair_cooldown_seconds
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._store = store
         self._confirmations: dict[str, int] = {}
-        self._used_pairs: set[str] = set()
+        self._last_traded_at: dict[str, datetime] = {}
         self._trades: list[PaperLockedTrade] = []
         self._unapproved_opportunity_count = 0
+        self._auto_approved_trade_count = 0
 
     @property
     def committed_capital(self) -> float:
@@ -92,11 +108,27 @@ class PaperLockedArbitrageLedger:
                 opportunity.market_pair.polymarket_execution_id,
                 opportunity.market_pair.kalshi_ticker,
             }
-            if pair_market_ids != self.approved_market_ids:
+            manually_approved = pair_market_ids == self.approved_market_ids
+            auto_approved = (
+                self.allow_verified_auto_approval
+                and opportunity.market_pair.auto_approved
+                and opportunity.market_pair.semantic_relation == "equivalent"
+                and opportunity.market_pair.verification_confidence
+                >= self.auto_approval_confidence
+            )
+            if not manually_approved and not auto_approved:
                 self._unapproved_opportunity_count += 1
                 return None
-        if pair_id in self._used_pairs:
-            return None
+        else:
+            auto_approved = False
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        last_traded_at = self._last_traded_at.get(pair_id)
+        if last_traded_at is not None:
+            elapsed = (now - last_traded_at).total_seconds()
+            if elapsed < self.pair_cooldown_seconds:
+                return None
         effective_edge = opportunity.net_edge - self.slippage_buffer_per_contract
         if (
             not math.isfinite(effective_edge)
@@ -135,12 +167,15 @@ class PaperLockedArbitrageLedger:
             committed_capital=committed,
             projected_locked_pnl=contracts * effective_edge,
             effective_net_edge=effective_edge,
-            observed_at_utc=datetime.now(timezone.utc)
+            observed_at_utc=now
             .isoformat()
             .replace("+00:00", "Z"),
         )
         self._trades.append(trade)
-        self._used_pairs.add(pair_id)
+        self._last_traded_at[pair_id] = now
+        self._confirmations.pop(pair_id, None)
+        if auto_approved:
+            self._auto_approved_trade_count += 1
         if self._store:
             self._store.record_event(
                 event_type="filled",
@@ -187,5 +222,9 @@ class PaperLockedArbitrageLedger:
             "pair_approval_required": self.approved_market_ids is not None,
             "approved_market_ids": sorted(self.approved_market_ids or ()),
             "unapproved_opportunity_count": self._unapproved_opportunity_count,
+            "auto_approved_trade_count": self._auto_approved_trade_count,
+            "verified_auto_approval_enabled": self.allow_verified_auto_approval,
+            "auto_approval_confidence": self.auto_approval_confidence,
+            "pair_cooldown_seconds": self.pair_cooldown_seconds,
             "trades": [asdict(trade) for trade in self._trades[-100:]],
         }

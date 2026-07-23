@@ -38,9 +38,26 @@ from polymarket_client.models import (
     TokenType,
     Trade,
 )
+from utils.http_resilience import EndpointResilience
 
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_api_datetime(value: Any) -> Optional[datetime]:
+    """Parse Gamma's ISO timestamps into timezone-aware UTC datetimes."""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class BasePolymarketClient(ABC):
@@ -170,6 +187,18 @@ class PolymarketClient(BasePolymarketClient):
         # Cache for market data (avoids re-fetching)
         self._markets_cache: dict[str, Market] = {}
         self._token_index: dict[str, tuple[str, TokenType]] = {}
+        self._unavailable_token_ids: set[str] = set()
+        self._resilience: dict[str, EndpointResilience] = {}
+        self._market_list_cache: dict[str, tuple[float, list[Market]]] = {}
+        self.market_list_ttl_seconds = 300.0
+
+    @property
+    def request_metrics(self) -> dict[str, dict[str, float | int | bool]]:
+        """Return read-only REST reliability metrics grouped by API base URL."""
+        return {
+            endpoint: resilience.metrics
+            for endpoint, resilience in self._resilience.items()
+        }
         
     async def __aenter__(self) -> "PolymarketClient":
         await self.connect()
@@ -298,9 +327,13 @@ class PolymarketClient(BasePolymarketClient):
             raise RuntimeError("Polymarket HTTP client failed to initialize")
         
         url = f"{base_url or self.rest_url}{endpoint}"
-        
+        resilience = self._resilience.setdefault(
+            base_url or self.rest_url,
+            EndpointResilience(base_delay=self.retry_delay),
+        )
         for attempt in range(self.max_retries):
             try:
+                resilience.before_request()
                 response = await client.request(
                     method,
                     url,
@@ -308,19 +341,29 @@ class PolymarketClient(BasePolymarketClient):
                     json=json_data,
                 )
                 response.raise_for_status()
+                resilience.record(succeeded=True)
                 return response.json()
             except httpx.HTTPStatusError as e:
-                logger.warning(f"HTTP error {e.response.status_code} on {url}: {e}")
-                if e.response.status_code >= 500:
-                    # Retry on server errors
-                    if attempt < self.max_retries - 1:
-                        await asyncio.sleep(self.retry_delay * (attempt + 1))
-                        continue
+                status = e.response.status_code
+                resilience.record(succeeded=False)
+                log = logger.debug if status == 404 else logger.warning
+                log("HTTP error %s on %s: %s", status, url, e)
+                if (
+                    status in EndpointResilience.RETRYABLE_STATUSES
+                    and attempt < self.max_retries - 1
+                ):
+                    await asyncio.sleep(
+                        resilience.retry_delay(
+                            attempt, e.response.headers.get("Retry-After")
+                        )
+                    )
+                    continue
                 raise
             except httpx.RequestError as e:
+                resilience.record(succeeded=False)
                 logger.warning(f"Request error on {url}: {e}")
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(self.retry_delay * (attempt + 1))
+                    await asyncio.sleep(resilience.retry_delay(attempt))
                     continue
                 raise
     
@@ -333,6 +376,10 @@ class PolymarketClient(BasePolymarketClient):
         Uses pagination to get ALL active markets across all categories!
         """
         try:
+            cache_key = json.dumps(filters or {}, sort_keys=True, default=str)
+            cached = self._market_list_cache.get(cache_key)
+            if cached and time.monotonic() - cached[0] < self.market_list_ttl_seconds:
+                return list(cached[1])
             params = filters.copy() if filters else {}
             params.setdefault("closed", "false")
             params.setdefault("order", "volume24hr")
@@ -402,6 +449,7 @@ class PolymarketClient(BasePolymarketClient):
                     break
             
             logger.info(f"=== TOTAL: {len(all_markets)} active markets with valid tokens ===")
+            self._market_list_cache[cache_key] = (time.monotonic(), list(all_markets))
             return all_markets
             
         except Exception as e:
@@ -468,6 +516,14 @@ class PolymarketClient(BasePolymarketClient):
             # Parse outcome prices - JSON string like '[0.65, 0.35]'
             outcome_prices_str = data.get("outcomePrices", "")
             
+            raw_events = data.get("events")
+            parent_event = (
+                raw_events[0]
+                if isinstance(raw_events, list)
+                and raw_events
+                and isinstance(raw_events[0], dict)
+                else {}
+            )
             return Market(
                 market_id=market_id,
                 condition_id=condition_id,
@@ -480,7 +536,30 @@ class PolymarketClient(BasePolymarketClient):
                 resolved=data.get("umaResolutionStatus") == "resolved",
                 volume_24h=float(data.get("volume24hr") or data.get("volume24hrClob") or 0),
                 liquidity=float(data.get("liquidityNum") or data.get("liquidityClob") or 0),
+                created_at=_parse_api_datetime(
+                    data.get("createdAt") or data.get("created_at")
+                ),
+                end_date=_parse_api_datetime(
+                    data.get("endDate")
+                    or data.get("endDateIso")
+                    or data.get("end_date")
+                ),
                 category=data.get("category", "") or "",
+                event_id=str(
+                    data.get("eventId")
+                    or parent_event.get("id")
+                    or parent_event.get("slug")
+                    or ""
+                ),
+                event_title=str(parent_event.get("title") or ""),
+                outcome_label=str(
+                    data.get("groupItemTitle") or data.get("outcomeLabel") or ""
+                ),
+                negative_risk=bool(
+                    data.get("negRisk")
+                    or data.get("negativeRisk")
+                    or parent_event.get("negRisk")
+                ),
             )
         except Exception as e:
             logger.warning(f"Failed to parse market: {e}")
@@ -688,6 +767,8 @@ class PolymarketClient(BasePolymarketClient):
     
     async def _fetch_token_orderbook(self, token_id: str, token_type: TokenType) -> TokenOrderBook:
         """Fetch order book for a single token from CLOB API."""
+        if token_id in self._unavailable_token_ids:
+            return TokenOrderBook(token_type=token_type)
         try:
             data = await self._request(
                 "GET",
@@ -718,6 +799,16 @@ class PolymarketClient(BasePolymarketClient):
                 asks=OrderBookSide(levels=asks),
             )
             
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                self._unavailable_token_ids.add(token_id)
+                logger.info(
+                    "Suppressing stale Polymarket token with no orderbook: %s",
+                    token_id,
+                )
+            else:
+                logger.warning(f"Failed to fetch orderbook for token {token_id}: {e}")
+            return TokenOrderBook(token_type=token_type)
         except Exception as e:
             logger.warning(f"Failed to fetch orderbook for token {token_id}: {e}")
             # Return empty book
@@ -796,7 +887,14 @@ class PolymarketClient(BasePolymarketClient):
         for market_id in market_ids:
             if market_id in self._markets_cache:
                 market = self._markets_cache[market_id]
-                if market.yes_token_id and market.no_token_id:
+                if (
+                    market.active
+                    and not market.closed
+                    and market.yes_token_id
+                    and market.no_token_id
+                    and market.yes_token_id not in self._unavailable_token_ids
+                    and market.no_token_id not in self._unavailable_token_ids
+                ):
                     market_tokens[market_id] = (market.yes_token_id, market.no_token_id)
         
         logger.info(f"Have token IDs for {len(market_tokens)} markets (from cache)")

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -209,6 +210,22 @@ class PaperTradeStore:
                 expired_count INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS semantic_pair_reviews (
+                pair_id TEXT PRIMARY KEY,
+                polymarket_id TEXT NOT NULL,
+                kalshi_ticker TEXT NOT NULL,
+                polymarket_question TEXT NOT NULL,
+                kalshi_title TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                retrieval_score REAL NOT NULL,
+                verification_confidence REAL NOT NULL,
+                verification_reasons_json TEXT NOT NULL,
+                approval_status TEXT NOT NULL,
+                first_seen_at_utc TEXT NOT NULL,
+                last_seen_at_utc TEXT NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1
+            );
+
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_event_at
                 ON paper_trade_events (event_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_order_id
@@ -217,6 +234,8 @@ class PaperTradeStore:
                 ON paper_trade_events (event_type);
             CREATE INDEX IF NOT EXISTS idx_paper_run_sessions_started_at
                 ON paper_run_sessions (started_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_semantic_pair_reviews_status
+                ON semantic_pair_reviews (approval_status, verification_confidence DESC);
             """)
         columns = {
             row["name"]
@@ -244,6 +263,90 @@ class PaperTradeStore:
             END
             """)
         self._conn.commit()
+
+    def record_pair_review(
+        self,
+        *,
+        pair_id: str,
+        polymarket_id: str,
+        kalshi_ticker: str,
+        polymarket_question: str,
+        kalshi_title: str,
+        relation: str,
+        retrieval_score: float,
+        verification_confidence: float,
+        verification_reasons: tuple[str, ...],
+        approval_status: str,
+    ) -> None:
+        """Upsert one semantic verification result into the operator review queue."""
+        if relation not in {
+            "equivalent",
+            "subset",
+            "superset",
+            "independent",
+            "unverified",
+        }:
+            raise ValueError("unknown semantic relation")
+        if approval_status not in {"auto_approved", "manual_review", "rejected"}:
+            raise ValueError("unknown semantic approval status")
+        if not 0 <= retrieval_score <= 1 or not 0 <= verification_confidence <= 1:
+            raise ValueError("semantic scores must be in [0, 1]")
+        now = utc_now_iso()
+        self._conn.execute(
+            """
+            INSERT INTO semantic_pair_reviews (
+                pair_id, polymarket_id, kalshi_ticker, polymarket_question,
+                kalshi_title, relation, retrieval_score, verification_confidence,
+                verification_reasons_json, approval_status, first_seen_at_utc,
+                last_seen_at_utc, seen_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(pair_id) DO UPDATE SET
+                polymarket_id=excluded.polymarket_id,
+                kalshi_ticker=excluded.kalshi_ticker,
+                polymarket_question=excluded.polymarket_question,
+                kalshi_title=excluded.kalshi_title,
+                relation=excluded.relation,
+                retrieval_score=excluded.retrieval_score,
+                verification_confidence=excluded.verification_confidence,
+                verification_reasons_json=excluded.verification_reasons_json,
+                approval_status=excluded.approval_status,
+                last_seen_at_utc=excluded.last_seen_at_utc,
+                seen_count=semantic_pair_reviews.seen_count + 1
+            """,
+            (
+                pair_id,
+                polymarket_id,
+                kalshi_ticker,
+                polymarket_question,
+                kalshi_title,
+                relation,
+                retrieval_score,
+                verification_confidence,
+                json.dumps(list(verification_reasons), separators=(",", ":")),
+                approval_status,
+                now,
+                now,
+            ),
+        )
+        self._conn.commit()
+
+    def recent_pair_reviews(self, limit: int = 200) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT * FROM semantic_pair_reviews
+            ORDER BY last_seen_at_utc DESC, verification_confidence DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 1000)),),
+        ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            result = dict(row)
+            result["verification_reasons"] = json.loads(
+                result.pop("verification_reasons_json")
+            )
+            results.append(result)
+        return results
 
     @staticmethod
     def _as_utc(value: Optional[datetime]) -> datetime:

@@ -137,6 +137,19 @@ class ModeConfig:
     paper_confirmation_observations: int = 2
     paper_slippage_buffer_per_contract: float = 0.02
     paper_liquidity_fraction: float = 0.10
+    semantic_matching_enabled: bool = False
+    semantic_embedding_model: str = "text-embedding-3-large"
+    semantic_embedding_dimensions: int = 1024
+    semantic_verification_model: str = "gpt-5.6-sol"
+    semantic_top_k: int = 20
+    semantic_retrieval_floor: float = 0.55
+    semantic_auto_approve_confidence: float = 0.94
+    semantic_max_verification_candidates: int = 500
+    semantic_cache_path: str = "data/semantic_cache.db"
+    paper_pair_cooldown_seconds: float = 300.0
+    hot_pair_limit: int = 25
+    hot_pair_scan_seconds: float = 2.0
+    cold_pair_scan_seconds: float = 30.0
 
 
 @dataclass
@@ -632,8 +645,8 @@ def validate_config(config: BotConfig) -> None:
             errors.append("paper locked arbitrage requires both cross-platform venues")
         if config.mode.simulate_fills:
             errors.append("paper locked arbitrage cannot use random simulated fills")
-        if config.trading.bundle_arb_enabled or config.trading.mm_enabled:
-            errors.append("paper locked arbitrage requires legacy strategies disabled")
+        if config.trading.mm_enabled:
+            errors.append("paper locked arbitrage requires market making disabled")
         if config.mode.paper_confirmation_observations < 2:
             errors.append("paper_confirmation_observations must be at least 2")
         if (
@@ -650,6 +663,27 @@ def validate_config(config: BotConfig) -> None:
             errors.append("paper_liquidity_fraction must be between 0 and 1")
         if config.risk.max_order_notional > config.mode.dry_run_initial_balance:
             errors.append("paper max_order_notional cannot exceed the paper bankroll")
+    if config.mode.semantic_matching_enabled:
+        if config.mode.semantic_embedding_dimensions <= 0:
+            errors.append("semantic_embedding_dimensions must be positive")
+        if config.mode.semantic_top_k <= 0:
+            errors.append("semantic_top_k must be positive")
+        if config.mode.semantic_max_verification_candidates <= 0:
+            errors.append("semantic_max_verification_candidates must be positive")
+        for name in ("semantic_retrieval_floor", "semantic_auto_approve_confidence"):
+            value = getattr(config.mode, name)
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                errors.append(f"{name} must be between 0 and 1")
+    for name in (
+        "paper_pair_cooldown_seconds",
+        "hot_pair_scan_seconds",
+        "cold_pair_scan_seconds",
+    ):
+        value = getattr(config.mode, name)
+        if not math.isfinite(value) or value <= 0:
+            errors.append(f"{name} must be finite and positive")
+    if config.mode.hot_pair_limit <= 0:
+        errors.append("hot_pair_limit must be positive")
 
     if not config.production.execution_journal_path.strip():
         errors.append("production.execution_journal_path must be non-empty")

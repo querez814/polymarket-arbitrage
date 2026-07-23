@@ -3,7 +3,7 @@
 trading:
   risk_profile: conservative
   min_edge: 0.02
-  bundle_arb_enabled: false
+  bundle_arb_enabled: true
   mm_enabled: false
   cross_platform_max_order_size: 50
   cross_platform_edge_size_multiplier: 4
@@ -20,11 +20,12 @@ risk:
   max_daily_loss: 50
   max_drawdown_pct: 0.10
   trade_only_high_volume: false
-  # Empty means observation-only. Add exactly one reviewed Polymarket condition
-  # id and its equivalent Kalshi ticker before shadow fills can be recorded.
+  # Empty permits only strict semantic auto-approval in dry-run. Live execution
+  # still requires an explicit two-venue whitelist and remains disabled below.
   whitelist: []
   blacklist: []
   strategy_exposure_limits:
+    bundle_arb: 100
     cross_platform_arb: 1000
   kill_switch_enabled: true
 
@@ -34,15 +35,29 @@ mode:
   cross_platform_enabled: true
   cross_platform_execution_enabled: false
   kalshi_enabled: true
-  min_match_similarity: 0.90
-  cross_platform_refresh_seconds: 300
+  min_match_similarity: 0.55
+  cross_platform_refresh_seconds: 1800
   dry_run_initial_balance: 1000
   simulate_fills: false
   fill_probability: 0
   paper_locked_arb_enabled: true
-  paper_confirmation_observations: 3
+  paper_confirmation_observations: 2
   paper_slippage_buffer_per_contract: 0.02
   paper_liquidity_fraction: 0.10
+  paper_pair_cooldown_seconds: 300
+  semantic_matching_enabled: true
+  semantic_embedding_model: text-embedding-3-large
+  semantic_embedding_dimensions: 1024
+  semantic_verification_model: gpt-5.6-sol
+  semantic_top_k: 20
+  semantic_retrieval_floor: 0.55
+  # Paper-only exploration threshold. Live execution still requires whitelist.
+  semantic_auto_approve_confidence: 0.90
+  semantic_max_verification_candidates: 500
+  semantic_cache_path: data/semantic_cache.db
+  hot_pair_limit: 25
+  hot_pair_scan_seconds: 2
+  cold_pair_scan_seconds: 30
 
 logging:
   console_level: INFO

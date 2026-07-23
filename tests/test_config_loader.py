@@ -732,8 +732,11 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.mode.dry_run_initial_balance == 1_000
     assert config.mode.paper_locked_arb_enabled is True
     assert config.mode.simulate_fills is False
-    assert config.trading.bundle_arb_enabled is False
+    assert config.trading.bundle_arb_enabled is True
     assert config.trading.mm_enabled is False
+    assert config.mode.semantic_matching_enabled is True
+    assert config.mode.semantic_top_k == 20
+    assert config.mode.semantic_auto_approve_confidence == pytest.approx(0.90)
 
 
 def test_paper_locked_arb_rejects_random_fill_mode():

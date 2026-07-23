@@ -218,3 +218,31 @@ def test_database_allows_only_one_run_writer_process(tmp_path):
 
     reopened = PaperTradeStore(str(db_path))
     reopened.close()
+
+
+def test_semantic_pair_review_queue_is_persistent_and_upserted(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+
+    for score, confidence, reasons in (
+        (0.91, 0.96, ("same cutoff",)),
+        (0.93, 0.97, ("same cutoff", "same resolution")),
+    ):
+        store.record_pair_review(
+            pair_id="poly:1|kalshi:KX-1",
+            polymarket_id="condition-1",
+            kalshi_ticker="KX-1",
+            polymarket_question="Will Alice win?",
+            kalshi_title="Alice wins?",
+            relation="equivalent",
+            retrieval_score=score,
+            verification_confidence=confidence,
+            verification_reasons=reasons,
+            approval_status="auto_approved",
+        )
+
+    rows = store.recent_pair_reviews()
+    assert len(rows) == 1
+    assert rows[0]["verification_confidence"] == pytest.approx(0.97)
+    assert rows[0]["approval_status"] == "auto_approved"
+    assert rows[0]["seen_count"] == 2
+    store.close()

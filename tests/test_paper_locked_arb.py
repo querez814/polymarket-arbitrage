@@ -1,6 +1,7 @@
 from core.cross_platform_arb import CrossPlatformOpportunity, MarketPair
 from core.paper_locked_arb import PaperLockedArbitrageLedger
 import pytest
+from datetime import datetime, timedelta, timezone
 
 
 def _opportunity(pair_id: str = "poly-1") -> CrossPlatformOpportunity:
@@ -87,3 +88,58 @@ def test_shadow_ledger_rejects_pairs_until_both_market_ids_are_approved():
     )
 
     assert approved.observe(opportunity) is not None
+
+
+def test_strictly_verified_pair_can_enter_paper_ledger_without_yaml_edit():
+    opportunity = _opportunity()
+    opportunity.market_pair.auto_approved = True
+    opportunity.market_pair.semantic_relation = "equivalent"
+    opportunity.market_pair.verification_confidence = 0.97
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        required_observations=1,
+        approved_market_ids=frozenset(),
+        allow_verified_auto_approval=True,
+        auto_approval_confidence=0.94,
+    )
+
+    assert ledger.observe(opportunity) is not None
+    assert ledger.summary()["auto_approved_trade_count"] == 1
+
+
+def test_embedding_similarity_alone_never_authorizes_paper_trade():
+    opportunity = _opportunity()
+    opportunity.market_pair.similarity_score = 0.999
+    opportunity.market_pair.semantic_relation = "unverified"
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        required_observations=1,
+        approved_market_ids=frozenset(),
+        allow_verified_auto_approval=True,
+    )
+
+    assert ledger.observe(opportunity) is None
+    assert ledger.summary()["unapproved_opportunity_count"] == 1
+
+
+def test_pair_can_trade_again_only_after_configured_cooldown():
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+
+    def clock():
+        return now
+
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        required_observations=1,
+        pair_cooldown_seconds=60,
+        clock=clock,
+    )
+    opportunity = _opportunity()
+
+    assert ledger.observe(opportunity) is not None
+    assert ledger.observe(opportunity) is None
+    now += timedelta(seconds=61)
+    assert ledger.observe(opportunity) is not None

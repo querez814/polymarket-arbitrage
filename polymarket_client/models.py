@@ -189,6 +189,10 @@ class Market:
     # Metadata
     category: str = ""
     tags: list[str] = field(default_factory=list)
+    event_id: str = ""
+    event_title: str = ""
+    outcome_label: str = ""
+    negative_risk: bool = False
 
 
 @dataclass

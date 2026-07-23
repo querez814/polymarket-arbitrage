@@ -204,9 +204,19 @@ uv run --with-requirements requirements.txt python run_with_dashboard.py \
   --config config.paper.production.yaml --port 8888
 ```
 
-This mode does not submit exchange orders. Cross-venue paper fills remain
-disabled until an exact Polymarket condition ID and equivalent Kalshi ticker
-have been reviewed and added to the whitelist.
+This mode does not submit exchange orders. It requires `OPENAI_API_KEY` in an
+ignored `.env` file and uses a three-stage semantic matcher: category/time
+filtering, cached `text-embedding-3-large` retrieval, then a structured
+resolution-semantics check. Only equivalent pairs at or above the configured
+strict confidence threshold can auto-approve a simulated paper fill; lower
+confidence candidates are persisted to SQLite for review. Live execution still
+requires an explicit two-venue whitelist and remains disabled in this config.
+
+Verified pairs are evaluated independently from the slower discovery refresh:
+the highest-priority hot pairs are checked every two seconds and the remaining
+cold pairs every 30 seconds. The dashboard state includes semantic funnel,
+embedding-cache, and venue REST reliability metrics. Same-platform negative-risk
+bundles are detection/logging only and do not construct orders.
 
 Each launch creates a numbered run in the configured paper SQLite database.
 The dashboard shows the active run timer, projected-at-settlement run PnL,

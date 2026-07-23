@@ -37,6 +37,7 @@ from kalshi_client.orders import (
     KalshiOrdersPage,
 )
 from polymarket_client.models import PriceLevel, OrderBook
+from utils.http_resilience import EndpointResilience
 
 logger = logging.getLogger(__name__)
 _FIXED_POINT_PATTERN = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
@@ -142,6 +143,16 @@ class KalshiClient:
         self.dry_run = dry_run
         self._client: Optional[httpx.AsyncClient] = None
         self._markets_cache: dict[str, KalshiMarket] = {}
+        self._resilience = EndpointResilience()
+        self._event_market_cache: dict[
+            tuple[str, int, int], tuple[float, list[KalshiMarket]]
+        ] = {}
+        self.market_list_ttl_seconds = 300.0
+
+    @property
+    def request_metrics(self) -> dict[str, float | int | bool]:
+        """Return aggregate REST reliability metrics for operational telemetry."""
+        return self._resilience.metrics
 
     @property
     def is_authenticated(self) -> bool:
@@ -180,24 +191,34 @@ class KalshiClient:
 
         for attempt in range(self.max_retries):
             try:
+                self._resilience.before_request()
                 response = await self._client.get(url, params=params)
                 response.raise_for_status()
+                self._resilience.record(succeeded=True)
                 return response.json()
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:  # Rate limited
-                    wait_time = 2**attempt
-                    logger.warning(f"Rate limited, waiting {wait_time}s before retry")
+                status = e.response.status_code
+                self._resilience.record(succeeded=False)
+                if (
+                    status in EndpointResilience.RETRYABLE_STATUSES
+                    and attempt < self.max_retries - 1
+                ):
+                    wait_time = self._resilience.retry_delay(
+                        attempt, e.response.headers.get("Retry-After")
+                    )
+                    logger.warning("Kalshi HTTP %s; retrying in %.2fs", status, wait_time)
                     await asyncio.sleep(wait_time)
-                elif e.response.status_code == 404:
+                elif status == 404:
                     logger.debug(f"Not found: {endpoint}")
                     return {}
                 else:
-                    logger.error(f"HTTP error {e.response.status_code}: {e}")
+                    logger.error(f"HTTP error {status}: {e}")
                     raise
             except httpx.RequestError as e:
+                self._resilience.record(succeeded=False)
                 logger.warning(f"Request error (attempt {attempt + 1}): {e}")
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(self._resilience.retry_delay(attempt))
                 else:
                     raise
 
@@ -240,6 +261,7 @@ class KalshiClient:
 
         for attempt in range(self.max_retries):
             try:
+                self._resilience.before_request()
                 response = await self._client.request(
                     method.upper(),
                     url,
@@ -248,24 +270,33 @@ class KalshiClient:
                     headers=headers,
                 )
                 response.raise_for_status()
+                self._resilience.record(succeeded=True)
                 if not response.content:
                     return {}
                 return response.json()
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    wait_time = 2**attempt
-                    logger.warning(f"Rate limited, waiting {wait_time}s before retry")
+                status = e.response.status_code
+                self._resilience.record(succeeded=False)
+                if (
+                    status in EndpointResilience.RETRYABLE_STATUSES
+                    and attempt < self.max_retries - 1
+                ):
+                    wait_time = self._resilience.retry_delay(
+                        attempt, e.response.headers.get("Retry-After")
+                    )
+                    logger.warning("Kalshi HTTP %s; retrying in %.2fs", status, wait_time)
                     await asyncio.sleep(wait_time)
-                elif e.response.status_code == 404:
+                elif status == 404:
                     logger.debug(f"Not found: {endpoint}")
                     return {}
                 else:
-                    logger.error(f"HTTP error {e.response.status_code}: {e}")
+                    logger.error(f"HTTP error {status}: {e}")
                     raise
             except httpx.RequestError as e:
+                self._resilience.record(succeeded=False)
                 logger.warning(f"Request error (attempt {attempt + 1}): {e}")
                 if attempt < self.max_retries - 1:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(self._resilience.retry_delay(attempt))
                 else:
                     raise
 
@@ -589,6 +620,12 @@ class KalshiClient:
         """Page through ordinary events and return their enriched markets."""
         if max_events <= 0 or max_markets <= 0:
             raise ValueError("event and market limits must be positive")
+        cache_key = (status, max_events, max_markets)
+        cached = self._event_market_cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < self.market_list_ttl_seconds:
+            if on_progress:
+                on_progress(len(cached[1]))
+            return list(cached[1])
         all_markets: list[KalshiMarket] = []
         seen_tickers: set[str] = set()
         cursor: Optional[str] = None
@@ -614,6 +651,7 @@ class KalshiClient:
                 break
             cursor = next_cursor
             await asyncio.sleep(0.2)
+        self._event_market_cache[cache_key] = (time.monotonic(), list(all_markets))
         return all_markets
 
     async def get_event(self, event_ticker: str) -> Optional[KalshiEvent]:

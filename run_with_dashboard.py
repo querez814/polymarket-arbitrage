@@ -15,13 +15,16 @@ Usage:
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import uvicorn
+from dotenv import load_dotenv
 
 from polymarket_client import (
     PolymarketClient,
@@ -30,6 +33,7 @@ from polymarket_client import (
 )
 from kalshi_client import KalshiClient, KalshiPrivateStream, KalshiVenueAdapter
 from core.data_feed import DataFeed
+from core.combinatorial_arb import SamePlatformArbitrageDetector
 from core.arb_engine import ArbEngine, ArbConfig
 from core.execution import ExecutionEngine, ExecutionConfig
 from core.risk_manager import RiskManager, RiskConfig
@@ -42,13 +46,19 @@ from core.two_leg_execution import ExecutionPhase
 from core.operations import PersistentOperatorControls, WebhookAlertSink
 from core.production_runtime import ProductionArbitrageRuntime, RuntimeNotReadyError
 from core.paper_locked_arb import PaperLockedArbitrageLedger
+from core.pair_monitoring import PairTierMonitor
+from core.semantic_market_matching import (
+    OpenAIEmbeddingClient,
+    OpenAIResolutionVerifier,
+    SemanticMarketPipeline,
+)
 from utils.config_loader import (
     BotConfig,
     load_config,
     resolve_runtime_secrets,
     validate_config,
 )
-from utils.logging_utils import setup_logging
+from utils.logging_utils import opportunity_logger, setup_logging
 from utils.paper_trade_store import PaperTradeStore
 from dashboard.server import app, dashboard_state, configure_dashboard_runtime
 from dashboard.integration import DashboardIntegration
@@ -75,6 +85,8 @@ class TradingBotWithDashboard:
         self.decision_journal = DecisionJournal(max_records=1000)
         self.paper_trade_store = None
         self.paper_locked_arb = None
+        self.same_platform_detector = None
+        self._last_combinatorial_scan = 0.0
         self._startup_complete = False
         self._run_failed = False
 
@@ -88,6 +100,7 @@ class TradingBotWithDashboard:
         self._kalshi_monitor_task = None
         self._critical_failure_task = None
         self.production_runtime = None
+        self.pair_monitor = None
         self.execution_journal = None
         self.operator_controls = None
 
@@ -167,6 +180,15 @@ class TradingBotWithDashboard:
                     liquidity_fraction=self.config.mode.paper_liquidity_fraction,
                     min_effective_edge=self.config.trading.min_edge,
                     approved_market_ids=set(self.config.risk.whitelist),
+                    allow_verified_auto_approval=(
+                        self.config.mode.semantic_matching_enabled
+                    ),
+                    auto_approval_confidence=(
+                        self.config.mode.semantic_auto_approve_confidence
+                    ),
+                    pair_cooldown_seconds=(
+                        self.config.mode.paper_pair_cooldown_seconds
+                    ),
                     store=self.paper_trade_store,
                 )
                 dashboard_state.cross_platform["paper_performance"] = (
@@ -204,8 +226,47 @@ class TradingBotWithDashboard:
                     seconds=self.config.production.economics_max_age_seconds
                 ),
             )
-            self.market_matcher = self.cross_platform_engine.matcher
-            self.market_matcher.min_similarity = self.config.mode.min_match_similarity
+            if self.config.mode.semantic_matching_enabled:
+                api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+                if not api_key:
+                    raise RuntimeError(
+                        "OPENAI_API_KEY is required when semantic matching is enabled"
+                    )
+                semantic_pipeline = SemanticMarketPipeline(
+                    embedder=OpenAIEmbeddingClient(
+                        api_key=api_key,
+                        cache_path=self.config.mode.semantic_cache_path,
+                        model=self.config.mode.semantic_embedding_model,
+                        dimensions=self.config.mode.semantic_embedding_dimensions,
+                    ),
+                    verifier=OpenAIResolutionVerifier(
+                        api_key=api_key,
+                        model=self.config.mode.semantic_verification_model,
+                    ),
+                    top_k=self.config.mode.semantic_top_k,
+                    retrieval_floor=self.config.mode.semantic_retrieval_floor,
+                    auto_approve_confidence=(
+                        self.config.mode.semantic_auto_approve_confidence
+                    ),
+                    max_verification_candidates=(
+                        self.config.mode.semantic_max_verification_candidates
+                    ),
+                )
+                self.market_matcher = MarketMatcher(
+                    min_similarity=self.config.mode.min_match_similarity,
+                    semantic_pipeline=semantic_pipeline,
+                )
+                self.cross_platform_engine.matcher = self.market_matcher
+            else:
+                self.market_matcher = self.cross_platform_engine.matcher
+                self.market_matcher.min_similarity = (
+                    self.config.mode.min_match_similarity
+                )
+            self.pair_monitor = PairTierMonitor(
+                hot_limit=self.config.mode.hot_pair_limit,
+                hot_interval=self.config.mode.hot_pair_scan_seconds,
+                cold_interval=self.config.mode.cold_pair_scan_seconds,
+            )
 
             if (
                 self.config.is_live
@@ -297,6 +358,14 @@ class TradingBotWithDashboard:
             ),
             decision_journal=self.decision_journal,
         )
+        if self.config.trading.bundle_arb_enabled:
+            self.same_platform_detector = SamePlatformArbitrageDetector(
+                min_edge=self.config.trading.min_edge,
+                taker_fee_rate=150 / 10_000,
+                cooldown_seconds=max(
+                    5.0, self.config.trading.bundle_cooldown_seconds
+                ),
+            )
 
         # Initialize data feed
         market_ids = self.config.trading.markets.copy()
@@ -456,6 +525,32 @@ class TradingBotWithDashboard:
         # Analyze for opportunities
         signals = self.arb_engine.analyze(market_state)
 
+        now = time.monotonic()
+        if (
+            self.same_platform_detector is not None
+            and self.data_feed is not None
+            and now - self._last_combinatorial_scan >= 2.0
+        ):
+            self._last_combinatorial_scan = now
+            for opportunity in self.same_platform_detector.detect(
+                self.data_feed.get_all_market_states()
+            ):
+                opportunity_logger.log_combinatorial_opportunity(
+                    opportunity_id=opportunity.opportunity_id,
+                    event_id=opportunity.event_id,
+                    kind=opportunity.kind,
+                    edge=opportunity.net_edge,
+                    total_price=opportunity.total_price,
+                    legs=len(opportunity.legs),
+                    max_size=opportunity.max_size,
+                )
+                self.dashboard_integration.add_opportunity(
+                    opportunity_type=opportunity.kind,
+                    market_id=opportunity.event_id,
+                    edge=opportunity.net_edge,
+                    suggested_size=opportunity.max_size,
+                )
+
         for signal in signals:
             # Add to dashboard
             if signal.opportunity:
@@ -612,6 +707,12 @@ class TradingBotWithDashboard:
 
             dashboard_state.cross_platform["matching_progress"] = 100
             dashboard_state.cross_platform["matched_pairs"] = len(self._matched_pairs)
+            pipeline_metrics = getattr(self.market_matcher, "last_pipeline_metrics", None)
+            if pipeline_metrics is not None:
+                dashboard_state.cross_platform["semantic_metrics"] = {
+                    key: value
+                    for key, value in vars(pipeline_metrics).items()
+                }
             dashboard_state.cross_platform["last_matching_completed_at"] = (
                 datetime.utcnow().isoformat()
             )
@@ -627,6 +728,24 @@ class TradingBotWithDashboard:
                 for pair in self._matched_pairs[:50]
             ]
             review_candidates = self.market_matcher.get_review_candidates()
+            if self.paper_trade_store:
+                for pair in [*self._matched_pairs, *review_candidates]:
+                    self.paper_trade_store.record_pair_review(
+                        pair_id=pair.pair_id,
+                        polymarket_id=pair.polymarket_execution_id,
+                        kalshi_ticker=pair.kalshi_ticker,
+                        polymarket_question=pair.polymarket_question,
+                        kalshi_title=pair.kalshi_title,
+                        relation=pair.semantic_relation,
+                        retrieval_score=pair.similarity_score,
+                        verification_confidence=pair.verification_confidence,
+                        verification_reasons=pair.verification_reasons,
+                        approval_status=(
+                            "auto_approved"
+                            if pair.auto_approved
+                            else "manual_review"
+                        ),
+                    )
             dashboard_state.cross_platform["review_candidate_count"] = len(
                 review_candidates
             )
@@ -798,7 +917,29 @@ class TradingBotWithDashboard:
         while self._running:
             started = datetime.utcnow()
             try:
-                for pair in list(self._matched_pairs):
+                due_pairs = (
+                    self.pair_monitor.due_pairs(list(self._matched_pairs))
+                    if self.pair_monitor
+                    else []
+                )
+                dashboard_state.cross_platform["hot_pairs_due"] = sum(
+                    1 for item in due_pairs if item.tier == "hot"
+                )
+                dashboard_state.cross_platform["cold_pairs_due"] = sum(
+                    1 for item in due_pairs if item.tier == "cold"
+                )
+                dashboard_state.cross_platform["kalshi_rest_metrics"] = (
+                    self.kalshi_client.request_metrics
+                )
+                if self.client:
+                    dashboard_state.cross_platform["polymarket_rest_metrics"] = (
+                        self.client.request_metrics
+                    )
+                if not due_pairs:
+                    await asyncio.sleep(0.25)
+                    continue
+                for due_pair in due_pairs:
+                    pair = due_pair.pair
                     if not self._running:
                         break
 
@@ -815,6 +956,10 @@ class TradingBotWithDashboard:
                             market_pair=pair,
                             evidence={"similarity": pair.similarity_score},
                         )
+                        if self.pair_monitor:
+                            self.pair_monitor.mark_evaluated(
+                                pair.pair_id, observed_net_edge=0.0
+                            )
                         continue
 
                     kalshi_ob = await self.kalshi_client.get_orderbook_unified(
@@ -842,9 +987,14 @@ class TradingBotWithDashboard:
                                 "kalshi_ticker": pair.kalshi_ticker,
                             },
                         )
+                        if self.pair_monitor:
+                            self.pair_monitor.mark_evaluated(
+                                pair.pair_id, observed_net_edge=0.0
+                            )
                         continue
 
                     try:
+                        evaluation_started = time.monotonic()
                         opportunity, evaluation = (
                             await self.evaluate_cross_platform_pair(
                                 pair, poly_ob, kalshi_ob
@@ -862,6 +1012,21 @@ class TradingBotWithDashboard:
                         )
                         await asyncio.sleep(2.0)
                         continue
+                    observed_net_edge = self.cross_platform_engine.estimate_best_net_edge(
+                        poly_ob, kalshi_ob
+                    )
+                    if self.pair_monitor:
+                        self.pair_monitor.mark_evaluated(
+                            pair.pair_id,
+                            observed_net_edge=observed_net_edge,
+                            opportunity=opportunity is not None,
+                        )
+                    dashboard_state.cross_platform["last_evaluation_latency_ms"] = round(
+                        (time.monotonic() - evaluation_started) * 1000, 2
+                    )
+                    dashboard_state.cross_platform["last_evaluation_tier"] = (
+                        due_pair.tier
+                    )
                     evidence = {
                         "similarity": pair.similarity_score,
                         "polymarket_yes_bid": poly_ob.best_bid_yes,
@@ -939,7 +1104,7 @@ class TradingBotWithDashboard:
 
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1140,6 +1305,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """Main entry point."""
+    load_dotenv()
     parser = argparse.ArgumentParser(
         description="Polymarket Arbitrage Bot with Live Dashboard"
     )

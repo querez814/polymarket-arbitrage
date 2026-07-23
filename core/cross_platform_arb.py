@@ -14,9 +14,17 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from difflib import SequenceMatcher
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
+from core.semantic_market_matching import (
+    LocalSemanticEmbedder,
+    PipelineMetrics,
+    SemanticMarketPipeline,
+    SemanticRelation,
+    deterministic_verification,
+    kalshi_document,
+    polymarket_document,
+)
 from polymarket_client.models import Market, OrderBook, Opportunity, OpportunityType
 
 if TYPE_CHECKING:
@@ -35,6 +43,10 @@ class MarketPair:
     similarity_score: float
     category: str = ""
     polymarket_condition_id: str = ""
+    semantic_relation: str = "unverified"
+    verification_confidence: float = 0.0
+    verification_reasons: tuple[str, ...] = ()
+    auto_approved: bool = False
     
     # Timestamps
     matched_at: datetime = field(default_factory=datetime.utcnow)
@@ -181,7 +193,12 @@ class MarketMatcher:
         "san antonio spurs": ["spurs", "san antonio"],
     }
     
-    def __init__(self, min_similarity: float = 0.5):  # Higher threshold for quality
+    def __init__(
+        self,
+        min_similarity: float = 0.5,
+        *,
+        semantic_pipeline: SemanticMarketPipeline | None = None,
+    ):
         """
         Initialize matcher.
         
@@ -191,6 +208,10 @@ class MarketMatcher:
         self.min_similarity = min_similarity
         self._matched_pairs: dict[str, MarketPair] = {}
         self._review_candidates: dict[str, MarketPair] = {}
+        self.semantic_pipeline = semantic_pipeline or SemanticMarketPipeline(
+            retrieval_floor=max(0.0, min(0.55, min_similarity))
+        )
+        self.last_pipeline_metrics: PipelineMetrics | None = None
         
         # Build reverse lookup for team names
         self._team_lookup = {}
@@ -397,9 +418,15 @@ class MarketMatcher:
         # Normalize texts
         norm_poly = self.normalize_text(polymarket_question)
         norm_kalshi = self.normalize_text(kalshi_title)
-        
-        # Base text similarity using SequenceMatcher (fuzzy matching)
-        text_sim = SequenceMatcher(None, norm_poly, norm_kalshi).ratio()
+
+        poly_tokens = set(norm_poly.split())
+        kalshi_tokens = set(norm_kalshi.split())
+        token_union = poly_tokens | kalshi_tokens
+        text_sim = (
+            len(poly_tokens & kalshi_tokens) / len(token_union)
+            if token_union
+            else 0.0
+        )
         
         # Entity overlap bonus
         poly_entities = self.extract_key_entities(polymarket_question)
@@ -507,7 +534,7 @@ class MarketMatcher:
         self,
         polymarket_markets: list[Market],
         kalshi_markets: list,  # list[KalshiMarket]
-        on_progress: callable = None,  # Callback for progress updates
+        on_progress: Callable[[int, int, int], None] | None = None,
     ) -> list[MarketPair]:
         """
         Find matching markets between platforms using category-based matching.
@@ -520,171 +547,64 @@ class MarketMatcher:
         Returns:
             List of matched market pairs
         """
-        import asyncio
-        
-        matches = []
-        
+        matches: list[MarketPair] = []
+
         # Get all active markets
         active_poly = [m for m in polymarket_markets if m.active]
         active_kalshi = [m for m in kalshi_markets if m.is_active]
-        
-        # Group by category for faster matching
-        logger.info("Categorizing markets for faster matching...")
-        
-        poly_by_cat: dict[str, list] = {}
-        for m in active_poly:
-            cat = self.market_category(m, m.question)
-            if cat not in poly_by_cat:
-                poly_by_cat[cat] = []
-            poly_by_cat[cat].append(m)
-        
-        kalshi_by_cat: dict[str, list] = {}
-        for m in active_kalshi:
-            kalshi_text = self.kalshi_matching_text(m)
-            cat = self.market_category(m, kalshi_text)
-            if cat not in kalshi_by_cat:
-                kalshi_by_cat[cat] = []
-            kalshi_by_cat[cat].append(m)
-        
-        # Log category breakdown
-        logger.info("=== CATEGORY BREAKDOWN ===")
-        for cat in set(list(poly_by_cat.keys()) + list(kalshi_by_cat.keys())):
-            p_count = len(poly_by_cat.get(cat, []))
-            k_count = len(kalshi_by_cat.get(cat, []))
-            logger.info(f"  {cat}: Polymarket={p_count}, Kalshi={k_count}")
-        
-        # Build an inverted token index within each trusted category. This
-        # avoids comparing every politics/sports contract to every other one.
-        priority_categories = ['sports', 'politics', 'crypto', 'finance', 'entertainment', 'tech']
-        candidate_batches: dict[str, list[tuple[object, list[object]]]] = {}
-        total_comparisons = 0
-        for category in priority_categories:
-            poly_markets = poly_by_cat.get(category, [])
-            kalshi_markets_cat = kalshi_by_cat.get(category, [])
-            if not poly_markets or not kalshi_markets_cat:
-                continue
-
-            token_index: dict[str, set[int]] = {}
-            for index, kalshi_market in enumerate(kalshi_markets_cat):
-                for token in self.candidate_tokens(
-                    self.kalshi_matching_text(kalshi_market)
-                ):
-                    token_index.setdefault(token, set()).add(index)
-
-            max_posting_size = max(10, int(len(kalshi_markets_cat) * 0.10))
-            batches: list[tuple[object, list[object]]] = []
-            for poly_market in poly_markets:
-                candidate_indexes: set[int] = set()
-                for token in self.candidate_tokens(poly_market.question):
-                    postings = token_index.get(token, set())
-                    if len(postings) <= max_posting_size:
-                        candidate_indexes.update(postings)
-                candidates = [
-                    kalshi_markets_cat[index]
-                    for index in sorted(candidate_indexes)
-                ]
-                batches.append((poly_market, candidates))
-                total_comparisons += len(candidates)
-            candidate_batches[category] = batches
-
-        logger.info(
-            "Total comparisons (indexed candidates): %s", f"{total_comparisons:,}"
-        )
-        logger.info(
-            "(vs %s if matching all-to-all)",
-            f"{len(active_poly) * len(active_kalshi):,}",
-        )
-
-        checked = 0
-        for category in priority_categories:
-            batches = candidate_batches.get(category, [])
-            if not batches:
-                continue
-
+        if self.min_similarity > 1:
+            await asyncio.sleep(0.001)
+            return []
+        result = await self.semantic_pipeline.match(active_poly, active_kalshi)
+        self.last_pipeline_metrics = result.metrics
+        for verification in result.verified:
+            pair = self._pair_from_verification(verification)
+            matches.append(pair)
+            self._matched_pairs[pair.pair_id] = pair
             logger.info(
-                "Matching %s: %s indexed candidates",
-                category,
-                sum(len(candidates) for _, candidates in batches),
+                "VERIFIED MATCH [%s]: %r <-> %r | retrieval=%.3f confidence=%.3f approved=%s",
+                pair.category,
+                pair.polymarket_question[:60],
+                pair.kalshi_title[:60],
+                pair.similarity_score,
+                pair.verification_confidence,
+                pair.auto_approved,
             )
-
-            for poly_market, candidates in batches:
-                best_match = None
-                best_score = 0.0
-
-                for kalshi_market in candidates:
-                    kalshi_text = self.kalshi_matching_text(kalshi_market)
-                    score = self.calculate_similarity(
-                        poly_market.question,
-                        kalshi_text,
-                    )
-                    
-                    if score > best_score:
-                        best_score = score
-                        best_match = kalshi_market
-                    
-                    checked += 1
-                    # Yield inside the hot loop so market matching cannot
-                    # starve order-book processing or the dashboard server.
-                    if checked % 500 == 0:
-                        await asyncio.sleep(0.01)
-                        pct = (
-                            checked / total_comparisons * 100
-                            if total_comparisons > 0
-                            else 0
-                        )
-
-                        if checked % 5000 == 0:
-                            logger.info(
-                                f"Progress: {checked:,}/{total_comparisons:,} "
-                                f"({pct:.1f}%) - {len(matches)} matches"
-                            )
-
-                        if on_progress:
-                            try:
-                                on_progress(checked, total_comparisons, len(matches))
-                            except Exception:
-                                logger.debug("Market-match progress callback failed")
-                
-                # After checking all Kalshi markets for this Poly market
-                if best_match and best_score >= self.min_similarity:
-                    pair = MarketPair(
-                        polymarket_id=poly_market.market_id,
-                        kalshi_ticker=best_match.ticker,
-                        polymarket_question=poly_market.question,
-                        kalshi_title=self.kalshi_matching_text(best_match),
-                        similarity_score=best_score,
-                        category=category,
-                        polymarket_condition_id=poly_market.condition_id,
-                    )
-                    matches.append(pair)
-                    self._matched_pairs[pair.pair_id] = pair
-                    
-                    logger.info(
-                        f"MATCHED [{category}]: '{poly_market.question[:35]}...' <-> "
-                        f"'{self.kalshi_matching_text(best_match)[:35]}...' "
-                        f"(score: {best_score:.2f})"
-                    )
-                elif best_match and best_score >= max(
-                    0.65, self.min_similarity - 0.20
-                ):
-                    candidate = MarketPair(
-                        polymarket_id=poly_market.market_id,
-                        kalshi_ticker=best_match.ticker,
-                        polymarket_question=poly_market.question,
-                        kalshi_title=self.kalshi_matching_text(best_match),
-                        similarity_score=best_score,
-                        category=category,
-                        polymarket_condition_id=poly_market.condition_id,
-                    )
-                    self._review_candidates[candidate.pair_id] = candidate
-
+        for verification in result.review:
+            candidate = self._pair_from_verification(verification)
+            self._review_candidates[candidate.pair_id] = candidate
         if on_progress:
-            try:
-                on_progress(checked, total_comparisons, len(matches))
-            except Exception:
-                logger.debug("Market-match final progress callback failed")
-        logger.info(f"=== MATCHING COMPLETE: {len(matches)} pairs found ===")
+            on_progress(
+                result.metrics.verified_candidates,
+                result.metrics.retrieved_candidates,
+                len(matches),
+            )
+        logger.info(
+            "=== SEMANTIC MATCHING COMPLETE: %s verified, %s review | structural=%s retrieved=%s cache=%s/%s ===",
+            len(matches),
+            len(result.review),
+            result.metrics.structural_candidates,
+            result.metrics.retrieved_candidates,
+            result.metrics.embedding_cache_hits,
+            result.metrics.embedding_cache_misses,
+        )
         return matches
+
+    @staticmethod
+    def _pair_from_verification(verification) -> MarketPair:
+        return MarketPair(
+            polymarket_id=verification.polymarket.market_id,
+            kalshi_ticker=verification.kalshi.market_id,
+            polymarket_question=verification.polymarket.title,
+            kalshi_title=verification.kalshi.title,
+            similarity_score=verification.retrieval_score,
+            category=verification.polymarket.category,
+            polymarket_condition_id=verification.polymarket.execution_id,
+            semantic_relation=verification.relation.value,
+            verification_confidence=verification.confidence,
+            verification_reasons=verification.reasons,
+            auto_approved=verification.auto_approved,
+        )
     
     def get_cached_pairs(self) -> list[MarketPair]:
         """Get all cached market pairs."""
@@ -1028,6 +948,42 @@ class CrossPlatformArbEngine:
             buy_liquidity=buy_liquidity,
             sell_liquidity=sell_liquidity,
         )
+
+    def estimate_best_net_edge(
+        self, polymarket_ob: OrderBook, kalshi_ob: OrderBook
+    ) -> float:
+        """Estimate the strongest fee-adjusted edge for tier promotion metrics."""
+        candidates: list[tuple[float, float, str]] = []
+        for poly_ask, poly_bid, kalshi_ask, kalshi_bid in (
+            (
+                polymarket_ob.best_ask_yes,
+                polymarket_ob.best_bid_yes,
+                kalshi_ob.best_ask_yes,
+                kalshi_ob.best_bid_yes,
+            ),
+            (
+                polymarket_ob.best_ask_no,
+                polymarket_ob.best_bid_no,
+                kalshi_ob.best_ask_no,
+                kalshi_ob.best_bid_no,
+            ),
+        ):
+            if poly_ask is not None and kalshi_bid is not None:
+                candidates.append((kalshi_bid - poly_ask, poly_ask, "poly_buy"))
+            if kalshi_ask is not None and poly_bid is not None:
+                candidates.append((poly_bid - kalshi_ask, kalshi_ask, "kalshi_buy"))
+        estimates = []
+        for gross, buy_price, direction in candidates:
+            if direction == "poly_buy":
+                fees = buy_price * self.polymarket_taker_fee + (
+                    buy_price + gross
+                ) * self.kalshi_taker_fee
+            else:
+                fees = buy_price * self.kalshi_taker_fee + (
+                    buy_price + gross
+                ) * self.polymarket_taker_fee
+            estimates.append(gross - fees - self.gas_cost * 2)
+        return max(estimates, default=0.0)
     
     def get_recent_opportunities(self, limit: int = 50) -> list[CrossPlatformOpportunity]:
         """Get most recent cross-platform opportunities."""

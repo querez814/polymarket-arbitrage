@@ -79,3 +79,8 @@ data/paper_performance.db
 data/paper_performance.db.run.lock
 data/paper_performance.db-shm
 data/paper_performance.db-wal
+
+# Semantic market cache (content-addressed OpenAI embeddings)
+data/semantic_cache.db
+data/semantic_cache.db-shm
+data/semantic_cache.db-wal
