@@ -113,6 +113,7 @@ def test_dashboard_exposes_inspectable_news_catalyst_status_and_panel():
     assert "Today’s Catalysts" in page
     assert "updateNewsCatalysts" in page
     assert "news.source_url" in page
+    assert "Transient upstream failure; retrying automatically" in page
 
 
 @pytest.mark.asyncio

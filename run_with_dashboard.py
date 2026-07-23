@@ -71,7 +71,11 @@ from utils.config_loader import (
 )
 from utils.logging_utils import opportunity_logger, setup_logging
 from utils.paper_trade_store import PaperTradeStore
-from utils.task_supervision import RestartEvent, RestartingTaskSupervisor
+from utils.task_supervision import (
+    RestartEvent,
+    RestartingTaskSupervisor,
+    is_transient_upstream_error,
+)
 from dashboard.server import app, dashboard_state, configure_dashboard_runtime
 from dashboard.integration import DashboardIntegration
 
@@ -491,6 +495,9 @@ class TradingBotWithDashboard:
             raise RuntimeError(
                 "news catalyst scanning requires the persistent performance store"
             )
+        dashboard_state.news_catalysts["api_calls_today"] = (
+            self.paper_trade_store.news_api_calls_today()
+        )
         if not self.config.mode.semantic_matching_enabled:
             raise RuntimeError(
                 "news catalyst scanning requires semantic matching so tracked "
@@ -571,6 +578,7 @@ class TradingBotWithDashboard:
                 )
                 await asyncio.sleep(min(30.0, interval))
                 continue
+            next_scan_delay = interval
             try:
                 result = await self._news_catalyst_service.run_once(
                     self._tracked_news_markets()
@@ -628,15 +636,44 @@ class TradingBotWithDashboard:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self._news_market_scores = {}
-                self._news_market_scores_updated_at = None
-                self._update_pair_priority()
-                dashboard_state.news_catalysts["status"] = "error"
-                logger.exception(
-                    "News catalyst scan failed; skipping until the next interval"
-                )
-            await asyncio.sleep(interval)
+            except Exception as error:
+                next_scan_delay = self._handle_news_catalyst_error(error)
+            await asyncio.sleep(next_scan_delay)
+
+    def _handle_news_catalyst_error(self, error: Exception) -> float:
+        """Fail closed and select a bounded retry delay for one scan failure."""
+        self._news_market_scores = {}
+        self._news_market_scores_updated_at = None
+        self._update_pair_priority()
+        calls_today = (
+            self.paper_trade_store.news_api_calls_today()
+            if self.paper_trade_store is not None
+            else 0
+        )
+        transient = is_transient_upstream_error(error)
+        dashboard_state.news_catalysts.update(
+            {
+                "status": "retrying" if transient else "error",
+                "api_calls_today": calls_today,
+                "last_error": f"{type(error).__name__}: {error}"[:300],
+            }
+        )
+        if transient:
+            retry_delay = min(
+                30.0,
+                self.config.news_catalyst.scan_interval_seconds,
+            )
+            logger.warning(
+                "Transient news catalyst failure; retrying in %.0fs | error=%s",
+                retry_delay,
+                type(error).__name__,
+                exc_info=True,
+            )
+            return retry_delay
+        logger.exception(
+            "News catalyst scan failed; skipping until the next interval"
+        )
+        return self.config.news_catalyst.scan_interval_seconds
 
     def _update_pair_priority(self) -> None:
         if not self.data_feed:

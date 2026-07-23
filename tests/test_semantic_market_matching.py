@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 import sqlite3
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -304,6 +305,34 @@ def test_openai_embeddings_are_batched_then_loaded_from_sqlite_cache(tmp_path):
     assert calls == 1
     assert client.cache_hits == 2
     assert client.cache_misses == 2
+
+
+def test_openai_embeddings_retry_transient_tls_failure_with_fresh_request(
+    tmp_path,
+):
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ssl.SSLError("tls record failed")
+        return httpx.Response(
+            200,
+            request=request,
+            json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]},
+        )
+
+    client = OpenAIEmbeddingClient(
+        api_key="test-key",
+        cache_path=tmp_path / "semantic.db",
+        dimensions=2,
+        transport=httpx.MockTransport(handler),
+        retry_base_delay=0,
+    )
+
+    assert asyncio.run(client.embed_many(["alpha"])) == [[1.0, 0.0]]
+    assert calls == 2
 
 
 def test_openai_verifier_consumes_strict_structured_response():

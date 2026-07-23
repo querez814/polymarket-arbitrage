@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import sqlite3
+import ssl
 import struct
 from collections import Counter
 from contextlib import closing
@@ -24,6 +26,8 @@ from pathlib import Path
 from typing import Any, Protocol, Sequence
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class SemanticRelation(str, Enum):
@@ -464,17 +468,23 @@ class OpenAIEmbeddingClient:
         batch_size: int = 128,
         timeout_seconds: float = 60.0,
         transport: httpx.AsyncBaseTransport | None = None,
+        max_retries: int = 2,
+        retry_base_delay: float = 1.0,
     ):
         if not api_key.strip():
             raise ValueError("OpenAI API key is required")
         if dimensions <= 0 or batch_size <= 0:
             raise ValueError("embedding dimensions and batch size must be positive")
+        if max_retries < 0 or retry_base_delay < 0:
+            raise ValueError("embedding retry settings must be non-negative")
         self._api_key = api_key
         self.model = model
         self.dimensions = dimensions
         self.batch_size = min(batch_size, 2048)
         self.timeout_seconds = timeout_seconds
         self._transport = transport
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
         self.cache = SQLiteEmbeddingCache(cache_path)
         self.cache_hits = 0
         self.cache_misses = 0
@@ -502,45 +512,84 @@ class OpenAIEmbeddingClient:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(
-            timeout=self.timeout_seconds,
-            headers=headers,
-            transport=self._transport,
-        ) as client:
-            for offset in range(0, len(missing), self.batch_size):
-                batch = missing[offset : offset + self.batch_size]
-                response = await client.post(
-                    "https://api.openai.com/v1/embeddings",
-                    json={
-                        "model": self.model,
-                        "input": [item[1] for item in batch],
-                        "dimensions": self.dimensions,
-                        "encoding_format": "float",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                data = payload.get("data") if isinstance(payload, dict) else None
-                if not isinstance(data, list) or len(data) != len(batch):
-                    raise ValueError("OpenAI embeddings response cardinality mismatch")
-                by_index = {int(item["index"]): item["embedding"] for item in data}
-                cache_values: list[tuple[str, list[float]]] = []
-                for batch_index, (target_index, _text, digest) in enumerate(batch):
-                    vector = by_index.get(batch_index)
-                    if not isinstance(vector, list) or len(vector) != self.dimensions:
-                        raise ValueError("OpenAI embedding has unexpected dimensions")
-                    normalized = [float(value) for value in vector]
-                    cache_values.append((digest, normalized))
-                    vectors[target_index] = normalized
-                await asyncio.to_thread(
-                    self.cache.put_many,
-                    self.model,
-                    cache_values,
-                )
+        for offset in range(0, len(missing), self.batch_size):
+            batch = missing[offset : offset + self.batch_size]
+            response = await self._post_embedding_batch(
+                headers=headers,
+                payload={
+                    "model": self.model,
+                    "input": [item[1] for item in batch],
+                    "dimensions": self.dimensions,
+                    "encoding_format": "float",
+                },
+            )
+            payload = response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(data, list) or len(data) != len(batch):
+                raise ValueError("OpenAI embeddings response cardinality mismatch")
+            by_index = {int(item["index"]): item["embedding"] for item in data}
+            cache_values: list[tuple[str, list[float]]] = []
+            for batch_index, (target_index, _text, digest) in enumerate(batch):
+                vector = by_index.get(batch_index)
+                if not isinstance(vector, list) or len(vector) != self.dimensions:
+                    raise ValueError("OpenAI embedding has unexpected dimensions")
+                normalized = [float(value) for value in vector]
+                cache_values.append((digest, normalized))
+                vectors[target_index] = normalized
+            await asyncio.to_thread(
+                self.cache.put_many,
+                self.model,
+                cache_values,
+            )
 
         if any(vector is None for vector in vectors):
             raise RuntimeError("embedding batch completed with missing vectors")
         return [list(vector) for vector in vectors if vector is not None]
+
+    async def _post_embedding_batch(
+        self,
+        *,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> httpx.Response:
+        """Use a fresh connection pool for each bounded transport retry."""
+        for attempt in range(self.max_retries + 1):
+            caught: Exception
+            try:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout_seconds,
+                    headers=headers,
+                    transport=self._transport,
+                ) as client:
+                    response = await client.post(
+                        "https://api.openai.com/v1/embeddings",
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    return response
+            except asyncio.CancelledError:
+                raise
+            except (httpx.RequestError, ssl.SSLError) as error:
+                transient = True
+                caught = error
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code
+                transient = status == 429 or 500 <= status <= 599
+                caught = error
+            if not transient or attempt >= self.max_retries:
+                raise caught
+            delay = self.retry_base_delay * (2**attempt)
+            logger.warning(
+                "Transient OpenAI embedding failure; retrying with a fresh "
+                "connection | attempt=%s/%s delay=%.1fs error=%s",
+                attempt + 1,
+                self.max_retries,
+                delay,
+                type(caught).__name__,
+            )
+            if delay:
+                await asyncio.sleep(delay)
+        raise RuntimeError("unreachable embedding retry state")
 
 
 _SCOPE_GROUPS = (

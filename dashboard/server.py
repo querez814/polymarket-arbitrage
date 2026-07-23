@@ -3115,14 +3115,18 @@ def get_embedded_html() -> str:
             status.textContent = mode.replaceAll('_', ' ').toUpperCase();
             status.style.color = mode === 'active'
                 ? 'var(--accent-green)'
+                : mode === 'retrying'
+                    ? '#f59e0b'
                 : mode === 'error'
                     ? 'var(--accent-red)'
                     : 'var(--text-secondary)';
-            summary.textContent = news.enabled
-                ? `${Number(news.api_calls_today || 0)} API calls today · ${
-                    news.apply_priority_boost ? 'priority boost active' : 'log-only'
-                }`
-                : 'Scanner disabled by configuration';
+            summary.textContent = mode === 'retrying'
+                ? `Transient upstream failure; retrying automatically · ${Number(news.api_calls_today || 0)} API units today`
+                : news.enabled
+                    ? `${Number(news.api_calls_today || 0)} API units today · ${
+                        news.apply_priority_boost ? 'priority boost active' : 'log-only'
+                    }`
+                    : 'Scanner disabled by configuration';
             const rows = Array.isArray(news.items) ? news.items : [];
             if (!rows.length) {
                 items.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">No verified catalysts in the latest scan.</div>';

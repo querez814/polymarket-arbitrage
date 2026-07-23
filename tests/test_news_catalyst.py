@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -346,3 +347,57 @@ def test_runtime_does_not_apply_catalyst_ranking_in_log_only_mode():
     bot._update_pair_priority()
     assert bot.data_feed.applied == ["quiet"]
     assert bot._news_market_scores == {}
+
+
+def test_runtime_marks_transient_news_tls_failure_as_retrying():
+    from dashboard.server import dashboard_state
+    from run_with_dashboard import TradingBotWithDashboard
+
+    bot = TradingBotWithDashboard.__new__(TradingBotWithDashboard)
+    bot._news_market_scores = {("polymarket", "old"): 0.9}
+    bot._news_market_scores_updated_at = datetime.now(timezone.utc)
+    bot.data_feed = None
+    bot.paper_trade_store = SimpleNamespace(
+        news_api_calls_today=lambda: 4
+    )
+    bot.config = SimpleNamespace(
+        news_catalyst=SimpleNamespace(scan_interval_seconds=1800)
+    )
+
+    delay = bot._handle_news_catalyst_error(
+        ssl.SSLError("tls record failed")
+    )
+
+    assert delay == 30
+    assert dashboard_state.news_catalysts["status"] == "retrying"
+    assert dashboard_state.news_catalysts["api_calls_today"] == 4
+    assert bot._news_market_scores == {}
+
+
+def test_runtime_restores_durable_news_api_count_on_startup(monkeypatch):
+    from dashboard.server import dashboard_state
+    from run_with_dashboard import TradingBotWithDashboard
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    bot = TradingBotWithDashboard.__new__(TradingBotWithDashboard)
+    bot.paper_trade_store = SimpleNamespace(
+        news_api_calls_today=lambda: 4
+    )
+    bot._semantic_embedder = FakeEmbedder()
+    bot.config = SimpleNamespace(
+        mode=SimpleNamespace(semantic_matching_enabled=True),
+        news_catalyst=SimpleNamespace(
+            enabled=True,
+            apply_priority_boost=False,
+            model="gpt-5.6-terra",
+            relevance_similarity_threshold=0.72,
+            lookback_hours=6,
+            max_news_items_per_scan=40,
+            max_daily_api_calls=60,
+            scan_interval_seconds=1800,
+        ),
+    )
+
+    bot._configure_news_catalyst_scanner()
+
+    assert dashboard_state.news_catalysts["api_calls_today"] == 4
