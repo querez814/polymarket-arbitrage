@@ -143,11 +143,13 @@ def xplat_orderbook(
     no_ask,
     *,
     timestamp=None,
+    bid_size=100,
+    ask_size=100,
 ):
     return OrderBook(
         market_id=market_id,
-        yes=token_book(TokenType.YES, yes_bid, yes_ask),
-        no=token_book(TokenType.NO, no_bid, no_ask),
+        yes=token_book(TokenType.YES, yes_bid, yes_ask, bid_size, ask_size),
+        no=token_book(TokenType.NO, no_bid, no_ask, bid_size, ask_size),
         timestamp=timestamp or datetime.now(timezone.utc),
     )
 
@@ -176,6 +178,26 @@ def test_cross_platform_engine_returns_multiple_qualifying_directions():
     }
     assert all(opp.suggested_size <= 30.0 for opp in opportunities)
     assert all(opp.suggested_size <= 50.0 for opp in opportunities)
+
+
+def test_cross_platform_engine_rejects_dust_depth_that_cannot_execute():
+    engine = CrossPlatformArbEngine(
+        min_edge=0.01,
+        polymarket_taker_fee=0.0,
+        kalshi_taker_fee=0.0,
+        gas_cost=0.0,
+        max_liquidity_fraction=0.25,
+        min_executable_size=1.0,
+    )
+    pair = MarketPair("poly-1", "kalshi-1", "Poly question", "Kalshi title", 1.0)
+    polymarket_ob = xplat_orderbook(
+        "poly-1", 0.60, 0.40, 0.60, 0.40, bid_size=2, ask_size=2
+    )
+    kalshi_ob = xplat_orderbook(
+        "kalshi:kalshi-1", 0.55, 0.45, 0.55, 0.45, bid_size=2, ask_size=2
+    )
+
+    assert engine.check_arbitrages(pair, polymarket_ob, kalshi_ob) == []
 
 
 def test_execution_detection_requires_current_pair_bound_authoritative_economics():

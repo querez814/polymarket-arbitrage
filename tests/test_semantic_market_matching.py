@@ -45,6 +45,8 @@ def _poly(question: str, **overrides):
         "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
         "end_date": datetime(2026, 11, 4, tzinfo=timezone.utc),
         "tags": [],
+        "liquidity": 1_000.0,
+        "volume_24h": 500.0,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -61,6 +63,8 @@ def _kalshi(title: str, **overrides):
         "status": "open",
         "close_time": datetime(2026, 11, 4, tzinfo=timezone.utc),
         "expiration_time": datetime(2026, 11, 4, tzinfo=timezone.utc),
+        "volume": 100,
+        "open_interest": 50,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -116,6 +120,49 @@ def test_pipeline_structurally_excludes_non_overlapping_markets():
 
     assert result.verified == []
     assert result.metrics.structural_candidates == 0
+
+
+def test_pipeline_filters_obviously_inactive_markets_before_embedding():
+    embedder = LocalSemanticEmbedder()
+    pipeline = SemanticMarketPipeline(
+        embedder=embedder,
+        min_polymarket_liquidity=1.0,
+        min_polymarket_volume_24h=1.0,
+        min_kalshi_volume=1,
+        min_kalshi_open_interest=1,
+    )
+
+    result = asyncio.run(
+        pipeline.match(
+            [
+                _poly("Will Alice Smith win the 2026 mayoral election?"),
+                _poly(
+                    "Will an inactive market resolve?",
+                    market_id="poly-inactive",
+                    condition_id="condition-inactive",
+                    liquidity=0,
+                    volume_24h=0,
+                ),
+            ],
+            [
+                _kalshi("Alice Smith elected mayor in 2026?"),
+                _kalshi(
+                    "Will an inactive market resolve?",
+                    ticker="KX-INACTIVE",
+                    volume=0,
+                    open_interest=0,
+                ),
+            ],
+        )
+    )
+
+    assert result.metrics.polymarket_markets == 2
+    assert result.metrics.kalshi_markets == 2
+    assert result.metrics.eligible_polymarket_markets == 1
+    assert result.metrics.eligible_kalshi_markets == 1
+    assert result.metrics.filtered_polymarket_markets == 1
+    assert result.metrics.filtered_kalshi_markets == 1
+    assert embedder.cache_misses == 2
 
 
 def test_local_embeddings_are_cached_by_unchanged_market_text():

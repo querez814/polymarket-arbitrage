@@ -8,6 +8,7 @@ trading:
   cross_platform_max_order_size: 50
   cross_platform_edge_size_multiplier: 4
   cross_platform_max_liquidity_fraction: 0.25
+  cross_platform_min_executable_size: 1
 
 risk:
   max_order_notional: 100
@@ -48,7 +49,7 @@ mode:
   semantic_matching_enabled: true
   semantic_embedding_model: text-embedding-3-large
   semantic_embedding_dimensions: 1024
-  semantic_verification_model: gpt-5.6-sol
+  semantic_verification_model: gpt-5.6-terra
   semantic_top_k: 20
   semantic_retrieval_floor: 0.55
   # Paper-only exploration threshold. Live execution still requires whitelist.
@@ -58,6 +59,11 @@ mode:
   hot_pair_limit: 25
   hot_pair_scan_seconds: 2
   cold_pair_scan_seconds: 30
+  # Drop only plainly inactive markets; keep new but funded/positioned markets.
+  semantic_min_polymarket_liquidity: 1
+  semantic_min_polymarket_volume_24h: 1
+  semantic_min_kalshi_volume: 1
+  semantic_min_kalshi_open_interest: 1
 
 logging:
   console_level: INFO

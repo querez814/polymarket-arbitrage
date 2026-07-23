@@ -218,6 +218,9 @@ class TradingBotWithDashboard:
                 max_order_size=self.config.trading.cross_platform_max_order_size,
                 edge_size_multiplier=self.config.trading.cross_platform_edge_size_multiplier,
                 max_liquidity_fraction=self.config.trading.cross_platform_max_liquidity_fraction,
+                min_executable_size=(
+                    self.config.trading.cross_platform_min_executable_size
+                ),
                 require_authoritative_economics=(
                     self.config.is_live
                     and self.config.mode.cross_platform_execution_enabled
@@ -250,6 +253,16 @@ class TradingBotWithDashboard:
                     ),
                     max_verification_candidates=(
                         self.config.mode.semantic_max_verification_candidates
+                    ),
+                    min_polymarket_liquidity=(
+                        self.config.mode.semantic_min_polymarket_liquidity
+                    ),
+                    min_polymarket_volume_24h=(
+                        self.config.mode.semantic_min_polymarket_volume_24h
+                    ),
+                    min_kalshi_volume=self.config.mode.semantic_min_kalshi_volume,
+                    min_kalshi_open_interest=(
+                        self.config.mode.semantic_min_kalshi_open_interest
                     ),
                 )
                 self.market_matcher = MarketMatcher(

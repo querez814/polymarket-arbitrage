@@ -2675,15 +2675,26 @@ def get_embedded_html() -> str:
         
         function updateCrossPlatform() {
             const cp = state.cross_platform || {};
+            const matchingStatus = cp.matching_status || 'idle';
+            const semanticMetrics = cp.semantic_metrics || {};
             
             // Update status badge
             const statusEl = document.getElementById('crossPlatformStatus');
-            if (cp.enabled) {
-                statusEl.textContent = 'ACTIVE';
-                statusEl.style.background = 'linear-gradient(135deg, #00ff88, #00cc66)';
-            } else {
+            if (!cp.enabled) {
                 statusEl.textContent = 'DISABLED';
                 statusEl.style.background = 'linear-gradient(135deg, #666, #444)';
+            } else if (matchingStatus === 'error') {
+                statusEl.textContent = 'DISCOVERY ERROR';
+                statusEl.style.background = 'linear-gradient(135deg, #ef4444, #b91c1c)';
+            } else if (matchingStatus === 'no_matches') {
+                statusEl.textContent = 'NO VERIFIED PAIRS';
+                statusEl.style.background = 'linear-gradient(135deg, #f59e0b, #b45309)';
+            } else if (matchingStatus === 'complete' && (cp.matched_pairs || 0) > 0) {
+                statusEl.textContent = 'SCANNING PRICES';
+                statusEl.style.background = 'linear-gradient(135deg, #00ff88, #00cc66)';
+            } else {
+                statusEl.textContent = 'DISCOVERING';
+                statusEl.style.background = 'linear-gradient(135deg, #8b5cf6, #6d28d9)';
             }
             
             // Update stats
@@ -2702,24 +2713,24 @@ def get_embedded_html() -> str:
             const kalshiStatus = document.getElementById('kalshiStatus');
             
             // Polymarket status
-            if (polyCount >= 5000) {
-                polyStatus.textContent = '✓ Loaded';
+            if (semanticMetrics.eligible_polymarket_markets !== undefined) {
+                polyStatus.textContent = `✓ ${semanticMetrics.eligible_polymarket_markets.toLocaleString()} eligible · ${semanticMetrics.filtered_polymarket_markets.toLocaleString()} filtered`;
                 polyStatus.className = 'platform-stat-status ready';
             } else if (polyCount > 0) {
-                polyStatus.textContent = `⏳ ${polyCount.toLocaleString()}...`;
-                polyStatus.className = 'platform-stat-status loading';
+                polyStatus.textContent = '✓ Loaded';
+                polyStatus.className = 'platform-stat-status ready';
             } else {
                 polyStatus.textContent = '⏳ Loading...';
                 polyStatus.className = 'platform-stat-status loading';
             }
             
             // Kalshi status
-            if (kalshiCount >= 5000) {
-                kalshiStatus.textContent = '✓ Loaded';
+            if (semanticMetrics.eligible_kalshi_markets !== undefined) {
+                kalshiStatus.textContent = `✓ ${semanticMetrics.eligible_kalshi_markets.toLocaleString()} eligible · ${semanticMetrics.filtered_kalshi_markets.toLocaleString()} filtered`;
                 kalshiStatus.className = 'platform-stat-status ready';
             } else if (kalshiCount > 0) {
-                kalshiStatus.textContent = `⏳ ${kalshiCount.toLocaleString()}...`;
-                kalshiStatus.className = 'platform-stat-status loading';
+                kalshiStatus.textContent = '✓ Loaded';
+                kalshiStatus.className = 'platform-stat-status ready';
             } else {
                 kalshiStatus.textContent = '⏳ Loading...';
                 kalshiStatus.className = 'platform-stat-status loading';
@@ -2728,7 +2739,6 @@ def get_embedded_html() -> str:
             const matchStatus = document.getElementById('matchingStatus');
             const kalshiObStatus = document.getElementById('kalshiObStatus');
             
-            const matchingStatus = cp.matching_status || 'idle';
             const matchingProgress = cp.matching_progress || 0;
             const matchingChecked = cp.matching_checked || 0;
             const matchingTotal = cp.matching_total || 0;
@@ -2778,6 +2788,9 @@ def get_embedded_html() -> str:
             } else if (matchedCount > 0) {
                 kalshiObStatus.textContent = '⏳ Fetching...';
                 kalshiObStatus.className = 'platform-stat-status loading';
+            } else if (matchingStatus === 'no_matches') {
+                kalshiObStatus.textContent = 'Needs verified pair';
+                kalshiObStatus.className = 'platform-stat-status';
             }
             
             const crossOpps = cp.cross_opportunities || [];
@@ -2795,6 +2808,9 @@ def get_embedded_html() -> str:
             } else if (matchedCount > 0) {
                 arbStatus.textContent = '🔍 Scanning...';
                 arbStatus.className = 'platform-stat-status scanning';
+            } else if (matchingStatus === 'no_matches') {
+                arbStatus.textContent = 'No eligible pairs';
+                arbStatus.className = 'platform-stat-status';
             } else {
                 arbStatus.textContent = 'Waiting...';
                 arbStatus.className = 'platform-stat-status';
@@ -2810,6 +2826,18 @@ def get_embedded_html() -> str:
             if (matchedPairsData.length === 0 && crossOpps.length === 0) {
                 const polyCount = cp.polymarket_markets || 0;
                 const kalshiCount = cp.kalshi_markets || 0;
+                if (matchingStatus === 'no_matches') {
+                    const reviewed = cp.review_candidate_count || 0;
+                    const structural = semanticMetrics.structural_candidates || 0;
+                    const retrieved = semanticMetrics.retrieved_candidates || 0;
+                    grid.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 2rem; grid-column: 1 / -1;">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">⚠️</div>
+                        <div style="font-weight: 700; color: var(--warning);">No equivalent cross-venue pairs passed verification this cycle.</div>
+                        <div style="font-size: 0.8rem; margin-top: 0.75rem;">${structural.toLocaleString()} structurally plausible · ${retrieved.toLocaleString()} retrieved · ${reviewed.toLocaleString()} rejected or queued for review</div>
+                        <div style="font-size: 0.8rem; margin-top: 0.5rem;">Kalshi books are fetched only after a pair is verified. Price scanning is idle by design.</div>
+                    </div>`;
+                    return;
+                }
                 grid.innerHTML = `<div style="text-align: center; color: var(--text-secondary); padding: 2rem; grid-column: 1 / -1;">
                     <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔍</div>
                     <div>Scanning ${polyCount.toLocaleString()} Polymarket & ${kalshiCount.toLocaleString()} Kalshi markets...</div>

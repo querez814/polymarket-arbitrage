@@ -60,6 +60,10 @@ class Verification:
 class PipelineMetrics:
     polymarket_markets: int
     kalshi_markets: int
+    eligible_polymarket_markets: int
+    eligible_kalshi_markets: int
+    filtered_polymarket_markets: int
+    filtered_kalshi_markets: int
     structural_candidates: int
     retrieved_candidates: int
     verified_candidates: int
@@ -566,21 +570,35 @@ class SemanticMarketPipeline:
         retrieval_floor: float = 0.55,
         auto_approve_confidence: float = 0.94,
         max_verification_candidates: int = 500,
+        min_polymarket_liquidity: float = 0.0,
+        min_polymarket_volume_24h: float = 0.0,
+        min_kalshi_volume: int = 0,
+        min_kalshi_open_interest: int = 0,
     ):
         if top_k <= 0 or max_verification_candidates <= 0:
             raise ValueError("semantic pipeline limits must be positive")
         if not 0 <= retrieval_floor <= 1 or not 0 <= auto_approve_confidence <= 1:
             raise ValueError("semantic pipeline thresholds must be in [0, 1]")
+        if min_polymarket_liquidity < 0 or min_polymarket_volume_24h < 0:
+            raise ValueError("Polymarket activity thresholds must be non-negative")
+        if min_kalshi_volume < 0 or min_kalshi_open_interest < 0:
+            raise ValueError("Kalshi activity thresholds must be non-negative")
         self.embedder = embedder or LocalSemanticEmbedder()
         self.verifier = verifier or DeterministicResolutionVerifier()
         self.top_k = top_k
         self.retrieval_floor = retrieval_floor
         self.auto_approve_confidence = auto_approve_confidence
         self.max_verification_candidates = max_verification_candidates
+        self.min_polymarket_liquidity = min_polymarket_liquidity
+        self.min_polymarket_volume_24h = min_polymarket_volume_24h
+        self.min_kalshi_volume = min_kalshi_volume
+        self.min_kalshi_open_interest = min_kalshi_open_interest
 
     async def match(self, polymarket: Sequence[Any], kalshi: Sequence[Any]) -> PipelineResult:
-        poly_docs = [polymarket_document(market) for market in polymarket]
-        kalshi_docs = [kalshi_document(market) for market in kalshi]
+        eligible_poly = [market for market in polymarket if self._polymarket_is_liquid(market)]
+        eligible_kalshi = [market for market in kalshi if self._kalshi_is_liquid(market)]
+        poly_docs = [polymarket_document(market) for market in eligible_poly]
+        kalshi_docs = [kalshi_document(market) for market in eligible_kalshi]
         all_docs = poly_docs + kalshi_docs
         vectors = await self.embedder.embed_many([doc.semantic_text for doc in all_docs])
         poly_vectors = vectors[: len(poly_docs)]
@@ -651,8 +669,12 @@ class SemanticMarketPipeline:
             verified=verified,
             review=review,
             metrics=PipelineMetrics(
-                polymarket_markets=len(poly_docs),
-                kalshi_markets=len(kalshi_docs),
+                polymarket_markets=len(polymarket),
+                kalshi_markets=len(kalshi),
+                eligible_polymarket_markets=len(poly_docs),
+                eligible_kalshi_markets=len(kalshi_docs),
+                filtered_polymarket_markets=len(polymarket) - len(poly_docs),
+                filtered_kalshi_markets=len(kalshi) - len(kalshi_docs),
                 structural_candidates=structural,
                 retrieved_candidates=len(retrieved),
                 verified_candidates=len(to_verify),
@@ -660,6 +682,31 @@ class SemanticMarketPipeline:
                 embedding_cache_misses=self.embedder.cache_misses,
             ),
         )
+
+    def _polymarket_is_liquid(self, market: Any) -> bool:
+        if self.min_polymarket_liquidity <= 0 and self.min_polymarket_volume_24h <= 0:
+            return True
+        liquidity = _finite_nonnegative(getattr(market, "liquidity", 0.0))
+        volume = _finite_nonnegative(getattr(market, "volume_24h", 0.0))
+        return (
+            liquidity >= self.min_polymarket_liquidity
+            or volume >= self.min_polymarket_volume_24h
+        )
+
+    def _kalshi_is_liquid(self, market: Any) -> bool:
+        if self.min_kalshi_volume <= 0 and self.min_kalshi_open_interest <= 0:
+            return True
+        volume = _finite_nonnegative(getattr(market, "volume", 0))
+        open_interest = _finite_nonnegative(getattr(market, "open_interest", 0))
+        return volume >= self.min_kalshi_volume or open_interest >= self.min_kalshi_open_interest
+
+
+def _finite_nonnegative(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) and number >= 0 else 0.0
 
 
 def _temporal_overlap(left: MarketDocument, right: MarketDocument) -> bool:

@@ -535,7 +535,12 @@ class PolymarketClient(BasePolymarketClient):
                 closed=bool(data.get("closed", False)),
                 resolved=data.get("umaResolutionStatus") == "resolved",
                 volume_24h=float(data.get("volume24hr") or data.get("volume24hrClob") or 0),
-                liquidity=float(data.get("liquidityNum") or data.get("liquidityClob") or 0),
+                liquidity=float(
+                    data.get("liquidityNum")
+                    or data.get("liquidityClob")
+                    or data.get("liquidity")
+                    or 0
+                ),
                 created_at=_parse_api_datetime(
                     data.get("createdAt") or data.get("created_at")
                 ),

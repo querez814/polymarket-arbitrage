@@ -641,6 +641,7 @@ class CrossPlatformArbEngine:
         max_order_size: float = 100.0,
         edge_size_multiplier: float = 4.0,
         max_liquidity_fraction: float = 1.0,
+        min_executable_size: float = 0.0,
         max_observation_age: Optional[timedelta] = timedelta(seconds=5),
         require_authoritative_economics: bool = False,
         economics_max_age: timedelta = timedelta(seconds=30),
@@ -663,6 +664,9 @@ class CrossPlatformArbEngine:
         self.max_order_size = max_order_size
         self.edge_size_multiplier = edge_size_multiplier
         self.max_liquidity_fraction = max_liquidity_fraction
+        if min_executable_size < 0:
+            raise ValueError("min_executable_size must be non-negative")
+        self.min_executable_size = min_executable_size
         if max_observation_age is not None and max_observation_age <= timedelta(0):
             raise ValueError("max_observation_age must be positive or None")
         self.max_observation_age = max_observation_age
@@ -830,7 +834,7 @@ class CrossPlatformArbEngine:
             max_size * self.max_liquidity_fraction,
             self.max_order_size,
         )
-        if provisional_size <= 0:
+        if provisional_size <= 0 or provisional_size < self.min_executable_size:
             return None
         if economics is None:
             fees = (

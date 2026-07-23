@@ -143,3 +143,14 @@ def test_embedded_dashboard_shows_current_run_timer_pnl_and_transactions():
     assert 'id="recentRuns"' in html
     assert "state.run_session || {}" in html
     assert "state.run_sessions || []" in html
+
+
+def test_embedded_dashboard_distinguishes_no_matches_from_active_price_scanning():
+    html = get_embedded_html()
+
+    assert "NO VERIFIED PAIRS" in html
+    assert "No equivalent cross-venue pairs passed verification this cycle." in html
+    assert "Kalshi books are fetched only after a pair is verified." in html
+    assert "semantic_metrics" in html
+    assert "filtered_polymarket_markets" in html
+    assert "filtered_kalshi_markets" in html

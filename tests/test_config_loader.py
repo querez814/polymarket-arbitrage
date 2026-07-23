@@ -737,6 +737,12 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.mode.semantic_matching_enabled is True
     assert config.mode.semantic_top_k == 20
     assert config.mode.semantic_auto_approve_confidence == pytest.approx(0.90)
+    assert config.mode.semantic_verification_model == "gpt-5.6-terra"
+    assert config.mode.semantic_min_polymarket_liquidity == pytest.approx(1.0)
+    assert config.mode.semantic_min_polymarket_volume_24h == pytest.approx(1.0)
+    assert config.mode.semantic_min_kalshi_volume == 1
+    assert config.mode.semantic_min_kalshi_open_interest == 1
+    assert config.trading.cross_platform_min_executable_size == pytest.approx(1.0)
 
 
 def test_paper_locked_arb_rejects_random_fill_mode():

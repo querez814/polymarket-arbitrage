@@ -97,6 +97,7 @@ class TradingConfig:
     cross_platform_max_order_size: float = 100.0
     cross_platform_edge_size_multiplier: float = 4.0
     cross_platform_max_liquidity_fraction: float = 1.0
+    cross_platform_min_executable_size: float = 0.0
 
 
 @dataclass
@@ -150,6 +151,10 @@ class ModeConfig:
     hot_pair_limit: int = 25
     hot_pair_scan_seconds: float = 2.0
     cold_pair_scan_seconds: float = 30.0
+    semantic_min_polymarket_liquidity: float = 0.0
+    semantic_min_polymarket_volume_24h: float = 0.0
+    semantic_min_kalshi_volume: int = 0
+    semantic_min_kalshi_open_interest: int = 0
 
 
 @dataclass
@@ -573,6 +578,11 @@ def validate_config(config: BotConfig) -> None:
 
     if config.trading.cross_platform_max_liquidity_fraction <= 0 or config.trading.cross_platform_max_liquidity_fraction > 1:
         errors.append("trading.cross_platform_max_liquidity_fraction must be between 0 and 1")
+    if (
+        not math.isfinite(config.trading.cross_platform_min_executable_size)
+        or config.trading.cross_platform_min_executable_size < 0
+    ):
+        errors.append("trading.cross_platform_min_executable_size must be finite and non-negative")
     
     # Risk validation
     if not math.isfinite(config.risk.max_order_notional) or config.risk.max_order_notional <= 0:
@@ -674,6 +684,20 @@ def validate_config(config: BotConfig) -> None:
             value = getattr(config.mode, name)
             if not math.isfinite(value) or not 0 <= value <= 1:
                 errors.append(f"{name} must be between 0 and 1")
+        for name in (
+            "semantic_min_polymarket_liquidity",
+            "semantic_min_polymarket_volume_24h",
+        ):
+            value = getattr(config.mode, name)
+            if not math.isfinite(value) or value < 0:
+                errors.append(f"{name} must be finite and non-negative")
+        for name in (
+            "semantic_min_kalshi_volume",
+            "semantic_min_kalshi_open_interest",
+        ):
+            value = getattr(config.mode, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                errors.append(f"{name} must be a non-negative integer")
     for name in (
         "paper_pair_cooldown_seconds",
         "hot_pair_scan_seconds",
