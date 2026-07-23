@@ -64,6 +64,8 @@ mode:
   semantic_min_polymarket_volume_24h: 1
   semantic_min_kalshi_volume: 1
   semantic_min_kalshi_open_interest: 1
+  polymarket_market_resync_seconds: 1800
+  polymarket_priority_refresh_seconds: 2
 
 logging:
   console_level: INFO
@@ -80,3 +82,17 @@ monitoring:
   track_fill_rates: true
   paper_trade_db_path: data/paper_performance.db
   display_timezone: America/New_York
+
+news_catalyst:
+  # Log-only rollout: enable scanning after review, then separately authorize
+  # priority changes with apply_priority_boost.
+  enabled: true
+  apply_priority_boost: false
+  model: gpt-5.6-terra
+  scan_interval_seconds: 1800
+  lookback_hours: 6
+  relevance_similarity_threshold: 0.60
+  catalyst_boost_weight: 0.35
+  max_news_items_per_scan: 40
+  max_daily_api_calls: 60
+  mispricing_detector_enabled: false

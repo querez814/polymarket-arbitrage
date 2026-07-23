@@ -925,6 +925,13 @@ class KalshiClient:
                 open_interest=int(float(open_interest or 0)),
                 close_time=close_time,
                 category=data.get("category", "") or event_category,
+                rules_primary=str(data.get("rules_primary") or ""),
+                rules_secondary=str(data.get("rules_secondary") or ""),
+                settlement_source=str(
+                    data.get("settlement_source")
+                    or data.get("result_source")
+                    or ""
+                ),
             )
         except Exception as e:
             logger.warning(f"Failed to parse Kalshi market: {e}")

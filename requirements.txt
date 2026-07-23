@@ -11,6 +11,8 @@ pyyaml>=6.0.1
 
 # Data validation (optional but recommended)
 pydantic>=2.5.0
+openai>=2.0.0
+numpy>=2.0.0
 
 # Utilities
 python-dotenv>=1.0.0

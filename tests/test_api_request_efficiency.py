@@ -23,7 +23,7 @@ def test_polymarket_suppresses_token_after_first_no_orderbook_response():
         try:
             first = await client._fetch_token_orderbook("stale-token", TokenType.YES)
             second = await client._fetch_token_orderbook("stale-token", TokenType.YES)
-            return first, second, client.request_metrics
+            return first, second, client.orderbook_metrics
         finally:
             await client._http_client.aclose()
             client._http_client = None
@@ -32,6 +32,7 @@ def test_polymarket_suppresses_token_after_first_no_orderbook_response():
 
     assert calls == 1
     assert first.bids.levels == second.bids.levels == []
+    assert metrics == {"requests": 1, "successes": 0, "not_found": 1}
 
 
 def test_polymarket_active_market_list_uses_ttl_cache():
@@ -77,6 +78,29 @@ def test_polymarket_active_market_list_uses_ttl_cache():
     assert first[0].end_date is not None
     assert first[0].end_date.month == 8
     assert metrics["https://gamma-api.polymarket.com"]["requests"] == 1
+
+
+def test_polymarket_market_pagination_does_not_use_rejected_volume_sort():
+    observed_queries = []
+
+    def handler(request: httpx.Request):
+        observed_queries.append(dict(request.url.params))
+        return httpx.Response(200, request=request, json=[])
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            await client.list_markets({"active": True})
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    asyncio.run(exercise())
+
+    assert observed_queries
+    assert "order" not in observed_queries[0]
+    assert "ascending" not in observed_queries[0]
 
 
 def test_kalshi_event_market_list_uses_ttl_cache():

@@ -42,7 +42,8 @@ class DataFeed:
         config = None,
     ):
         self.client = client
-        self.market_ids = market_ids
+        self.market_ids = list(market_ids)
+        self._discover_markets = not bool(market_ids)
         self.position_refresh_interval = position_refresh_interval
         self.on_update = on_update
         self.config = config
@@ -56,7 +57,10 @@ class DataFeed:
         # Tasks
         self._orderbook_task: Optional[asyncio.Task] = None
         self._position_task: Optional[asyncio.Task] = None
+        self._market_resync_task: Optional[asyncio.Task] = None
+        self._priority_orderbook_task: Optional[asyncio.Task] = None
         self._running = False
+        self._priority_market_ids: set[str] = set()
         
         # Statistics
         self._update_count = 0
@@ -92,6 +96,10 @@ class DataFeed:
             self._position_refresh_loop(),
             name="position_refresh"
         )
+        self._market_resync_task = asyncio.create_task(
+            self._market_resync_loop(),
+            name="market_resync",
+        )
         
         logger.info("DataFeed started successfully")
     
@@ -112,31 +120,181 @@ class DataFeed:
                 await self._position_task
             except asyncio.CancelledError:
                 pass
+
+        for task in (self._market_resync_task, self._priority_orderbook_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
         
         logger.info("DataFeed stopped")
     
     async def _fetch_markets(self) -> None:
         """Fetch market information for all monitored markets."""
         try:
-            if not self.market_ids:
+            if self._discover_markets:
                 # Discover markets if none specified - list_markets returns full Market objects!
                 markets = await self.client.list_markets({"active": True})
-                
-                # Store markets directly from the list - no need to re-fetch!
-                for market in markets:
-                    self._markets[market.market_id] = market
-                
-                self.market_ids = [m.market_id for m in markets]
-                logger.info(f"Discovered and loaded {len(self.market_ids)} active markets (no re-fetch needed!)")
+
+                min_volume = float(
+                    getattr(
+                        getattr(self.config, "mode", None),
+                        "semantic_min_polymarket_volume_24h",
+                        0.0,
+                    )
+                    or 0.0
+                )
+                eligible = [
+                    market
+                    for market in markets
+                    if market.volume_24h >= min_volume
+                ]
+                self._replace_market_snapshot(eligible)
+                logger.info(
+                    "Polymarket discovery filtered by 24h volume | "
+                    "raw=%s eligible=%s filtered=%s min_volume_24h=%.2f",
+                    len(markets),
+                    len(eligible),
+                    len(markets) - len(eligible),
+                    min_volume,
+                )
             else:
                 # Only fetch if specific market_ids were provided
+                markets = []
                 for market_id in self.market_ids:
                     market = await self.client.get_market(market_id)
-                    self._markets[market_id] = market
+                    if market is not None:
+                        markets.append(market)
+                self._replace_market_snapshot(markets)
                 
         except Exception as e:
             logger.error(f"Failed to fetch markets: {e}")
             raise
+
+    def _replace_market_snapshot(self, markets: list[Market]) -> None:
+        """Atomically replace discovery state and prune closed-market data."""
+        replacement = {market.market_id: market for market in markets}
+        removed = set(self._markets) - set(replacement)
+        self._markets = replacement
+        self.market_ids = list(replacement)
+        for stale in removed:
+            self._order_books.pop(stale, None)
+            self._positions.pop(stale, None)
+            self._market_states.pop(stale, None)
+            self._last_update.pop(stale, None)
+        self._priority_market_ids.intersection_update(replacement)
+
+    async def resync_markets(self, *, restart_stream: bool = True) -> None:
+        """Refresh the active snapshot and restart its snapshot-based stream."""
+        previous = set(self.market_ids)
+        await self._fetch_markets()
+        current = set(self.market_ids)
+        logger.info(
+            "Polymarket market resync complete | active=%s added=%s pruned=%s",
+            len(current),
+            len(current - previous),
+            len(previous - current),
+        )
+        if restart_stream and self._running:
+            if self._orderbook_task:
+                self._orderbook_task.cancel()
+                try:
+                    await self._orderbook_task
+                except asyncio.CancelledError:
+                    pass
+            self._orderbook_task = asyncio.create_task(
+                self._stream_orderbooks(),
+                name="orderbook_stream",
+            )
+
+    async def _market_resync_loop(self) -> None:
+        interval = float(
+            getattr(
+                getattr(self.config, "mode", None),
+                "polymarket_market_resync_seconds",
+                1800.0,
+            )
+            or 1800.0
+        )
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                if self._running:
+                    await self.resync_markets()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Polymarket market resync failed")
+
+    def set_priority_markets(self, market_ids: list[str]) -> None:
+        """Continuously refresh verified markets inside the freshness window."""
+        priority = set(market_ids).intersection(self._markets)
+        if priority == self._priority_market_ids:
+            return
+        self._priority_market_ids = priority
+        logger.info(
+            "Polymarket priority orderbook lane updated | markets=%s interval=%.2fs",
+            len(priority),
+            self._priority_refresh_interval,
+        )
+        if (
+            self._running
+            and priority
+            and (
+                self._priority_orderbook_task is None
+                or self._priority_orderbook_task.done()
+            )
+        ):
+            self._priority_orderbook_task = asyncio.create_task(
+                self._priority_orderbook_loop(),
+                name="priority_orderbook_stream",
+            )
+
+    @property
+    def _priority_refresh_interval(self) -> float:
+        return float(
+            getattr(
+                getattr(self.config, "mode", None),
+                "polymarket_priority_refresh_seconds",
+                2.0,
+            )
+            or 2.0
+        )
+
+    async def _priority_orderbook_loop(self) -> None:
+        semaphore = asyncio.Semaphore(8)
+        while self._running:
+            started = asyncio.get_running_loop().time()
+
+            async def refresh(market_id: str) -> None:
+                async with semaphore:
+                    orderbook = await self.client.get_orderbook(market_id)
+                    self._record_orderbook(market_id, orderbook)
+
+            try:
+                market_ids = sorted(self._priority_market_ids)
+                if market_ids:
+                    results = await asyncio.gather(
+                        *(refresh(market_id) for market_id in market_ids),
+                        return_exceptions=True,
+                    )
+                    failures = sum(
+                        isinstance(result, BaseException) for result in results
+                    )
+                    if failures:
+                        logger.warning(
+                            "Polymarket priority lane refresh failures=%s/%s",
+                            failures,
+                            len(market_ids),
+                        )
+                elapsed = asyncio.get_running_loop().time() - started
+                await asyncio.sleep(
+                    max(0.05, self._priority_refresh_interval - elapsed)
+                )
+            except asyncio.CancelledError:
+                raise
     
     async def _stream_orderbooks(self) -> None:
         """Stream order book updates."""
@@ -150,12 +308,7 @@ class DataFeed:
                     if not self._running:
                         break
                     
-                    self._order_books[market_id] = orderbook
-                    self._last_update[market_id] = datetime.utcnow()
-                    self._update_count += 1
-                    
-                    # Update market state
-                    self._update_market_state(market_id)
+                    self._record_orderbook(market_id, orderbook)
                     
             except asyncio.CancelledError:
                 raise
@@ -163,6 +316,12 @@ class DataFeed:
                 logger.error(f"Order book stream error: {e}")
                 if self._running:
                     await asyncio.sleep(1)  # Brief delay before reconnecting
+
+    def _record_orderbook(self, market_id: str, orderbook: OrderBook) -> None:
+        self._order_books[market_id] = orderbook
+        self._last_update[market_id] = datetime.utcnow()
+        self._update_count += 1
+        self._update_market_state(market_id)
     
     async def _position_refresh_loop(self) -> None:
         """Periodically refresh positions."""
@@ -271,4 +430,3 @@ class DataFeed:
                 return True
             await asyncio.sleep(0.1)
         return False
-

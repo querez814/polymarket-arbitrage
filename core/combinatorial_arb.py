@@ -40,6 +40,15 @@ class CombinatorialOpportunity:
     detected_at_utc: str
 
 
+@dataclass(frozen=True)
+class CombinatorialScanMetrics:
+    states: int = 0
+    negative_risk_states: int = 0
+    event_groups: int = 0
+    eligible_groups: int = 0
+    opportunities: int = 0
+
+
 class SamePlatformArbitrageDetector:
     """Group event states in O(n), then evaluate only explicit payout partitions."""
 
@@ -62,26 +71,38 @@ class SamePlatformArbitrageDetector:
         self.max_group_size = max_group_size
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._last_emitted: dict[str, datetime] = {}
+        self.last_metrics = CombinatorialScanMetrics()
 
     def detect(
         self, states: Mapping[str, MarketState]
     ) -> list[CombinatorialOpportunity]:
         groups: dict[str, list[MarketState]] = {}
+        negative_risk_states = 0
         for state in states.values():
             market = state.market
             if not market.active or market.closed or not market.negative_risk:
                 continue
             if not market.event_id:
                 continue
+            negative_risk_states += 1
             groups.setdefault(market.event_id, []).append(state)
 
         opportunities: list[CombinatorialOpportunity] = []
+        eligible_groups = 0
         for event_id, group in groups.items():
             if not 2 <= len(group) <= self.max_group_size:
                 continue
+            eligible_groups += 1
             opportunity = self._yes_bundle(event_id, group)
             if opportunity and self._cooldown_allows(opportunity):
                 opportunities.append(opportunity)
+        self.last_metrics = CombinatorialScanMetrics(
+            states=len(states),
+            negative_risk_states=negative_risk_states,
+            event_groups=len(groups),
+            eligible_groups=eligible_groups,
+            opportunities=len(opportunities),
+        )
         return opportunities
 
     def _yes_bundle(

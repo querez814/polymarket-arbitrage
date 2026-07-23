@@ -67,6 +67,11 @@ def test_does_not_infer_exhaustiveness_from_similar_titles_alone():
     }
 
     assert detector.detect(states) == []
+    assert detector.last_metrics.states == 2
+    assert detector.last_metrics.negative_risk_states == 0
+    assert detector.last_metrics.event_groups == 0
+    assert detector.last_metrics.eligible_groups == 0
+    assert detector.last_metrics.opportunities == 0
 
 
 def test_detector_deduplicates_same_snapshot_until_cooldown_expires():

@@ -15,6 +15,7 @@ import math
 import re
 import sqlite3
 import struct
+from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -69,6 +70,8 @@ class PipelineMetrics:
     verified_candidates: int
     embedding_cache_hits: int
     embedding_cache_misses: int
+    polymarket_categories: dict[str, int]
+    kalshi_categories: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -100,43 +103,119 @@ def _utc(value: Any) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _category(value: Any, text: str) -> str:
-    raw = str(value or "").strip().casefold()
-    aliases = {
-        "political": "politics",
-        "economics": "finance",
-        "technology": "tech",
-        "sport": "sports",
-    }
-    if raw:
-        return aliases.get(raw, raw)
+def _inferred_category(text: str) -> str:
     lowered = text.casefold()
     groups = {
-        "politics": ("election", "president", "senate", "congress", "governor", "mayor"),
-        "crypto": ("bitcoin", "ethereum", "crypto", "solana"),
-        "finance": ("interest rate", "inflation", "gdp", "recession", "stock"),
-        "sports": (" nfl", " nba", " mlb", " nhl", "world cup", "super bowl"),
+        "politics": (
+            "election",
+            "president",
+            "senate",
+            "congress",
+            "governor",
+            "mayor",
+            "prime minister",
+            "parliament",
+            "nomination",
+            "nominee",
+            "ballot",
+            "cabinet",
+            "legislation",
+        ),
+        "crypto": ("bitcoin", "ethereum", "crypto", "solana", "blockchain"),
+        "finance": (
+            "interest rate",
+            "inflation",
+            "gdp",
+            "recession",
+            "stock",
+            "federal reserve",
+        ),
+        "sports": (
+            " nfl",
+            " nba",
+            " mlb",
+            " nhl",
+            "world cup",
+            "world series",
+            "super bowl",
+            "basketball",
+            "baseball",
+            "football",
+            "hockey",
+            "soccer",
+        ),
         "entertainment": ("oscar", "grammy", "movie", "album", "actor"),
         "tech": ("openai", "artificial intelligence", "nvidia", "spacex"),
     }
+    padded = f" {lowered}"
     for name, terms in groups.items():
-        if any(term in f" {lowered}" for term in terms):
+        if any(term in padded for term in terms):
             return name
     return "other"
+
+
+def classify_market_category(value: Any, text: str) -> str:
+    raw = str(value or "").strip().casefold()
+    aliases = {
+        "political": "politics",
+        "politics": "politics",
+        "economics": "finance",
+        "finance": "finance",
+        "technology": "tech",
+        "tech": "tech",
+        "sport": "sports",
+        "sports": "sports",
+        "cryptocurrency": "crypto",
+        "crypto": "crypto",
+        "entertainment": "entertainment",
+    }
+    inferred = _inferred_category(text)
+    # Specific proposition text wins over venue metadata. Some upstream feeds
+    # use a broad Politics/default category for unrelated markets.
+    if inferred != "other":
+        return inferred
+    # Kalshi's broad/default Politics label was observed on unrelated markets.
+    # It is not evidence of proposition category on its own.
+    if raw in {"political", "politics"}:
+        return "other"
+    return aliases.get(raw, "other")
 
 
 def polymarket_document(market: Any) -> MarketDocument:
     question = str(getattr(market, "question", "") or "").strip()
     description = str(getattr(market, "description", "") or "").strip()
     resolution = str(getattr(market, "resolution", "") or "").strip()
+    resolution_source = str(
+        getattr(market, "resolution_source", "")
+        or getattr(market, "oracle", "")
+        or ""
+    ).strip()
     tags = " ".join(str(tag) for tag in (getattr(market, "tags", None) or []))
+    closes_at = _utc(getattr(market, "end_date", None))
+    context = " ".join(
+        part
+        for part in (
+            question,
+            str(getattr(market, "event_title", "") or ""),
+            description,
+            tags,
+        )
+        if part
+    )
     semantic_text = "\n".join(
         part
         for part in (
             f"Title: {question}",
-            f"Description: {description}" if description else "",
+            (
+                f"Event: {getattr(market, 'event_title', '')}"
+                if getattr(market, "event_title", "")
+                else ""
+            ),
+            f"Resolution criteria: {description}" if description else "",
+            f"Cutoff: {closes_at.isoformat()}" if closes_at else "",
+            f"Oracle/Source: {resolution_source}" if resolution_source else "",
             "Outcomes: YES | NO",
-            f"Resolution: {resolution}" if resolution else "",
+            f"Reported resolution: {resolution}" if resolution else "",
             f"Tags: {tags}" if tags else "",
         )
         if part
@@ -149,9 +228,9 @@ def polymarket_document(market: Any) -> MarketDocument:
         execution_id=execution_id,
         title=question,
         semantic_text=semantic_text,
-        category=_category(getattr(market, "category", ""), question),
+        category=classify_market_category(getattr(market, "category", ""), context),
         opens_at=_utc(getattr(market, "created_at", None)),
-        closes_at=_utc(getattr(market, "end_date", None)),
+        closes_at=closes_at,
         source=market,
     )
 
@@ -164,12 +243,28 @@ def kalshi_document(market: Any) -> MarketDocument:
     ).strip()
     subtitle = str(getattr(market, "subtitle", "") or "").strip()
     event_title = str(getattr(market, "event_title", "") or "").strip()
+    rules_primary = str(getattr(market, "rules_primary", "") or "").strip()
+    rules_secondary = str(getattr(market, "rules_secondary", "") or "").strip()
+    settlement_source = str(
+        getattr(market, "settlement_source", "")
+        or getattr(market, "oracle", "")
+        or ""
+    ).strip()
+    closes_at = _utc(
+        getattr(market, "close_time", None)
+        or getattr(market, "expiration_time", None)
+    )
+    context = " ".join(part for part in (title, event_title) if part)
     semantic_text = "\n".join(
         part
         for part in (
             f"Title: {title}",
             f"Event: {event_title}" if event_title and event_title not in title else "",
             f"Description: {subtitle}" if subtitle else "",
+            f"Primary resolution rules: {rules_primary}" if rules_primary else "",
+            f"Secondary resolution rules: {rules_secondary}" if rules_secondary else "",
+            f"Cutoff: {closes_at.isoformat()}" if closes_at else "",
+            f"Oracle/Source: {settlement_source}" if settlement_source else "",
             "Outcomes: YES | NO",
         )
         if part
@@ -181,12 +276,9 @@ def kalshi_document(market: Any) -> MarketDocument:
         execution_id=ticker,
         title=title,
         semantic_text=semantic_text,
-        category=_category(getattr(market, "category", ""), title),
+        category=classify_market_category(getattr(market, "category", ""), context),
         opens_at=None,
-        closes_at=_utc(
-            getattr(market, "close_time", None)
-            or getattr(market, "expiration_time", None)
-        ),
+        closes_at=closes_at,
         source=market,
     )
 
@@ -286,6 +378,35 @@ class SQLiteEmbeddingCache:
             return None
         return list(struct.unpack(f"<{dimensions}f", payload))
 
+    def get_many(
+        self,
+        digests: Sequence[str],
+        model: str,
+        dimensions: int,
+    ) -> dict[str, list[float]]:
+        found: dict[str, list[float]] = {}
+        with closing(self._connect()) as connection:
+            for offset in range(0, len(digests), 500):
+                batch = list(digests[offset : offset + 500])
+                if not batch:
+                    continue
+                placeholders = ",".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"""
+                    SELECT content_hash, vector FROM semantic_embeddings
+                    WHERE model=? AND dimensions=?
+                      AND content_hash IN ({placeholders})
+                    """,
+                    (model, dimensions, *batch),
+                ).fetchall()
+                for digest, raw_vector in rows:
+                    payload = bytes(raw_vector)
+                    if len(payload) == dimensions * 4:
+                        found[str(digest)] = list(
+                            struct.unpack(f"<{dimensions}f", payload)
+                        )
+        return found
+
     def put(self, digest: str, model: str, vector: Sequence[float]) -> None:
         payload = struct.pack(f"<{len(vector)}f", *vector)
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -297,6 +418,35 @@ class SQLiteEmbeddingCache:
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (digest, model, len(vector), payload, now),
+            )
+            connection.commit()
+
+    def put_many(
+        self,
+        model: str,
+        values: Sequence[tuple[str, Sequence[float]]],
+    ) -> None:
+        if not values:
+            return
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        rows = [
+            (
+                digest,
+                model,
+                len(vector),
+                struct.pack(f"<{len(vector)}f", *vector),
+                now,
+            )
+            for digest, vector in values
+        ]
+        with closing(self._connect()) as connection:
+            connection.executemany(
+                """
+                INSERT OR REPLACE INTO semantic_embeddings
+                    (content_hash, model, dimensions, vector, created_at_utc)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
             )
             connection.commit()
 
@@ -331,10 +481,16 @@ class OpenAIEmbeddingClient:
 
     async def embed_many(self, texts: Sequence[str]) -> list[list[float]]:
         digests = [hashlib.sha256(text.encode("utf-8")).hexdigest() for text in texts]
+        cached_vectors = await asyncio.to_thread(
+            self.cache.get_many,
+            digests,
+            self.model,
+            self.dimensions,
+        )
         vectors: list[list[float] | None] = []
         missing: list[tuple[int, str, str]] = []
         for index, (text, digest) in enumerate(zip(texts, digests)):
-            cached = self.cache.get(digest, self.model, self.dimensions)
+            cached = cached_vectors.get(digest)
             vectors.append(cached)
             if cached is None:
                 self.cache_misses += 1
@@ -368,13 +524,19 @@ class OpenAIEmbeddingClient:
                 if not isinstance(data, list) or len(data) != len(batch):
                     raise ValueError("OpenAI embeddings response cardinality mismatch")
                 by_index = {int(item["index"]): item["embedding"] for item in data}
+                cache_values: list[tuple[str, list[float]]] = []
                 for batch_index, (target_index, _text, digest) in enumerate(batch):
                     vector = by_index.get(batch_index)
                     if not isinstance(vector, list) or len(vector) != self.dimensions:
                         raise ValueError("OpenAI embedding has unexpected dimensions")
                     normalized = [float(value) for value in vector]
-                    self.cache.put(digest, self.model, normalized)
+                    cache_values.append((digest, normalized))
                     vectors[target_index] = normalized
+                await asyncio.to_thread(
+                    self.cache.put_many,
+                    self.model,
+                    cache_values,
+                )
 
         if any(vector is None for vector in vectors):
             raise RuntimeError("embedding batch completed with missing vectors")
@@ -609,7 +771,7 @@ class SemanticMarketPipeline:
         for index, document in enumerate(kalshi_docs):
             kalshi_by_category.setdefault(document.category, []).append(index)
             category_index = token_indexes.setdefault(document.category, {})
-            for token in _retrieval_tokens(document.title):
+            for token in _retrieval_tokens(document.semantic_text):
                 category_index.setdefault(token, set()).add(index)
 
         structural = 0
@@ -620,7 +782,7 @@ class SemanticMarketPipeline:
             category_index = token_indexes.get(poly_doc.category, {})
             candidate_indexes: set[int] = set()
             max_posting = max(20, int(len(category_members) * 0.20))
-            for token in _retrieval_tokens(poly_doc.title):
+            for token in _retrieval_tokens(poly_doc.semantic_text):
                 posting = category_index.get(token, set())
                 if len(posting) <= max_posting:
                     candidate_indexes.update(posting)
@@ -680,6 +842,12 @@ class SemanticMarketPipeline:
                 verified_candidates=len(to_verify),
                 embedding_cache_hits=self.embedder.cache_hits,
                 embedding_cache_misses=self.embedder.cache_misses,
+                polymarket_categories=dict(
+                    sorted(Counter(doc.category for doc in poly_docs).items())
+                ),
+                kalshi_categories=dict(
+                    sorted(Counter(doc.category for doc in kalshi_docs).items())
+                ),
             ),
         )
 

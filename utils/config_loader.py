@@ -155,6 +155,8 @@ class ModeConfig:
     semantic_min_polymarket_volume_24h: float = 0.0
     semantic_min_kalshi_volume: int = 0
     semantic_min_kalshi_open_interest: int = 0
+    polymarket_market_resync_seconds: float = 1800.0
+    polymarket_priority_refresh_seconds: float = 2.0
 
 
 @dataclass
@@ -195,6 +197,22 @@ class ProductionConfig:
 
 
 @dataclass
+class NewsCatalystConfig:
+    """Source-backed news monitoring, isolated from trading authorization."""
+
+    enabled: bool = False
+    apply_priority_boost: bool = False
+    model: str = "gpt-5.6-terra"
+    scan_interval_seconds: float = 1800.0
+    lookback_hours: float = 6.0
+    relevance_similarity_threshold: float = 0.60
+    catalyst_boost_weight: float = 0.35
+    max_news_items_per_scan: int = 40
+    max_daily_api_calls: int = 60
+    mispricing_detector_enabled: bool = False
+
+
+@dataclass
 class BotConfig:
     """Complete bot configuration."""
     api: ApiConfig = field(default_factory=ApiConfig)
@@ -204,6 +222,7 @@ class BotConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     production: ProductionConfig = field(default_factory=ProductionConfig)
+    news_catalyst: NewsCatalystConfig = field(default_factory=NewsCatalystConfig)
     
     @property
     def is_polymarket_us(self) -> bool:
@@ -258,6 +277,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     logging_data = raw_config.get("logging", {})
     monitoring_data = raw_config.get("monitoring", {})
     production_data = raw_config.get("production", {})
+    news_catalyst_data = raw_config.get("news_catalyst", {})
     
     # Handle environment variable overrides
     api_data = _apply_env_overrides(api_data, {
@@ -293,6 +313,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         logging=_build_dataclass(LoggingConfig, logging_data),
         monitoring=_build_dataclass(MonitoringConfig, monitoring_data),
         production=_build_dataclass(ProductionConfig, production_data),
+        news_catalyst=_build_dataclass(NewsCatalystConfig, news_catalyst_data),
     )
     
     # Validate
@@ -708,6 +729,43 @@ def validate_config(config: BotConfig) -> None:
             errors.append(f"{name} must be finite and positive")
     if config.mode.hot_pair_limit <= 0:
         errors.append("hot_pair_limit must be positive")
+
+    news = config.news_catalyst
+    if not news.model.strip():
+        errors.append("news_catalyst.model must be non-empty")
+    for name in ("scan_interval_seconds", "lookback_hours"):
+        value = getattr(news, name)
+        if not math.isfinite(value) or value <= 0:
+            errors.append(f"news_catalyst.{name} must be finite and positive")
+    for name in ("relevance_similarity_threshold",):
+        value = getattr(news, name)
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            errors.append(f"news_catalyst.{name} must be between 0 and 1")
+    if (
+        not math.isfinite(news.catalyst_boost_weight)
+        or news.catalyst_boost_weight < 0
+    ):
+        errors.append(
+            "news_catalyst.catalyst_boost_weight must be finite and non-negative"
+        )
+    for name in ("max_news_items_per_scan", "max_daily_api_calls"):
+        value = getattr(news, name)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            errors.append(f"news_catalyst.{name} must be a positive integer")
+    if news.max_news_items_per_scan > 128:
+        errors.append(
+            "news_catalyst.max_news_items_per_scan must be <= 128 to keep "
+            "embedding calls within the hard API budget"
+        )
+    if news.apply_priority_boost and not news.enabled:
+        errors.append(
+            "news_catalyst.apply_priority_boost requires news_catalyst.enabled"
+        )
+    if news.mispricing_detector_enabled:
+        errors.append(
+            "news_catalyst.mispricing_detector_enabled is not available; "
+            "directional news trading remains intentionally disabled"
+        )
 
     if not config.production.execution_journal_path.strip():
         errors.append("production.execution_journal_path must be non-empty")

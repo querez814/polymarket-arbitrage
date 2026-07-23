@@ -115,6 +115,15 @@ class DashboardState:
         self.stats: dict = {}
         self.timing: dict = {}  # Opportunity timing stats
         self.operational: dict = {}  # Operational stats
+        self.news_catalysts: dict = {
+            "enabled": False,
+            "apply_priority_boost": False,
+            "status": "disabled",
+            "last_scan_at": None,
+            "api_calls_today": 0,
+            "items": [],
+            "boosted_markets": [],
+        }
         self.is_running: bool = False
         self.mode: str = "dry_run"
         self.last_update: datetime = utc_now()
@@ -163,6 +172,7 @@ class DashboardState:
             "stats": self.stats,
             "timing": self.timing,  # Opportunity timing stats
             "operational": self.operational,  # Operational stats
+            "news_catalysts": self.news_catalysts,
             "cross_platform": self.cross_platform,  # Cross-platform arbitrage stats
             "is_running": self.is_running,
             "mode": self.mode,
@@ -1117,7 +1127,7 @@ def get_embedded_html() -> str:
             max-height: 600px;
             overflow-y: auto;
         }
-        
+
         .opp-card {
             background: var(--bg-secondary);
             border-radius: 12px;
@@ -1143,7 +1153,7 @@ def get_embedded_html() -> str:
         .opp-card.kalshi {
             border-left-color: #3b82f6;
         }
-        
+
         .opp-header {
             display: flex;
             justify-content: space-between;
@@ -2080,11 +2090,24 @@ def get_embedded_html() -> str:
                 <div class="matched-pairs-grid" id="matchedPairsGrid"></div>
             </div>
         </section>
+
+        <section class="card" id="newsCatalystCard">
+            <div class="card-header">
+                <span class="card-title">📰 Today’s Catalysts</span>
+                <span id="newsCatalystStatus" style="font-size: 0.75rem; color: var(--text-secondary);">DISABLED</span>
+            </div>
+            <div class="card-body">
+                <div id="newsCatalystSummary" style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+                    Scanner disabled
+                </div>
+                <div id="newsCatalystItems" style="display: grid; gap: 0.65rem;"></div>
+            </div>
+        </section>
         
         <!-- 🔥 LIVE OPPORTUNITIES FEED -->
         <section class="card opportunities-feed">
             <div class="card-header">
-                <span class="card-title">🔥 Live Arbitrage Opportunities</span>
+                <span class="card-title">🔥 Arbitrage & Market Monitoring</span>
                 <div style="display: flex; align-items: center; gap: 1rem;">
                     <span class="opp-status">
                         <span class="opp-status-dot"></span>
@@ -2272,6 +2295,9 @@ def get_embedded_html() -> str:
             
             // Cross-Platform
             updateCrossPlatform();
+
+            // Source-backed news priority signals
+            updateNewsCatalysts();
             
             // Markets
             updateMarkets();
@@ -2868,9 +2894,9 @@ def get_embedded_html() -> str:
                                     <span>Polymarket</span>
                                 </div>
                                 <div class="platform-prices">
-                                    <span class="yes">${formatPct(pair.poly_yes || pair.buy_price)}</span>
+                                    <span class="yes">${formatPct(pair.poly_yes ?? pair.buy_price)}</span>
                                     <span class="divider">/</span>
-                                    <span class="no">${formatPct(pair.poly_no || (1 - (pair.buy_price || 0.5)))}</span>
+                                    <span class="no">${formatPct(pair.poly_no ?? (pair.buy_price != null ? 1 - pair.buy_price : null))}</span>
                                 </div>
                             </div>
                             <div class="platform-box">
@@ -2879,9 +2905,9 @@ def get_embedded_html() -> str:
                                     <span>Kalshi</span>
                                 </div>
                                 <div class="platform-prices">
-                                    <span class="yes">${formatPct(pair.kalshi_yes || pair.sell_price)}</span>
+                                    <span class="yes">${formatPct(pair.kalshi_yes ?? pair.sell_price)}</span>
                                     <span class="divider">/</span>
-                                    <span class="no">${formatPct(pair.kalshi_no || (1 - (pair.sell_price || 0.5)))}</span>
+                                    <span class="no">${formatPct(pair.kalshi_no ?? (pair.sell_price != null ? 1 - pair.sell_price : null))}</span>
                                 </div>
                             </div>
                         </div>
@@ -2944,9 +2970,9 @@ def get_embedded_html() -> str:
                             category: detectCategory(pair.poly_question || pair.kalshi_title || ''),
                             edge: 0, // No arb found yet
                             similarity: pair.similarity || 0,
-                            platform1: { name: 'Polymarket', price: pair.poly_yes || 0, action: 'Market' },
-                            platform2: { name: 'Kalshi', price: pair.kalshi_yes || 0, action: 'Market' },
-                            marketInfo: `Match: ${((pair.similarity || 0) * 100).toFixed(0)}% similar`
+                            platform1: { name: 'Polymarket', price: pair.poly_yes ?? null, action: 'Market' },
+                            platform2: { name: 'Kalshi', price: pair.kalshi_yes ?? null, action: 'Market' },
+                            marketInfo: `Monitoring: ${((pair.similarity || 0) * 100).toFixed(0)}% equivalent`
                         });
                     }
                 });
@@ -2957,7 +2983,8 @@ def get_embedded_html() -> str:
             
             // Update count
             const arbCount = allOpportunities.filter(o => o.edge > 0).length;
-            oppCount.textContent = arbCount > 0 ? `${arbCount} ARB found!` : `${allOpportunities.length} matches`;
+            const monitoredCount = allOpportunities.filter(o => o.type === 'matched').length;
+            oppCount.textContent = `${arbCount} ARB · ${monitoredCount} monitored`;
             
             // If no opportunities, show scanning message
             if (allOpportunities.length === 0) {
@@ -2967,8 +2994,8 @@ def get_embedded_html() -> str:
             
             noOpps.style.display = 'none';
             
-            // Render opportunity cards
-            const cardsHTML = allOpportunities.slice(0, 15).map(opp => {
+            // Render actionable opportunities separately from non-actionable matches.
+            const renderOpportunityCards = opportunities => opportunities.slice(0, 15).map(opp => {
                 const edgePct = (opp.edge * 100).toFixed(2);
                 const hasArb = opp.edge > 0;
                 const cardClass = opp.type === 'cross-platform' ? 'cross-platform' : 
@@ -3017,6 +3044,18 @@ def get_embedded_html() -> str:
                     </div>
                 `;
             }).join('');
+
+            const actionable = allOpportunities.filter(opp => opp.type !== 'matched');
+            const monitoring = allOpportunities.filter(opp => opp.type === 'matched');
+            const cardsHTML =
+                (actionable.length > 0
+                    ? '<div class="feed-subsection-title">Live Arbitrage Opportunities</div>' +
+                      renderOpportunityCards(actionable)
+                    : '') +
+                (monitoring.length > 0
+                    ? '<div class="feed-subsection-title">Matched Pairs — Monitoring</div>' +
+                      renderOpportunityCards(monitoring)
+                    : '');
             
             // Insert before the noOpportunities div
             feed.innerHTML = cardsHTML + '<div class="no-opportunities" id="noOpportunities" style="display: none;"></div>';
@@ -3043,8 +3082,10 @@ def get_embedded_html() -> str:
         }
         
         function formatPct(val) {
-            if (val === undefined || val === null) return '??%';
-            return (val * 100).toFixed(0) + '%';
+            if (val === undefined || val === null || !Number.isFinite(Number(val))) return '—';
+            const pct = Number(val) * 100;
+            if (pct > 0 && pct < 1) return pct.toFixed(1) + '%';
+            return pct.toFixed(0) + '%';
         }
 
         function escapeHtml(value) {
@@ -3054,6 +3095,53 @@ def get_embedded_html() -> str:
                 .replaceAll('>', '&gt;')
                 .replaceAll('"', '&quot;')
                 .replaceAll("'", '&#039;');
+        }
+
+        function safeHttpUrl(value) {
+            try {
+                const parsed = new URL(String(value || ''));
+                return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : null;
+            } catch {
+                return null;
+            }
+        }
+
+        function updateNewsCatalysts() {
+            const news = state.news_catalysts || {};
+            const status = document.getElementById('newsCatalystStatus');
+            const summary = document.getElementById('newsCatalystSummary');
+            const items = document.getElementById('newsCatalystItems');
+            const mode = news.status || 'disabled';
+            status.textContent = mode.replaceAll('_', ' ').toUpperCase();
+            status.style.color = mode === 'active'
+                ? 'var(--accent-green)'
+                : mode === 'error'
+                    ? 'var(--accent-red)'
+                    : 'var(--text-secondary)';
+            summary.textContent = news.enabled
+                ? `${Number(news.api_calls_today || 0)} API calls today · ${
+                    news.apply_priority_boost ? 'priority boost active' : 'log-only'
+                }`
+                : 'Scanner disabled by configuration';
+            const rows = Array.isArray(news.items) ? news.items : [];
+            if (!rows.length) {
+                items.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">No verified catalysts in the latest scan.</div>';
+                return;
+            }
+            items.innerHTML = rows.slice(0, 12).map(news => {
+                const source = safeHttpUrl(news.source_url);
+                const matches = Array.isArray(news.matches) ? news.matches : [];
+                const matchText = matches.slice(0, 4).map(match =>
+                    `${escapeHtml(match.market_platform)}:${escapeHtml(match.market_id)} (${(Number(match.relevance_score || 0) * 100).toFixed(0)}%)`
+                ).join(' · ');
+                const headline = source
+                    ? `<a href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer" style="color: var(--text-primary);">${escapeHtml(news.headline)}</a>`
+                    : escapeHtml(news.headline);
+                return `<div style="border-left: 2px solid var(--accent-purple); padding-left: 0.65rem;">
+                    <div style="font-size: 0.85rem; font-weight: 600;">${headline}</div>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(news.topic_category || 'other')} · ${matchText || 'no market above threshold'}</div>
+                </div>`;
+            }).join('');
         }
         
         function truncate(str, len) {
@@ -3083,8 +3171,8 @@ def get_embedded_html() -> str:
                                 ${truncate(pair.poly_question || pair.kalshi_title || 'Market', 50)}
                             </div>
                             <div class="market-prices">
-                                <span style="color: #8b5cf6; font-size: 0.7rem;">P: ${pair.poly_yes ? formatPct(pair.poly_yes) : '--'}</span>
-                                <span style="color: #f7931a; font-size: 0.7rem;">K: ${pair.kalshi_yes ? formatPct(pair.kalshi_yes) : '--'}</span>
+                                <span style="color: #8b5cf6; font-size: 0.7rem;">P: ${formatPct(pair.poly_yes)}</span>
+                                <span style="color: #f7931a; font-size: 0.7rem;">K: ${formatPct(pair.kalshi_yes)}</span>
                                 <span style="color: var(--text-muted); font-size: 0.65rem;">${similarity}% match</span>
                             </div>
                         </div>

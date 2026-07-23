@@ -193,6 +193,8 @@ class Market:
     event_title: str = ""
     outcome_label: str = ""
     negative_risk: bool = False
+    resolution_source: str = ""
+    oracle: str = ""
 
 
 @dataclass

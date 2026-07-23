@@ -21,6 +21,7 @@ from core.semantic_market_matching import (
     PipelineMetrics,
     SemanticMarketPipeline,
     SemanticRelation,
+    classify_market_category,
     deterministic_verification,
     kalshi_document,
     polymarket_document,
@@ -502,25 +503,10 @@ class MarketMatcher:
 
     def market_category(self, market, text: str) -> str:
         """Prefer venue category metadata, then classify proposition text."""
-        raw_category = getattr(market, "category", "")
-        if isinstance(raw_category, str):
-            category = raw_category.strip().lower()
-            aliases = {
-                "sports": "sports",
-                "sport": "sports",
-                "politics": "politics",
-                "political": "politics",
-                "crypto": "crypto",
-                "cryptocurrency": "crypto",
-                "finance": "finance",
-                "economics": "finance",
-                "entertainment": "entertainment",
-                "technology": "tech",
-                "tech": "tech",
-            }
-            if category in aliases:
-                return aliases[category]
-        return self._categorize_market(text)
+        inferred = self._categorize_market(text)
+        if inferred != "other":
+            return inferred
+        return classify_market_category(getattr(market, "category", ""), text)
 
     def candidate_tokens(self, text: str) -> set[str]:
         """Extract meaningful tokens for conservative candidate generation."""
@@ -587,6 +573,11 @@ class MarketMatcher:
             result.metrics.retrieved_candidates,
             result.metrics.embedding_cache_hits,
             result.metrics.embedding_cache_misses,
+        )
+        logger.info(
+            "Semantic category distribution | polymarket=%s | kalshi=%s",
+            result.metrics.polymarket_categories,
+            result.metrics.kalshi_categories,
         )
         return matches
 

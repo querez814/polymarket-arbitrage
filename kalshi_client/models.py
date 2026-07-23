@@ -39,6 +39,9 @@ class KalshiMarket:
     
     # Category
     category: str = ""
+    rules_primary: str = ""
+    rules_secondary: str = ""
+    settlement_source: str = ""
 
     @property
     def matching_text(self) -> str:

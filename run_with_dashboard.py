@@ -20,13 +20,14 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
 
 from polymarket_client import (
+    OrderBook,
     PolymarketClient,
     PolymarketVenueAdapter,
     create_polymarket_client,
@@ -51,6 +52,16 @@ from core.semantic_market_matching import (
     OpenAIEmbeddingClient,
     OpenAIResolutionVerifier,
     SemanticMarketPipeline,
+    kalshi_document,
+    polymarket_document,
+)
+from core.news_catalyst import (
+    NewsCatalystMapper,
+    NewsCatalystService,
+    OpenAINewsProvider,
+    PairRankingInput,
+    TrackedMarket,
+    rank_pairs,
 )
 from utils.config_loader import (
     BotConfig,
@@ -60,6 +71,7 @@ from utils.config_loader import (
 )
 from utils.logging_utils import opportunity_logger, setup_logging
 from utils.paper_trade_store import PaperTradeStore
+from utils.task_supervision import RestartEvent, RestartingTaskSupervisor
 from dashboard.server import app, dashboard_state, configure_dashboard_runtime
 from dashboard.integration import DashboardIntegration
 
@@ -87,6 +99,9 @@ class TradingBotWithDashboard:
         self.paper_locked_arb = None
         self.same_platform_detector = None
         self._last_combinatorial_scan = 0.0
+        self._last_combinatorial_status_log = 0.0
+        self._combinatorial_scans = 0
+        self._combinatorial_opportunities = 0
         self._startup_complete = False
         self._run_failed = False
 
@@ -96,9 +111,23 @@ class TradingBotWithDashboard:
         self.market_matcher = None
         self._kalshi_markets = []
         self._matched_pairs = []
+        self._kalshi_orderbooks: dict[str, OrderBook] = {}
         self._xplat_scan_task = None
         self._kalshi_monitor_task = None
         self._critical_failure_task = None
+        self._news_catalyst_task = None
+        self._news_catalyst_service = None
+        self._news_market_scores: dict[tuple[str, str], float] = {}
+        self._news_market_scores_updated_at: datetime | None = None
+        self._semantic_embedder = None
+        self._discovery_supervisor = RestartingTaskSupervisor(
+            "cross-platform discovery",
+            on_retry=self._on_cross_platform_task_retry,
+        )
+        self._scanner_supervisor = RestartingTaskSupervisor(
+            "cross-platform scanner",
+            on_retry=self._on_cross_platform_task_retry,
+        )
         self.production_runtime = None
         self.pair_monitor = None
         self.execution_journal = None
@@ -235,13 +264,14 @@ class TradingBotWithDashboard:
                     raise RuntimeError(
                         "OPENAI_API_KEY is required when semantic matching is enabled"
                     )
+                self._semantic_embedder = OpenAIEmbeddingClient(
+                    api_key=api_key,
+                    cache_path=self.config.mode.semantic_cache_path,
+                    model=self.config.mode.semantic_embedding_model,
+                    dimensions=self.config.mode.semantic_embedding_dimensions,
+                )
                 semantic_pipeline = SemanticMarketPipeline(
-                    embedder=OpenAIEmbeddingClient(
-                        api_key=api_key,
-                        cache_path=self.config.mode.semantic_cache_path,
-                        model=self.config.mode.semantic_embedding_model,
-                        dimensions=self.config.mode.semantic_embedding_dimensions,
-                    ),
+                    embedder=self._semantic_embedder,
                     verifier=OpenAIResolutionVerifier(
                         api_key=api_key,
                         model=self.config.mode.semantic_verification_model,
@@ -288,8 +318,15 @@ class TradingBotWithDashboard:
                 await self._start_production_runtime()
 
             # Start Kalshi monitoring in background
+            logger.info(
+                "Cross-platform task supervision active "
+                "(transient 429/5xx/connection failures restart with backoff)"
+            )
             self._kalshi_monitor_task = asyncio.create_task(
-                self._start_kalshi_monitoring()
+                self._discovery_supervisor.run(
+                    self._start_kalshi_monitoring,
+                    should_run=lambda: self._running,
+                )
             )
             self._kalshi_monitor_task.add_done_callback(self._critical_task_done)
 
@@ -391,6 +428,8 @@ class TradingBotWithDashboard:
         )
         await self.data_feed.start()
 
+        self._configure_news_catalyst_scanner()
+
         # Initialize dashboard integration
         self.dashboard_integration = DashboardIntegration(
             data_feed=self.data_feed,
@@ -411,6 +450,11 @@ class TradingBotWithDashboard:
 
         # Start the web server
         await self._start_server()
+        if self._news_catalyst_service is not None:
+            self._news_catalyst_task = asyncio.create_task(
+                self._news_catalyst_loop(),
+                name="news_catalyst_scanner",
+            )
         self._startup_complete = True
         logger.info("Bot and dashboard started successfully!")
 
@@ -427,6 +471,229 @@ class TradingBotWithDashboard:
             pnl = float(summary["pnl"]["total_pnl"])
             return float(summary["initial_balance"]) + pnl, pnl
         return float(self.config.mode.dry_run_initial_balance), 0.0
+
+    def _configure_news_catalyst_scanner(self) -> None:
+        """Configure source-backed log-only scanning without authorizing trades."""
+        news = self.config.news_catalyst
+        dashboard_state.news_catalysts = {
+            "enabled": news.enabled,
+            "apply_priority_boost": news.apply_priority_boost,
+            "status": "log_only" if news.enabled else "disabled",
+            "last_scan_at": None,
+            "api_calls_today": 0,
+            "items": [],
+            "boosted_markets": [],
+        }
+        if not news.enabled:
+            logger.info("News catalyst scanner disabled by configuration")
+            return
+        if self.paper_trade_store is None:
+            raise RuntimeError(
+                "news catalyst scanning requires the persistent performance store"
+            )
+        if not self.config.mode.semantic_matching_enabled:
+            raise RuntimeError(
+                "news catalyst scanning requires semantic matching so tracked "
+                "market embeddings are cached before each scan"
+            )
+        api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is required when news catalyst scanning is enabled"
+            )
+        if self._semantic_embedder is None:
+            self._semantic_embedder = OpenAIEmbeddingClient(
+                api_key=api_key,
+                cache_path=self.config.mode.semantic_cache_path,
+                model=self.config.mode.semantic_embedding_model,
+                dimensions=self.config.mode.semantic_embedding_dimensions,
+            )
+        self._news_catalyst_service = NewsCatalystService(
+            provider=OpenAINewsProvider(
+                api_key=api_key,
+                model=news.model,
+            ),
+            mapper=NewsCatalystMapper(
+                embedder=self._semantic_embedder,
+                similarity_threshold=news.relevance_similarity_threshold,
+            ),
+            store=self.paper_trade_store,
+            lookback_hours=int(news.lookback_hours),
+            max_items=news.max_news_items_per_scan,
+            max_daily_api_calls=news.max_daily_api_calls,
+        )
+        logger.info(
+            "News catalyst scanner configured | model=%s interval=%.0fs "
+            "mode=%s daily_cap=%s",
+            news.model,
+            news.scan_interval_seconds,
+            "priority_boost" if news.apply_priority_boost else "log_only",
+            news.max_daily_api_calls,
+        )
+
+    def _tracked_news_markets(self) -> list[TrackedMarket]:
+        markets: list[TrackedMarket] = []
+        if self.data_feed:
+            markets.extend(
+                TrackedMarket(
+                    platform="polymarket",
+                    market_id=market.market_id,
+                    question=polymarket_document(market).semantic_text,
+                    volume=float(market.volume_24h),
+                )
+                for market in self.data_feed._markets.values()
+                if market.question.strip()
+            )
+        markets.extend(
+            TrackedMarket(
+                platform="kalshi",
+                market_id=market.ticker,
+                question=kalshi_document(market).semantic_text,
+                volume=float(market.volume),
+            )
+            for market in self._kalshi_markets
+            if market.matching_text.strip()
+        )
+        return markets
+
+    async def _news_catalyst_loop(self) -> None:
+        """Scan independently from orderbook and arbitrage loops."""
+        interval = self.config.news_catalyst.scan_interval_seconds
+        while self._running and self._news_catalyst_service is not None:
+            matching_status = dashboard_state.cross_platform.get(
+                "matching_status", "idle"
+            )
+            if matching_status not in {"complete", "no_matches"}:
+                logger.info(
+                    "News catalyst scan waiting for semantic market cache | "
+                    "matching_status=%s",
+                    matching_status,
+                )
+                await asyncio.sleep(min(30.0, interval))
+                continue
+            try:
+                result = await self._news_catalyst_service.run_once(
+                    self._tracked_news_markets()
+                )
+                if result.status == "complete":
+                    current_scores: dict[tuple[str, str], float] = {}
+                    for match in result.matches:
+                        key = (match.market_platform, match.market_id)
+                        current_scores[key] = max(
+                            match.relevance_score,
+                            current_scores.get(key, 0.0),
+                        )
+                    self._news_market_scores = current_scores
+                    self._news_market_scores_updated_at = datetime.now(timezone.utc)
+                matches_by_item: dict[int, list[dict]] = {}
+                for match in result.matches:
+                    matches_by_item.setdefault(match.news_index, []).append(
+                        {
+                            "market_platform": match.market_platform,
+                            "market_id": match.market_id,
+                            "relevance_score": match.relevance_score,
+                        }
+                    )
+                state_update = {
+                        "status": (
+                            "daily_cap_reached"
+                            if result.status == "daily_cap_reached"
+                            else (
+                                "active"
+                                if self.config.news_catalyst.apply_priority_boost
+                                else "log_only"
+                            )
+                        ),
+                        "last_scan_at": datetime.utcnow().isoformat(),
+                        "api_calls_today": result.api_calls_today,
+                    }
+                if result.status == "complete":
+                    state_update["items"] = [
+                            {
+                                **item.model_dump(mode="json"),
+                                "matches": matches_by_item.get(index, []),
+                            }
+                            for index, item in enumerate(result.items)
+                        ]
+                dashboard_state.news_catalysts.update(state_update)
+                self._update_pair_priority()
+                logger.info(
+                    "News catalyst scan %s | verified_items=%s matches=%s "
+                    "api_calls_today=%s priority_application=%s",
+                    result.status,
+                    len(result.items),
+                    len(result.matches),
+                    result.api_calls_today,
+                    self.config.news_catalyst.apply_priority_boost,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._news_market_scores = {}
+                self._news_market_scores_updated_at = None
+                self._update_pair_priority()
+                dashboard_state.news_catalysts["status"] = "error"
+                logger.exception(
+                    "News catalyst scan failed; skipping until the next interval"
+                )
+            await asyncio.sleep(interval)
+
+    def _update_pair_priority(self) -> None:
+        if not self.data_feed:
+            return
+        if (
+            self._news_market_scores_updated_at is not None
+            and datetime.now(timezone.utc) - self._news_market_scores_updated_at
+            > timedelta(hours=self.config.news_catalyst.lookback_hours)
+        ):
+            self._news_market_scores = {}
+            self._news_market_scores_updated_at = None
+        if not self._matched_pairs:
+            self.data_feed.set_priority_markets([])
+            dashboard_state.news_catalysts["boosted_markets"] = []
+            return
+        poly_markets = {
+            market.market_id: market for market in self.data_feed._markets.values()
+        }
+        kalshi_markets = {market.ticker: market for market in self._kalshi_markets}
+        rankings = rank_pairs(
+            [
+                PairRankingInput(
+                    polymarket_id=pair.polymarket_id,
+                    kalshi_ticker=pair.kalshi_ticker,
+                    similarity_score=pair.similarity_score,
+                    polymarket_volume=float(
+                        getattr(poly_markets.get(pair.polymarket_id), "volume_24h", 0)
+                    ),
+                    kalshi_volume=float(
+                        getattr(kalshi_markets.get(pair.kalshi_ticker), "volume", 0)
+                    ),
+                )
+                for pair in self._matched_pairs
+            ],
+            news_scores=self._news_market_scores,
+            catalyst_boost_weight=self.config.news_catalyst.catalyst_boost_weight,
+        )
+        candidate_ids = [
+            row.polymarket_id
+            for row in rankings[: self.config.mode.hot_pair_limit]
+        ]
+        dashboard_state.news_catalysts["boosted_markets"] = [
+            {
+                "polymarket_id": row.polymarket_id,
+                "kalshi_ticker": row.kalshi_ticker,
+                "news_relevance_score": row.news_relevance_score,
+                "rank_score": row.rank_score,
+                "applied": self.config.news_catalyst.apply_priority_boost,
+            }
+            for row in rankings[: self.config.mode.hot_pair_limit]
+            if row.news_relevance_score > 0
+        ]
+        self.data_feed.set_priority_markets(
+            candidate_ids
+            if self.config.news_catalyst.apply_priority_boost
+            else [pair.polymarket_id for pair in self._matched_pairs]
+        )
 
     async def _start_production_runtime(self) -> None:
         """Own all live cross-venue resources for this process."""
@@ -545,24 +812,7 @@ class TradingBotWithDashboard:
             and now - self._last_combinatorial_scan >= 2.0
         ):
             self._last_combinatorial_scan = now
-            for opportunity in self.same_platform_detector.detect(
-                self.data_feed.get_all_market_states()
-            ):
-                opportunity_logger.log_combinatorial_opportunity(
-                    opportunity_id=opportunity.opportunity_id,
-                    event_id=opportunity.event_id,
-                    kind=opportunity.kind,
-                    edge=opportunity.net_edge,
-                    total_price=opportunity.total_price,
-                    legs=len(opportunity.legs),
-                    max_size=opportunity.max_size,
-                )
-                self.dashboard_integration.add_opportunity(
-                    opportunity_type=opportunity.kind,
-                    market_id=opportunity.event_id,
-                    edge=opportunity.net_edge,
-                    suggested_size=opportunity.max_size,
-                )
+            self._run_combinatorial_scan(now=now)
 
         for signal in signals:
             # Add to dashboard
@@ -581,6 +831,57 @@ class TradingBotWithDashboard:
 
             # Submit to execution
             asyncio.create_task(self.execution_engine.submit_signal(signal))
+
+    def _run_combinatorial_scan(self, *, now: float | None = None) -> None:
+        if self.same_platform_detector is None or self.data_feed is None:
+            return
+        now = time.monotonic() if now is None else now
+        opportunities = self.same_platform_detector.detect(
+            self.data_feed.get_all_market_states()
+        )
+        self._combinatorial_scans += 1
+        self._combinatorial_opportunities += len(opportunities)
+        metrics = self.same_platform_detector.last_metrics
+        dashboard_state.operational["bundle_arb"] = {
+            "enabled": True,
+            "scans": self._combinatorial_scans,
+            "states": metrics.states,
+            "negative_risk_states": metrics.negative_risk_states,
+            "event_groups": metrics.event_groups,
+            "eligible_groups": metrics.eligible_groups,
+            "opportunities": self._combinatorial_opportunities,
+            "last_scan_at": datetime.utcnow().isoformat(),
+        }
+        if now - self._last_combinatorial_status_log >= 60.0:
+            self._last_combinatorial_status_log = now
+            logger.info(
+                "Bundle arb scan active | scans=%s states=%s "
+                "negative_risk_states=%s event_groups=%s eligible_groups=%s "
+                "opportunities=%s",
+                self._combinatorial_scans,
+                metrics.states,
+                metrics.negative_risk_states,
+                metrics.event_groups,
+                metrics.eligible_groups,
+                self._combinatorial_opportunities,
+            )
+        for opportunity in opportunities:
+            opportunity_logger.log_combinatorial_opportunity(
+                opportunity_id=opportunity.opportunity_id,
+                event_id=opportunity.event_id,
+                kind=opportunity.kind,
+                edge=opportunity.net_edge,
+                total_price=opportunity.total_price,
+                legs=len(opportunity.legs),
+                max_size=opportunity.max_size,
+            )
+            if self.dashboard_integration:
+                self.dashboard_integration.add_opportunity(
+                    opportunity_type=opportunity.kind,
+                    market_id=opportunity.event_id,
+                    edge=opportunity.net_edge,
+                    suggested_size=opportunity.max_size,
+                )
 
     async def _simulate_fills(self) -> None:
         """Simulate order fills in dry run mode."""
@@ -669,6 +970,7 @@ class TradingBotWithDashboard:
                     len(self._kalshi_markets),
                 )
                 await self._run_matching_background(polymarket_markets)
+                self._discovery_supervisor.mark_healthy()
 
             first_cycle = False
             refresh_seconds = self.config.mode.cross_platform_refresh_seconds
@@ -703,12 +1005,7 @@ class TradingBotWithDashboard:
                 cached_pairs = self.market_matcher.get_cached_pairs()
                 if cached_pairs:
                     dashboard_state.cross_platform["matched_pairs_data"] = [
-                        {
-                            "poly_question": pair.polymarket_question,
-                            "kalshi_title": pair.kalshi_title,
-                            "similarity": pair.similarity_score,
-                            "category": pair.category,
-                        }
+                        self._matched_pair_dashboard_row(pair)
                         for pair in cached_pairs[-50:]
                     ]
 
@@ -732,12 +1029,7 @@ class TradingBotWithDashboard:
 
             # Prepare matched pairs data for dashboard display
             dashboard_state.cross_platform["matched_pairs_data"] = [
-                {
-                    "poly_question": pair.polymarket_question,
-                    "kalshi_title": pair.kalshi_title,
-                    "similarity": pair.similarity_score,
-                    "category": pair.category,
-                }
+                self._matched_pair_dashboard_row(pair)
                 for pair in self._matched_pairs[:50]
             ]
             review_candidates = self.market_matcher.get_review_candidates()
@@ -775,6 +1067,8 @@ class TradingBotWithDashboard:
                 for pair in review_candidates
             ]
 
+            self._update_pair_priority()
+
             if not self._matched_pairs:
                 dashboard_state.cross_platform["matching_status"] = "no_matches"
                 logger.info("Matching complete: no equivalent single-event pairs found")
@@ -803,17 +1097,74 @@ class TradingBotWithDashboard:
                 ),
                 evidence={"matched_pairs": len(self._matched_pairs)},
             )
+
             if self._xplat_scan_task is None or self._xplat_scan_task.done():
                 self._xplat_scan_task = asyncio.create_task(
-                    self._scan_cross_platform_pairs()
+                    self._scanner_supervisor.run(
+                        self._scan_cross_platform_pairs,
+                        should_run=lambda: self._running,
+                    )
                 )
+                self._xplat_scan_task.add_done_callback(self._critical_task_done)
         except Exception as e:
-            logger.error(f"Matching error: {e}")
-            import traceback
-
-            traceback.print_exc()
+            logger.exception("Matching error: %s", e)
             dashboard_state.cross_platform["matching_status"] = "error"
-            self._run_failed = True
+            raise
+
+    def _matched_pair_dashboard_row(self, pair) -> dict:
+        """Build a monitoring row from the latest live venue books.
+
+        Missing books remain null. A null is materially different from a
+        genuine zero-cent bid and must stay distinguishable in the dashboard.
+        """
+        polymarket_book = (
+            self.data_feed.get_order_book(pair.polymarket_id)
+            if self.data_feed
+            else None
+        )
+        kalshi_book = self._kalshi_orderbooks.get(pair.kalshi_ticker)
+        return {
+            "polymarket_id": pair.polymarket_id,
+            "kalshi_ticker": pair.kalshi_ticker,
+            "poly_question": pair.polymarket_question,
+            "kalshi_title": pair.kalshi_title,
+            "similarity": pair.similarity_score,
+            "category": pair.category,
+            "poly_yes": (
+                polymarket_book.best_bid_yes if polymarket_book else None
+            ),
+            "poly_no": polymarket_book.best_bid_no if polymarket_book else None,
+            "kalshi_yes": kalshi_book.best_bid_yes if kalshi_book else None,
+            "kalshi_no": kalshi_book.best_bid_no if kalshi_book else None,
+        }
+
+    def _publish_matched_pairs_dashboard(self) -> None:
+        dashboard_state.cross_platform["matched_pairs_data"] = [
+            self._matched_pair_dashboard_row(pair)
+            for pair in self._matched_pairs[:50]
+        ]
+
+    def _on_cross_platform_task_retry(self, event: RestartEvent) -> None:
+        """Expose transient recovery without marking the paper run failed."""
+        restarts = dashboard_state.cross_platform.setdefault("task_restarts", {})
+        restarts[event.task_name] = int(restarts.get(event.task_name, 0)) + 1
+        dashboard_state.cross_platform["matching_status"] = "recovering"
+        dashboard_state.cross_platform["last_transient_error"] = {
+            "task": event.task_name,
+            "error_type": event.error_type,
+            "message": event.error_message,
+            "attempt": event.attempt,
+            "backoff_seconds": event.delay_seconds,
+            "at": datetime.utcnow().isoformat(),
+        }
+        logger.warning(
+            "Transient %s failure (%s); restart attempt %s in %.1fs: %s",
+            event.task_name,
+            event.error_type,
+            event.attempt,
+            event.delay_seconds,
+            event.error_message,
+        )
 
     def _critical_dependencies_ready(self) -> bool:
         """Report whether the configured cross-platform discovery path is alive."""
@@ -981,6 +1332,8 @@ class TradingBotWithDashboard:
                     scan_count += 1
                     if kalshi_ob:
                         orderbooks_fetched += 1
+                        self._kalshi_orderbooks[pair.kalshi_ticker] = kalshi_ob
+                        self._publish_matched_pairs_dashboard()
                     dashboard_state.cross_platform["pairs_scanned"] = scan_count
                     dashboard_state.cross_platform["kalshi_orderbooks"] = (
                         orderbooks_fetched
@@ -1117,11 +1470,12 @@ class TradingBotWithDashboard:
 
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
+                self._scanner_supervisor.mark_healthy()
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
-                break
+                raise
             except Exception as e:
-                logger.error(f"Cross-platform scan error: {e}")
+                logger.exception("Cross-platform scan error: %s", e)
                 dashboard_state.cross_platform["scan_status"] = "error"
                 self._record_cross_platform_decision(
                     outcome=DecisionOutcome.ERROR,
@@ -1129,7 +1483,7 @@ class TradingBotWithDashboard:
                     explanation=f"Cross-platform scanner error: {e}",
                     evidence={"error": str(e)},
                 )
-                await asyncio.sleep(5.0)
+                raise
 
     async def stop(self) -> None:
         """Stop everything gracefully."""
@@ -1139,6 +1493,12 @@ class TradingBotWithDashboard:
         if self.dashboard_integration:
             await self.dashboard_integration.stop()
 
+        if self._news_catalyst_task:
+            self._news_catalyst_task.cancel()
+            try:
+                await self._news_catalyst_task
+            except asyncio.CancelledError:
+                pass
         if self._xplat_scan_task:
             self._xplat_scan_task.cancel()
             try:

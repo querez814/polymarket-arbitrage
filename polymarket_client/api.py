@@ -191,6 +191,9 @@ class PolymarketClient(BasePolymarketClient):
         self._resilience: dict[str, EndpointResilience] = {}
         self._market_list_cache: dict[str, tuple[float, list[Market]]] = {}
         self.market_list_ttl_seconds = 300.0
+        self._orderbook_requests = 0
+        self._orderbook_successes = 0
+        self._orderbook_not_found = 0
 
     @property
     def request_metrics(self) -> dict[str, dict[str, float | int | bool]]:
@@ -198,6 +201,14 @@ class PolymarketClient(BasePolymarketClient):
         return {
             endpoint: resilience.metrics
             for endpoint, resilience in self._resilience.items()
+        }
+
+    @property
+    def orderbook_metrics(self) -> dict[str, int]:
+        return {
+            "requests": self._orderbook_requests,
+            "successes": self._orderbook_successes,
+            "not_found": self._orderbook_not_found,
         }
         
     async def __aenter__(self) -> "PolymarketClient":
@@ -382,8 +393,6 @@ class PolymarketClient(BasePolymarketClient):
                 return list(cached[1])
             params = filters.copy() if filters else {}
             params.setdefault("closed", "false")
-            params.setdefault("order", "volume24hr")
-            params.setdefault("ascending", "false")
             
             all_markets: list[Market] = []
             offset = 0
@@ -564,6 +573,17 @@ class PolymarketClient(BasePolymarketClient):
                     data.get("negRisk")
                     or data.get("negativeRisk")
                     or parent_event.get("negRisk")
+                ),
+                resolution_source=str(
+                    data.get("resolutionSource")
+                    or parent_event.get("resolutionSource")
+                    or ""
+                ),
+                oracle=str(
+                    data.get("oracle")
+                    or data.get("umaBond")
+                    or parent_event.get("oracle")
+                    or ""
                 ),
             )
         except Exception as e:
@@ -775,11 +795,17 @@ class PolymarketClient(BasePolymarketClient):
         if token_id in self._unavailable_token_ids:
             return TokenOrderBook(token_type=token_type)
         try:
+            self._orderbook_requests += 1
             data = await self._request(
                 "GET",
                 "/book",
                 params={"token_id": token_id},
                 base_url=self.rest_url,
+            )
+            self._orderbook_successes += 1
+            logger.debug(
+                "Orderbook HTTP 200 on https://clob.polymarket.com/book token_id=%s",
+                token_id,
             )
             
             # Parse bids and asks
@@ -806,6 +832,7 @@ class PolymarketClient(BasePolymarketClient):
             
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
+                self._orderbook_not_found += 1
                 self._unavailable_token_ids.add(token_id)
                 logger.info(
                     "Suppressing stale Polymarket token with no orderbook: %s",

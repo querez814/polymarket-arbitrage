@@ -85,6 +85,36 @@ def test_dashboard_state_limits_visible_paper_order_history():
     assert data["paper_orders"][-1]["order_id"] == "order-104"
 
 
+def test_dashboard_distinguishes_missing_prices_and_matched_pair_monitoring():
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app
+
+    page = TestClient(app).get("/").text
+
+    assert "Matched Pairs — Monitoring" in page
+    assert "pair.poly_yes ?? pair.buy_price" in page
+    assert "pair.kalshi_yes ?? pair.sell_price" in page
+    assert "return '—'" in page
+    assert "pct > 0 && pct < 1" in page
+
+
+def test_dashboard_exposes_inspectable_news_catalyst_status_and_panel():
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app
+
+    state = DashboardState()
+    state.news_catalysts["status"] = "log_only"
+    state.news_catalysts["api_calls_today"] = 2
+
+    assert state.to_dict()["news_catalysts"]["status"] == "log_only"
+    page = TestClient(app).get("/").text
+    assert "Today’s Catalysts" in page
+    assert "updateNewsCatalysts" in page
+    assert "news.source_url" in page
+
+
 @pytest.mark.asyncio
 async def test_dashboard_integration_updates_paper_mode_fields():
     integration = DashboardIntegration(

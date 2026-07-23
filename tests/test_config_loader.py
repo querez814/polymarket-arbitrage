@@ -743,6 +743,11 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.mode.semantic_min_kalshi_volume == 1
     assert config.mode.semantic_min_kalshi_open_interest == 1
     assert config.trading.cross_platform_min_executable_size == pytest.approx(1.0)
+    assert config.news_catalyst.enabled is True
+    assert config.news_catalyst.apply_priority_boost is False
+    assert config.news_catalyst.scan_interval_seconds == pytest.approx(1800)
+    assert config.news_catalyst.max_daily_api_calls == 60
+    assert config.news_catalyst.mispricing_detector_enabled is False
 
 
 def test_paper_locked_arb_rejects_random_fill_mode():

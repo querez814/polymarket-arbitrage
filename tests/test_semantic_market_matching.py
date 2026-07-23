@@ -13,6 +13,8 @@ from core.semantic_market_matching import (
     SQLiteEmbeddingCache,
     SemanticMarketPipeline,
     SemanticRelation,
+    kalshi_document,
+    polymarket_document,
 )
 
 
@@ -100,6 +102,79 @@ def test_pipeline_rejects_similar_wording_with_different_resolution_scope():
     assert result.review
     assert result.review[0].relation is SemanticRelation.INDEPENDENT
     assert "scope_conflict" in result.review[0].reasons
+
+
+def test_embedding_documents_include_resolution_cutoff_and_oracle_metadata():
+    poly = polymarket_document(
+        _poly(
+            "Will Alice Smith prevail?",
+            description="Resolves Yes if Alice Smith is certified mayor.",
+            resolution_source="City election board",
+        )
+    )
+    kalshi = kalshi_document(
+        _kalshi(
+            "Does the candidate prevail?",
+            rules_primary="Resolves Yes if Alice Smith is certified mayor.",
+            rules_secondary="Certification must be final after recounts.",
+            settlement_source="City election board",
+        )
+    )
+
+    assert "Cutoff: 2026-11-04T00:00:00+00:00" in poly.semantic_text
+    assert "Oracle/Source: City election board" in poly.semantic_text
+    assert "Resolution criteria: Resolves Yes if Alice Smith" in poly.semantic_text
+    assert "Cutoff: 2026-11-04T00:00:00+00:00" in kalshi.semantic_text
+    assert "Primary resolution rules: Resolves Yes if Alice Smith" in kalshi.semantic_text
+    assert "Secondary resolution rules: Certification must be final" in kalshi.semantic_text
+    assert "Oracle/Source: City election board" in kalshi.semantic_text
+
+
+def test_specific_text_classification_overrides_incorrect_politics_fallback():
+    document = kalshi_document(
+        _kalshi(
+            "Will the New York Yankees win the 2026 World Series?",
+            event_title="2026 World Series",
+            category="Politics",
+        )
+    )
+
+    assert document.category == "sports"
+
+
+def test_unrecognized_text_does_not_inherit_unreliable_politics_default():
+    document = kalshi_document(
+        _kalshi(
+            "Will the Suez Canal close before September?",
+            event_title="Suez Canal operations",
+            category="Politics",
+        )
+    )
+
+    assert document.category == "other"
+
+
+def test_resolution_criteria_can_generate_candidates_for_paraphrased_titles():
+    pipeline = SemanticMarketPipeline(retrieval_floor=0.0)
+    result = asyncio.run(
+        pipeline.match(
+            [
+                _poly(
+                    "Will the official outcome occur?",
+                    description="Resolves Yes if Alice Smith is certified mayor.",
+                )
+            ],
+            [
+                _kalshi(
+                    "Does the candidate prevail?",
+                    rules_primary="Resolves Yes if Alice Smith is certified mayor.",
+                )
+            ],
+        )
+    )
+
+    assert result.metrics.structural_candidates == 1
+    assert result.metrics.retrieved_candidates == 1
 
 
 def test_pipeline_structurally_excludes_non_overlapping_markets():

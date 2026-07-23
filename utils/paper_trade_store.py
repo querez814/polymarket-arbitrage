@@ -10,7 +10,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -226,6 +226,41 @@ class PaperTradeStore:
                 seen_count INTEGER NOT NULL DEFAULT 1
             );
 
+            CREATE TABLE IF NOT EXISTS news_catalyst_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                headline TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                topic_category TEXT NOT NULL,
+                entities_json TEXT NOT NULL,
+                published_at_utc TEXT NOT NULL,
+                scanned_at_utc TEXT NOT NULL,
+                UNIQUE(source_url, published_at_utc)
+            );
+
+            CREATE TABLE IF NOT EXISTS news_market_relevance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                news_event_id INTEGER NOT NULL
+                    REFERENCES news_catalyst_events(id) ON DELETE CASCADE,
+                market_platform TEXT NOT NULL
+                    CHECK (market_platform IN ('polymarket', 'kalshi')),
+                market_id TEXT NOT NULL,
+                relevance_score REAL NOT NULL
+                    CHECK (relevance_score >= 0 AND relevance_score <= 1),
+                matched_at_utc TEXT NOT NULL,
+                UNIQUE(
+                    news_event_id, market_platform, market_id, matched_at_utc
+                )
+            );
+
+            CREATE TABLE IF NOT EXISTS news_catalyst_api_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                called_at_utc TEXT NOT NULL,
+                status TEXT NOT NULL,
+                item_count INTEGER NOT NULL DEFAULT 0,
+                error_detail TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_event_at
                 ON paper_trade_events (event_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_order_id
@@ -236,6 +271,14 @@ class PaperTradeStore:
                 ON paper_run_sessions (started_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_semantic_pair_reviews_status
                 ON semantic_pair_reviews (approval_status, verification_confidence DESC);
+            CREATE INDEX IF NOT EXISTS idx_news_catalyst_events_scanned
+                ON news_catalyst_events (scanned_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_news_market_relevance_market
+                ON news_market_relevance (
+                    market_platform, market_id, matched_at_utc DESC
+                );
+            CREATE INDEX IF NOT EXISTS idx_news_catalyst_api_calls_called
+                ON news_catalyst_api_calls (called_at_utc DESC);
             """)
         columns = {
             row["name"]
@@ -263,6 +306,232 @@ class PaperTradeStore:
             END
             """)
         self._conn.commit()
+
+    def reserve_news_api_call(
+        self,
+        *,
+        max_daily_calls: int,
+        called_at: Optional[datetime] = None,
+    ) -> Optional[int]:
+        """Atomically reserve one call against the durable UTC daily cap."""
+        if max_daily_calls <= 0:
+            raise ValueError("max_daily_calls must be positive")
+        moment = self._as_utc(called_at)
+        day_start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            count = self._conn.execute(
+                """
+                SELECT COUNT(*) FROM news_catalyst_api_calls
+                WHERE called_at_utc >= ? AND called_at_utc < ?
+                """,
+                (to_utc_iso(day_start), to_utc_iso(day_end)),
+            ).fetchone()[0]
+            if int(count) >= max_daily_calls:
+                self._conn.rollback()
+                return None
+            cursor = self._conn.execute(
+                """
+                INSERT INTO news_catalyst_api_calls (
+                    called_at_utc, status, item_count
+                ) VALUES (?, 'reserved', 0)
+                """,
+                (to_utc_iso(moment),),
+            )
+            self._conn.commit()
+            if cursor.lastrowid is None:
+                raise RuntimeError("failed to reserve news API call")
+            return int(cursor.lastrowid)
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def reserve_news_api_calls(
+        self,
+        *,
+        call_count: int,
+        max_daily_calls: int,
+        called_at: Optional[datetime] = None,
+    ) -> list[int]:
+        """Reserve a whole scan's worst-case API units or reserve none."""
+        if call_count <= 0:
+            raise ValueError("call_count must be positive")
+        if max_daily_calls <= 0:
+            raise ValueError("max_daily_calls must be positive")
+        moment = self._as_utc(called_at)
+        day_start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            count = int(
+                self._conn.execute(
+                    """
+                    SELECT COUNT(*) FROM news_catalyst_api_calls
+                    WHERE called_at_utc >= ? AND called_at_utc < ?
+                    """,
+                    (to_utc_iso(day_start), to_utc_iso(day_end)),
+                ).fetchone()[0]
+            )
+            if count + call_count > max_daily_calls:
+                self._conn.rollback()
+                return []
+            call_ids: list[int] = []
+            for _ in range(call_count):
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO news_catalyst_api_calls (
+                        called_at_utc, status, item_count
+                    ) VALUES (?, 'reserved', 0)
+                    """,
+                    (to_utc_iso(moment),),
+                )
+                if cursor.lastrowid is None:
+                    raise RuntimeError("failed to reserve news API call")
+                call_ids.append(int(cursor.lastrowid))
+            self._conn.commit()
+            return call_ids
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def complete_news_api_call(
+        self,
+        call_id: int,
+        *,
+        status: str,
+        item_count: int = 0,
+        error_detail: str = "",
+    ) -> None:
+        if status not in {"succeeded", "failed"}:
+            raise ValueError("news API call status must be succeeded or failed")
+        if item_count < 0:
+            raise ValueError("item_count must be non-negative")
+        cursor = self._conn.execute(
+            """
+            UPDATE news_catalyst_api_calls
+            SET status=?, item_count=?, error_detail=?
+            WHERE id=? AND status='reserved'
+            """,
+            (status, item_count, error_detail[:1000] or None, call_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise ValueError("unknown or already completed news API call")
+        self._conn.commit()
+
+    def news_api_calls_today(self, *, at: Optional[datetime] = None) -> int:
+        moment = self._as_utc(at)
+        day_start = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        return int(
+            self._conn.execute(
+                """
+                SELECT COUNT(*) FROM news_catalyst_api_calls
+                WHERE called_at_utc >= ? AND called_at_utc < ?
+                """,
+                (to_utc_iso(day_start), to_utc_iso(day_end)),
+            ).fetchone()[0]
+        )
+
+    def record_news_catalysts(
+        self,
+        items: list[Any],
+        matches: list[Any],
+        *,
+        scanned_at: Optional[datetime] = None,
+    ) -> None:
+        """Persist source-backed events and their all-market relevance scores."""
+        moment = self._as_utc(scanned_at)
+        scanned_iso = to_utc_iso(moment)
+        event_ids: list[int] = []
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for item in items:
+                published = self._as_utc(item.published_at)
+                source_url = str(item.source_url)
+                self._conn.execute(
+                    """
+                    INSERT INTO news_catalyst_events (
+                        headline, summary, source_url, topic_category,
+                        entities_json, published_at_utc, scanned_at_utc
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_url, published_at_utc) DO UPDATE SET
+                        headline=excluded.headline,
+                        summary=excluded.summary,
+                        topic_category=excluded.topic_category,
+                        entities_json=excluded.entities_json,
+                        scanned_at_utc=excluded.scanned_at_utc
+                    """,
+                    (
+                        item.headline,
+                        item.summary,
+                        source_url,
+                        item.topic_category,
+                        json.dumps(list(item.entities), separators=(",", ":")),
+                        to_utc_iso(published),
+                        scanned_iso,
+                    ),
+                )
+                row = self._conn.execute(
+                    """
+                    SELECT id FROM news_catalyst_events
+                    WHERE source_url=? AND published_at_utc=?
+                    """,
+                    (source_url, to_utc_iso(published)),
+                ).fetchone()
+                event_ids.append(int(row[0]))
+            for match in matches:
+                if match.news_index < 0 or match.news_index >= len(event_ids):
+                    raise ValueError("news match references an unknown item")
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO news_market_relevance (
+                        news_event_id, market_platform, market_id,
+                        relevance_score, matched_at_utc
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event_ids[match.news_index],
+                        match.market_platform,
+                        match.market_id,
+                        float(match.relevance_score),
+                        scanned_iso,
+                    ),
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def recent_news_catalysts(self, limit: int = 40) -> list[dict[str, Any]]:
+        event_rows = self._conn.execute(
+            """
+            SELECT * FROM news_catalyst_events
+            ORDER BY scanned_at_utc DESC, published_at_utc DESC
+            LIMIT ?
+            """,
+            (max(1, min(limit, 200)),),
+        ).fetchall()
+        results: list[dict[str, Any]] = []
+        for event_row in event_rows:
+            event = dict(event_row)
+            event["entities"] = json.loads(event.pop("entities_json"))
+            event["matches"] = [
+                dict(row)
+                for row in self._conn.execute(
+                    """
+                    SELECT market_platform, market_id, relevance_score,
+                           matched_at_utc
+                    FROM news_market_relevance
+                    WHERE news_event_id=?
+                    ORDER BY relevance_score DESC, market_platform, market_id
+                    """,
+                    (event["id"],),
+                ).fetchall()
+            ]
+            results.append(event)
+        return results
 
     def record_pair_review(
         self,

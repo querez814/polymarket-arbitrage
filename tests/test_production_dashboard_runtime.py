@@ -1,10 +1,20 @@
 from types import SimpleNamespace
 import asyncio
 
+import httpx
 import pytest
 
 from run_with_dashboard import TradingBotWithDashboard
+from core.combinatorial_arb import SamePlatformArbitrageDetector
 from utils.config_loader import BotConfig
+from utils.task_supervision import RestartingTaskSupervisor
+from polymarket_client.models import (
+    OrderBook,
+    OrderBookSide,
+    PriceLevel,
+    TokenOrderBook,
+    TokenType,
+)
 
 
 @pytest.mark.asyncio
@@ -175,6 +185,149 @@ async def test_market_discovery_stays_alive_after_a_matching_cycle():
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_market_discovery_recovers_after_transient_upstream_503():
+    config = BotConfig()
+    config.mode.cross_platform_refresh_seconds = 0
+    bot = TradingBotWithDashboard(config)
+    bot._running = True
+    bot.data_feed = SimpleNamespace(
+        _markets={f"poly-{index}": object() for index in range(50)}
+    )
+    requests = 0
+    retry_delays = []
+
+    class KalshiClient:
+        async def list_all_event_markets(self, **kwargs):
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                request = httpx.Request(
+                    "GET", "https://trading-api.kalshi.com/events"
+                )
+                response = httpx.Response(503, request=request)
+                raise httpx.HTTPStatusError(
+                    "temporary upstream failure",
+                    request=request,
+                    response=response,
+                )
+            return [object()]
+
+    async def matching_completed(_polymarket_markets):
+        bot._running = False
+
+    async def fake_sleep(delay):
+        retry_delays.append(delay)
+
+    bot.kalshi_client = KalshiClient()
+    bot._run_matching_background = matching_completed
+    bot._discovery_supervisor = RestartingTaskSupervisor(
+        "cross-platform discovery",
+        base_delay=2.0,
+        sleep=fake_sleep,
+        on_retry=bot._on_cross_platform_task_retry,
+    )
+
+    await bot._discovery_supervisor.run(
+        bot._start_kalshi_monitoring,
+        should_run=lambda: bot._running,
+    )
+
+    assert requests == 2
+    assert retry_delays == [2.0]
+    assert bot._run_failed is False
+
+    from dashboard.server import dashboard_state
+
+    assert (
+        dashboard_state.cross_platform["task_restarts"][
+            "cross-platform discovery"
+        ]
+        >= 1
+    )
+    assert dashboard_state.cross_platform["last_transient_error"]["attempt"] == 1
+
+
+def test_bundle_scan_activity_is_visible_when_no_candidates_exist(caplog):
+    caplog.set_level("INFO")
+    config = BotConfig()
+    bot = TradingBotWithDashboard(config)
+    bot.same_platform_detector = SamePlatformArbitrageDetector(min_edge=0.02)
+    bot.data_feed = SimpleNamespace(get_all_market_states=lambda: {})
+
+    bot._run_combinatorial_scan()
+
+    from dashboard.server import dashboard_state
+
+    metrics = dashboard_state.operational["bundle_arb"]
+    assert metrics["scans"] == 1
+    assert metrics["states"] == 0
+    assert metrics["eligible_groups"] == 0
+    assert metrics["opportunities"] == 0
+    assert "Bundle arb scan active" in caplog.text
+
+
+def _priced_book(market_id, *, yes_bid, yes_ask, no_bid, no_ask):
+    return OrderBook(
+        market_id=market_id,
+        yes=TokenOrderBook(
+            TokenType.YES,
+            bids=OrderBookSide([PriceLevel(yes_bid, 10)]),
+            asks=OrderBookSide([PriceLevel(yes_ask, 10)]),
+        ),
+        no=TokenOrderBook(
+            TokenType.NO,
+            bids=OrderBookSide([PriceLevel(no_bid, 10)]),
+            asks=OrderBookSide([PriceLevel(no_ask, 10)]),
+        ),
+    )
+
+
+def test_matched_pair_dashboard_snapshot_uses_live_books():
+    bot = TradingBotWithDashboard(BotConfig())
+    pair = SimpleNamespace(
+        polymarket_id="poly-1",
+        kalshi_ticker="KX-1",
+        polymarket_question="Will Alice win?",
+        kalshi_title="Alice wins?",
+        similarity_score=0.94,
+        category="politics",
+    )
+    poly_book = _priced_book(
+        "poly-1", yes_bid=0.42, yes_ask=0.46, no_bid=0.54, no_ask=0.58
+    )
+    kalshi_book = _priced_book(
+        "KX-1", yes_bid=0.51, yes_ask=0.53, no_bid=0.47, no_ask=0.49
+    )
+    bot.data_feed = SimpleNamespace(get_order_book=lambda _market_id: poly_book)
+    bot._kalshi_orderbooks["KX-1"] = kalshi_book
+
+    row = bot._matched_pair_dashboard_row(pair)
+
+    assert row["poly_yes"] == pytest.approx(0.42)
+    assert row["poly_no"] == pytest.approx(0.54)
+    assert row["kalshi_yes"] == pytest.approx(0.51)
+    assert row["kalshi_no"] == pytest.approx(0.47)
+
+
+def test_matched_pair_dashboard_snapshot_preserves_missing_prices_as_null():
+    bot = TradingBotWithDashboard(BotConfig())
+    pair = SimpleNamespace(
+        polymarket_id="poly-1",
+        kalshi_ticker="KX-1",
+        polymarket_question="Will Alice win?",
+        kalshi_title="Alice wins?",
+        similarity_score=0.94,
+        category="politics",
+    )
+    bot.data_feed = SimpleNamespace(get_order_book=lambda _market_id: None)
+
+    row = bot._matched_pair_dashboard_row(pair)
+
+    assert row["poly_yes"] is None
+    assert row["kalshi_yes"] is None
 
 
 @pytest.mark.asyncio
