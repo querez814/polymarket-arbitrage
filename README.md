@@ -223,6 +223,23 @@ The dashboard shows the active run timer, projected-at-settlement run PnL,
 transaction count, and five most recent runs. Full run history is available from `GET /api/paper-runs`;
 an uncleanly stopped run is retained as `interrupted` at its last heartbeat.
 
+Before a long real-data observation, prove the complete detector-to-persisted
+paper-fill lifecycle with a deterministic venue-shaped fixture:
+
+```bash
+uv run --with-requirements requirements.txt \
+  python scripts/prove_paper_acceptance.py --db data/paper_acceptance.db
+```
+
+The command never creates venue clients and reports `venue_mutations: 0`. For
+one manually verified current pair, `scripts/evaluate_live_pair.py` fetches both
+public books concurrently and reports either an after-cost edge or an honest
+no-edge result. Its first invocation prints canonical venue metadata and an
+approval hash; pass that exact hash back with `--approve-pair-hash` to bind the
+evaluation to those IDs and resolution terms. It hard-pins both clients to
+dry-run and cannot place orders. Run `--help` for the identifiers and explicit
+fee assumptions.
+
 ### 4. Other Run Modes
 
 ```bash

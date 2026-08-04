@@ -803,10 +803,6 @@ class PolymarketClient(BasePolymarketClient):
                 base_url=self.rest_url,
             )
             self._orderbook_successes += 1
-            logger.debug(
-                "Orderbook HTTP 200 on https://clob.polymarket.com/book token_id=%s",
-                token_id,
-            )
             
             # Parse bids and asks
             bids = []

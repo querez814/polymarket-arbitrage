@@ -119,6 +119,7 @@ async def test_critical_background_task_completion_durably_panics_runtime():
     await bot._critical_failure_task
 
     assert bot._run_failed is True
+    assert bot.failure_event.is_set() is True
     assert calls == [
         ("operator-token", "critical cross-platform task stopped unexpectedly")
     ]

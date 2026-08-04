@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -261,6 +262,17 @@ class PaperTradeStore:
                 error_detail TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS cross_platform_evaluation_counts (
+                run_id TEXT NOT NULL
+                    REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
+                reason_code TEXT NOT NULL,
+                observation_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (observation_count >= 0),
+                first_observed_at_utc TEXT NOT NULL,
+                last_observed_at_utc TEXT NOT NULL,
+                PRIMARY KEY (run_id, reason_code)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_event_at
                 ON paper_trade_events (event_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_order_id
@@ -279,6 +291,8 @@ class PaperTradeStore:
                 );
             CREATE INDEX IF NOT EXISTS idx_news_catalyst_api_calls_called
                 ON news_catalyst_api_calls (called_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_cross_platform_evaluation_run
+                ON cross_platform_evaluation_counts (run_id);
             """)
         columns = {
             row["name"]
@@ -616,6 +630,77 @@ class PaperTradeStore:
             )
             results.append(result)
         return results
+
+    def record_cross_platform_evaluation_counts(
+        self,
+        counts: dict[str, int],
+    ) -> None:
+        """Atomically add one scanner cycle's compact reason-code counts."""
+        if not counts:
+            return
+        run_id = self._active_run_id
+        if run_id is None:
+            raise RuntimeError("cross-platform evaluation requires an active paper run")
+        normalized: dict[str, int] = {}
+        for reason_code, count in counts.items():
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", reason_code):
+                raise ValueError("invalid cross-platform evaluation reason code")
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError("cross-platform evaluation counts must be nonnegative integers")
+            if count:
+                normalized[reason_code] = count
+        if not normalized:
+            return
+        now = utc_now_iso()
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for reason_code, count in normalized.items():
+                self._conn.execute(
+                    """
+                    INSERT INTO cross_platform_evaluation_counts (
+                        run_id, reason_code, observation_count,
+                        first_observed_at_utc, last_observed_at_utc
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(run_id, reason_code) DO UPDATE SET
+                        observation_count=(
+                            cross_platform_evaluation_counts.observation_count
+                            + excluded.observation_count
+                        ),
+                        last_observed_at_utc=excluded.last_observed_at_utc
+                    """,
+                    (run_id, reason_code, count, now, now),
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def cross_platform_evaluation_funnel(
+        self,
+        run_id: Optional[str] = None,
+    ) -> dict[str, int]:
+        """Return persisted scanner outcome counts for one paper run."""
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            row = self._conn.execute(
+                "SELECT run_id FROM paper_run_sessions ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return {}
+            selected_run_id = str(row["run_id"])
+        rows = self._conn.execute(
+            """
+            SELECT reason_code, observation_count
+            FROM cross_platform_evaluation_counts
+            WHERE run_id = ?
+            ORDER BY reason_code
+            """,
+            (selected_run_id,),
+        ).fetchall()
+        return {
+            str(row["reason_code"]): int(row["observation_count"])
+            for row in rows
+        }
 
     @staticmethod
     def _as_utc(value: Optional[datetime]) -> datetime:

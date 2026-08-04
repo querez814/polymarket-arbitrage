@@ -341,6 +341,11 @@ def test_runtime_does_not_apply_catalyst_ranking_in_log_only_mode():
     bot._update_pair_priority()
     assert bot.data_feed.applied == ["catalyst"]
 
+    bot.pair_snapshot_source = object()
+    bot._update_pair_priority()
+    assert bot.data_feed.applied == []
+    del bot.pair_snapshot_source
+
     bot._news_market_scores_updated_at = datetime.now(timezone.utc) - timedelta(
         hours=7
     )

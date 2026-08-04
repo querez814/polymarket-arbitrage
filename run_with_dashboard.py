@@ -20,6 +20,7 @@ import signal
 import sys
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,6 +49,7 @@ from core.operations import PersistentOperatorControls, WebhookAlertSink
 from core.production_runtime import ProductionArbitrageRuntime, RuntimeNotReadyError
 from core.paper_locked_arb import PaperLockedArbitrageLedger
 from core.pair_monitoring import PairTierMonitor
+from core.pair_snapshot import PairSnapshotError, PairSnapshotSource
 from core.semantic_market_matching import (
     OpenAIEmbeddingClient,
     OpenAIResolutionVerifier,
@@ -108,6 +110,7 @@ class TradingBotWithDashboard:
         self._combinatorial_opportunities = 0
         self._startup_complete = False
         self._run_failed = False
+        self._failure_event = asyncio.Event()
 
         # Components - Kalshi (cross-platform)
         self.kalshi_client = None
@@ -115,6 +118,7 @@ class TradingBotWithDashboard:
         self.market_matcher = None
         self._kalshi_markets = []
         self._matched_pairs = []
+        self._polymarket_orderbooks: dict[str, OrderBook] = {}
         self._kalshi_orderbooks: dict[str, OrderBook] = {}
         self._xplat_scan_task = None
         self._kalshi_monitor_task = None
@@ -134,6 +138,7 @@ class TradingBotWithDashboard:
         )
         self.production_runtime = None
         self.pair_monitor = None
+        self.pair_snapshot_source = None
         self.execution_journal = None
         self.operator_controls = None
 
@@ -146,6 +151,11 @@ class TradingBotWithDashboard:
         # Bearer-protected operator mutations must not cross a plaintext LAN.
         # Remote production access belongs behind an authenticated TLS proxy.
         return "127.0.0.1" if self.config.is_live else "0.0.0.0"
+
+    @property
+    def failure_event(self) -> asyncio.Event:
+        """Signal that a critical trading dependency ended terminally."""
+        return self._failure_event
 
     async def start(self) -> None:
         """Start the bot and dashboard."""
@@ -313,6 +323,16 @@ class TradingBotWithDashboard:
                 hot_limit=self.config.mode.hot_pair_limit,
                 hot_interval=self.config.mode.hot_pair_scan_seconds,
                 cold_interval=self.config.mode.cold_pair_scan_seconds,
+            )
+            max_snapshot_age = (
+                self.cross_platform_engine.max_observation_age
+                or timedelta(seconds=5)
+            ).total_seconds()
+            self.pair_snapshot_source = PairSnapshotSource(
+                self.client,
+                self.kalshi_client,
+                max_age_seconds=max_snapshot_age,
+                timeout_seconds=max_snapshot_age,
             )
 
             if (
@@ -726,11 +746,17 @@ class TradingBotWithDashboard:
             for row in rankings[: self.config.mode.hot_pair_limit]
             if row.news_relevance_score > 0
         ]
-        self.data_feed.set_priority_markets(
-            candidate_ids
-            if self.config.news_catalyst.apply_priority_boost
-            else [pair.polymarket_id for pair in self._matched_pairs]
-        )
+        # PairSnapshotSource now owns the latency-sensitive cross-venue reads.
+        # Keeping the same markets in DataFeed's priority loop duplicates CLOB
+        # traffic and was the source of stale queued observations under load.
+        if getattr(self, "pair_snapshot_source", None) is not None:
+            self.data_feed.set_priority_markets([])
+        else:
+            self.data_feed.set_priority_markets(
+                candidate_ids
+                if self.config.news_catalyst.apply_priority_boost
+                else [pair.polymarket_id for pair in self._matched_pairs]
+            )
 
     async def _start_production_runtime(self) -> None:
         """Own all live cross-venue resources for this process."""
@@ -1154,11 +1180,9 @@ class TradingBotWithDashboard:
         Missing books remain null. A null is materially different from a
         genuine zero-cent bid and must stay distinguishable in the dashboard.
         """
-        polymarket_book = (
-            self.data_feed.get_order_book(pair.polymarket_id)
-            if self.data_feed
-            else None
-        )
+        polymarket_book = self._polymarket_orderbooks.get(pair.polymarket_id)
+        if polymarket_book is None and self.data_feed:
+            polymarket_book = self.data_feed.get_order_book(pair.polymarket_id)
         kalshi_book = self._kalshi_orderbooks.get(pair.kalshi_ticker)
         return {
             "polymarket_id": pair.polymarket_id,
@@ -1229,6 +1253,7 @@ class TradingBotWithDashboard:
         )
         logger.critical(reason)
         self._run_failed = True
+        self._failure_event.set()
         dashboard_state.cross_platform["matching_status"] = "error"
         if self.production_runtime:
             self._critical_failure_task = asyncio.create_task(
@@ -1307,7 +1332,11 @@ class TradingBotWithDashboard:
 
     async def _scan_cross_platform_pairs(self) -> None:
         """Continuously evaluate matched Polymarket/Kalshi pairs for real cross-platform arbitrage."""
-        if not self.cross_platform_engine or not self.kalshi_client:
+        if (
+            not self.cross_platform_engine
+            or not self.kalshi_client
+            or not self.pair_snapshot_source
+        ):
             return
 
         logger.info("Starting live cross-platform price scanner...")
@@ -1317,6 +1346,7 @@ class TradingBotWithDashboard:
 
         while self._running:
             started = datetime.utcnow()
+            evaluation_counts: Counter[str] = Counter()
             try:
                 due_pairs = (
                     self.pair_monitor.due_pairs(list(self._matched_pairs))
@@ -1329,6 +1359,7 @@ class TradingBotWithDashboard:
                 dashboard_state.cross_platform["cold_pairs_due"] = sum(
                     1 for item in due_pairs if item.tier == "cold"
                 )
+                evaluation_counts["pair_due"] += len(due_pairs)
                 dashboard_state.cross_platform["kalshi_rest_metrics"] = (
                     self.kalshi_client.request_metrics
                 )
@@ -1339,55 +1370,39 @@ class TradingBotWithDashboard:
                 if not due_pairs:
                     await asyncio.sleep(0.25)
                     continue
-                for due_pair in due_pairs:
+                snapshot_limit = asyncio.Semaphore(8)
+
+                async def fetch_due_snapshot(due_pair):
+                    async with snapshot_limit:
+                        try:
+                            return await self.pair_snapshot_source.fetch(due_pair.pair)
+                        except PairSnapshotError as exc:
+                            return exc
+
+                snapshot_results = await asyncio.gather(
+                    *(fetch_due_snapshot(due_pair) for due_pair in due_pairs)
+                )
+                for due_pair, snapshot_result in zip(
+                    due_pairs, snapshot_results, strict=True
+                ):
                     pair = due_pair.pair
                     if not self._running:
                         break
 
-                    poly_ob = (
-                        self.data_feed.get_order_book(pair.polymarket_id)
-                        if self.data_feed
-                        else None
-                    )
-                    if not poly_ob:
+                    if isinstance(snapshot_result, PairSnapshotError):
+                        exc = snapshot_result
+                        evaluation_counts[exc.reason_code] += 1
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
-                            reason_code="missing_polymarket_orderbook",
-                            explanation="Skipped cross-platform check because the Polymarket order book is not loaded yet.",
-                            market_pair=pair,
-                            evidence={"similarity": pair.similarity_score},
-                        )
-                        if self.pair_monitor:
-                            self.pair_monitor.mark_evaluated(
-                                pair.pair_id, observed_net_edge=0.0
-                            )
-                        continue
-
-                    kalshi_ob = await self.kalshi_client.get_orderbook_unified(
-                        pair.kalshi_ticker
-                    )
-                    scan_count += 1
-                    if kalshi_ob:
-                        orderbooks_fetched += 1
-                        self._kalshi_orderbooks[pair.kalshi_ticker] = kalshi_ob
-                        self._publish_matched_pairs_dashboard()
-                    dashboard_state.cross_platform["pairs_scanned"] = scan_count
-                    dashboard_state.cross_platform["kalshi_orderbooks"] = (
-                        orderbooks_fetched
-                    )
-                    dashboard_state.cross_platform["last_scan_at"] = (
-                        datetime.utcnow().isoformat()
-                    )
-
-                    if not kalshi_ob:
-                        self._record_cross_platform_decision(
-                            outcome=DecisionOutcome.SKIP,
-                            reason_code="missing_kalshi_orderbook",
-                            explanation="Skipped cross-platform check because the Kalshi order book was unavailable.",
+                            reason_code=exc.reason_code,
+                            explanation=(
+                                "Skipped cross-platform check because a fresh paired "
+                                "market snapshot was unavailable."
+                            ),
                             market_pair=pair,
                             evidence={
                                 "similarity": pair.similarity_score,
-                                "kalshi_ticker": pair.kalshi_ticker,
+                                **exc.evidence,
                             },
                         )
                         if self.pair_monitor:
@@ -1395,6 +1410,22 @@ class TradingBotWithDashboard:
                                 pair.pair_id, observed_net_edge=0.0
                             )
                         continue
+                    snapshot = snapshot_result
+                    poly_ob = snapshot.polymarket_book
+                    kalshi_ob = snapshot.kalshi_book
+                    evaluation_counts["paired_snapshot_fresh"] += 1
+                    scan_count += 1
+                    orderbooks_fetched += 1
+                    self._polymarket_orderbooks[pair.polymarket_id] = poly_ob
+                    self._kalshi_orderbooks[pair.kalshi_ticker] = kalshi_ob
+                    self._publish_matched_pairs_dashboard()
+                    dashboard_state.cross_platform["pairs_scanned"] = scan_count
+                    dashboard_state.cross_platform["kalshi_orderbooks"] = (
+                        orderbooks_fetched
+                    )
+                    dashboard_state.cross_platform["last_scan_at"] = (
+                        datetime.utcnow().isoformat()
+                    )
 
                     try:
                         evaluation_started = time.monotonic()
@@ -1404,6 +1435,7 @@ class TradingBotWithDashboard:
                             )
                         )
                     except RuntimeNotReadyError as exc:
+                        evaluation_counts["production_runtime_not_ready"] += 1
                         dashboard_state.cross_platform["scan_status"] = (
                             "operator_halted"
                         )
@@ -1444,6 +1476,7 @@ class TradingBotWithDashboard:
                     }
 
                     if opportunity:
+                        evaluation_counts["opportunity_detected"] += 1
                         opp_dict = {
                             "opportunity_id": opportunity.opportunity_id,
                             "market_pair": pair.polymarket_question,
@@ -1495,6 +1528,7 @@ class TradingBotWithDashboard:
                             evidence={**evidence, **opp_dict},
                         )
                     else:
+                        evaluation_counts["edge_below_threshold"] += 1
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
                             reason_code="edge_below_threshold",
@@ -1507,11 +1541,13 @@ class TradingBotWithDashboard:
 
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
+                self._persist_cross_platform_evaluation_counts(evaluation_counts)
                 self._scanner_supervisor.mark_healthy()
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._persist_cross_platform_evaluation_counts(evaluation_counts)
                 logger.exception("Cross-platform scan error: %s", e)
                 dashboard_state.cross_platform["scan_status"] = "error"
                 self._record_cross_platform_decision(
@@ -1521,6 +1557,21 @@ class TradingBotWithDashboard:
                     evidence={"error": str(e)},
                 )
                 raise
+
+    def _persist_cross_platform_evaluation_counts(
+        self,
+        counts: Counter[str],
+    ) -> None:
+        if (
+            not counts
+            or self.paper_trade_store is None
+            or self.paper_trade_store.active_run() is None
+        ):
+            return
+        self.paper_trade_store.record_cross_platform_evaluation_counts(dict(counts))
+        dashboard_state.cross_platform["evaluation_funnel"] = (
+            self.paper_trade_store.cross_platform_evaluation_funnel()
+        )
 
     async def stop(self) -> None:
         """Stop everything gracefully."""
@@ -1672,7 +1723,7 @@ class TradingBotWithDashboard:
             pass
 
 
-async def main_async(args: argparse.Namespace) -> None:
+async def main_async(args: argparse.Namespace) -> bool:
     """Async main function."""
     # Load config
     try:
@@ -1700,6 +1751,7 @@ async def main_async(args: argparse.Namespace) -> None:
     # Handle shutdown
     loop = asyncio.get_event_loop()
     shutdown_event = asyncio.Event()
+    critical_failure = False
 
     def signal_handler():
         logger.info("Shutdown signal received")
@@ -1714,13 +1766,26 @@ async def main_async(args: argparse.Namespace) -> None:
     try:
         await bot.start()
 
-        # Wait for shutdown
-        await shutdown_event.wait()
+        # A critical dependency failure is a process-terminal condition. This
+        # prevents a dead trading loop from retaining an "active" paper run.
+        shutdown_wait = asyncio.create_task(shutdown_event.wait())
+        failure_wait = asyncio.create_task(bot.failure_event.wait())
+        _done, pending = await asyncio.wait(
+            {shutdown_wait, failure_wait},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for pending_task in pending:
+            pending_task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        if bot.failure_event.is_set():
+            critical_failure = True
+            logger.error("Critical trading dependency failed; shutting down")
 
     except KeyboardInterrupt:
         pass
     finally:
         await bot.stop()
+    return not critical_failure
 
 
 def main() -> None:
@@ -1757,7 +1822,8 @@ def main() -> None:
 
     # Run
     try:
-        asyncio.run(main_async(args))
+        if not asyncio.run(main_async(args)):
+            raise SystemExit(1)
     except KeyboardInterrupt:
         print("\nShutdown complete.")
 

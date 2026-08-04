@@ -246,3 +246,33 @@ def test_semantic_pair_review_queue_is_persistent_and_upserted(tmp_path):
     assert rows[0]["approval_status"] == "auto_approved"
     assert rows[0]["seen_count"] == 2
     store.close()
+
+
+def test_cross_platform_evaluation_funnel_persists_compact_reason_counts(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(
+            starting_equity=1000.0,
+            pnl_source="projected_locked_paper",
+        )
+
+        store.record_cross_platform_evaluation_counts(
+            {
+                "pair_due": 3,
+                "paired_snapshot_fresh": 2,
+                "stale_polymarket_orderbook": 1,
+                "edge_below_threshold": 2,
+            }
+        )
+        store.record_cross_platform_evaluation_counts(
+            {"pair_due": 1, "paired_snapshot_fresh": 1}
+        )
+
+        assert store.cross_platform_evaluation_funnel(run.run_id) == {
+            "pair_due": 4,
+            "paired_snapshot_fresh": 3,
+            "stale_polymarket_orderbook": 1,
+            "edge_below_threshold": 2,
+        }
+    finally:
+        store.close()
