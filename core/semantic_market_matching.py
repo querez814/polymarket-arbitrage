@@ -681,6 +681,8 @@ class OpenAIResolutionVerifier:
                     "properties": {
                         "pairs": {
                             "type": "array",
+                            "minItems": len(batch),
+                            "maxItems": len(batch),
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -701,49 +703,94 @@ class OpenAIResolutionVerifier:
                     "required": ["pairs"],
                     "additionalProperties": False,
                 }
-                response = await client.post(
-                    "https://api.openai.com/v1/responses",
-                    json={
-                        "model": self.model,
-                        "store": False,
-                        "reasoning": {"effort": "medium"},
-                        "instructions": (
-                            "Classify prediction-market payoff relations. First reject clearly "
-                            "incompatible propositions. Then compare exact YES regions using title, "
-                            "resolution text, cutoff, oracle/source, dispute rules, and scope. "
-                            "Equivalent means identical payout in every state. Subset means the "
-                            "Polymarket YES region strictly implies Kalshi YES; superset is reverse. "
-                            "If metadata is missing or ambiguity remains, return independent."
-                        ),
-                        "input": json.dumps(records, separators=(",", ":")),
-                        "text": {
-                            "format": {
-                                "type": "json_schema",
-                                "name": "market_resolution_relations",
-                                "strict": True,
-                                "schema": schema,
-                            }
+                batch_results = None
+                for format_attempt in range(2):
+                    response = await client.post(
+                        "https://api.openai.com/v1/responses",
+                        json={
+                            "model": self.model,
+                            "store": False,
+                            "reasoning": {"effort": "medium"},
+                            "instructions": (
+                                "Classify prediction-market payoff relations. Return exactly one "
+                                "row for every input id. First reject clearly incompatible "
+                                "propositions. Then compare exact YES regions using title, "
+                                "resolution text, cutoff, oracle/source, dispute rules, and scope. "
+                                "Equivalent means identical payout in every state. Subset means the "
+                                "Polymarket YES region strictly implies Kalshi YES; superset is reverse. "
+                                "If metadata is missing or ambiguity remains, return independent."
+                            ),
+                            "input": json.dumps(records, separators=(",", ":")),
+                            "text": {
+                                "format": {
+                                    "type": "json_schema",
+                                    "name": "market_resolution_relations",
+                                    "strict": True,
+                                    "schema": schema,
+                                }
+                            },
                         },
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                output_text = payload.get("output_text")
-                if not isinstance(output_text, str):
-                    output_text = _response_output_text(payload)
-                parsed = json.loads(output_text)
-                rows = parsed.get("pairs") if isinstance(parsed, dict) else None
-                if not isinstance(rows, list) or len(rows) != len(batch):
-                    raise ValueError("OpenAI verification response cardinality mismatch")
-                indexed = {int(row["id"]): row for row in rows}
-                for index in range(len(batch)):
-                    row = indexed[index]
-                    relation = SemanticRelation(str(row["relation"]))
-                    if not bool(row["plausible"]):
-                        relation = SemanticRelation.INDEPENDENT
-                    confidence = float(row["confidence"])
-                    reasons = tuple(str(reason)[:120] for reason in row["reasons"][:8])
-                    results.append((relation, confidence, reasons))
+                    )
+                    response.raise_for_status()
+                    try:
+                        payload = response.json()
+                        output_text = payload.get("output_text")
+                        if not isinstance(output_text, str):
+                            output_text = _response_output_text(payload)
+                        parsed = json.loads(output_text)
+                        rows = parsed.get("pairs") if isinstance(parsed, dict) else None
+                        if not isinstance(rows, list) or len(rows) != len(batch):
+                            raise ValueError("verification response cardinality mismatch")
+                        indexed: dict[int, dict[str, Any]] = {}
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                raise ValueError("verification row must be an object")
+                            row_id = row.get("id")
+                            if (
+                                isinstance(row_id, bool)
+                                or not isinstance(row_id, int)
+                                or row_id in indexed
+                            ):
+                                raise ValueError("verification response has invalid ids")
+                            indexed[row_id] = row
+                        if set(indexed) != set(range(len(batch))):
+                            raise ValueError("verification response ids are incomplete")
+                        parsed_results = []
+                        for index in range(len(batch)):
+                            row = indexed[index]
+                            relation = SemanticRelation(str(row["relation"]))
+                            if row["plausible"] is not True:
+                                relation = SemanticRelation.INDEPENDENT
+                            confidence = float(row["confidence"])
+                            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                                raise ValueError("verification confidence is invalid")
+                            reasons_value = row["reasons"]
+                            if not isinstance(reasons_value, list):
+                                raise ValueError("verification reasons must be an array")
+                            reasons = tuple(
+                                str(reason)[:120] for reason in reasons_value[:8]
+                            )
+                            parsed_results.append((relation, confidence, reasons))
+                        batch_results = parsed_results
+                        break
+                    except (KeyError, TypeError, ValueError) as exc:
+                        logger.warning(
+                            "OpenAI verifier returned an unusable batch "
+                            "(attempt=%s/2 size=%s): %s",
+                            format_attempt + 1,
+                            len(batch),
+                            exc,
+                        )
+                if batch_results is None:
+                    batch_results = [
+                        (
+                            SemanticRelation.INDEPENDENT,
+                            0.0,
+                            ("provider response incomplete; manual review required",),
+                        )
+                        for _ in batch
+                    ]
+                results.extend(batch_results)
         return results
 
 

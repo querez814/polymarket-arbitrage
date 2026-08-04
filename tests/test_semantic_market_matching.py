@@ -383,3 +383,88 @@ def test_openai_verifier_consumes_strict_structured_response():
             ("same cutoff and resolution source",),
         )
     ]
+
+
+def test_openai_verifier_retries_a_cardinality_mismatch():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        pairs = [] if calls == 1 else [
+            {
+                "id": 0,
+                "plausible": True,
+                "relation": "equivalent",
+                "confidence": 0.97,
+                "reasons": ["same resolution"],
+            }
+        ]
+        output = json.dumps({"pairs": pairs})
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output}],
+                    }
+                ]
+            },
+        )
+
+    left = _poly("Will Alice Smith win the 2026 mayoral election?")
+    right = _kalshi("Alice Smith elected mayor in 2026?")
+    verifier = OpenAIResolutionVerifier(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    )
+    from core.semantic_market_matching import kalshi_document, polymarket_document
+
+    result = asyncio.run(
+        verifier.verify_many([(polymarket_document(left), kalshi_document(right), 0.9)])
+    )
+
+    assert calls == 2
+    assert result[0][0] is SemanticRelation.EQUIVALENT
+
+
+def test_openai_verifier_fails_closed_after_repeated_cardinality_mismatch():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        output = json.dumps({"pairs": []})
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output}],
+                    }
+                ]
+            },
+        )
+
+    left = _poly("Will Alice Smith win the 2026 mayoral election?")
+    right = _kalshi("Alice Smith elected mayor in 2026?")
+    verifier = OpenAIResolutionVerifier(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    )
+    from core.semantic_market_matching import kalshi_document, polymarket_document
+
+    result = asyncio.run(
+        verifier.verify_many([(polymarket_document(left), kalshi_document(right), 0.9)])
+    )
+
+    assert calls == 2
+    assert result == [
+        (
+            SemanticRelation.INDEPENDENT,
+            0.0,
+            ("provider response incomplete; manual review required",),
+        )
+    ]
