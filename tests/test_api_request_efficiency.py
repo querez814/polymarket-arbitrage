@@ -41,6 +41,23 @@ def test_polymarket_suppresses_token_after_first_no_orderbook_response():
     }
 
 
+def test_polymarket_does_not_turn_upstream_503_into_an_empty_book():
+    def handler(request: httpx.Request):
+        return httpx.Response(503, request=request, json={"error": "unavailable"})
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client._fetch_token_orderbook("live-token", TokenType.YES)
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    asyncio.run(exercise())
+
+
 def test_polymarket_orderbook_normalizes_raw_venue_depth_before_selecting_best():
     """The CLOB API returns outer levels first; public books expose executable best."""
 

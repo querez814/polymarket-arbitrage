@@ -20,26 +20,25 @@ from polymarket_client.models import (
     TokenType,
 )
 
-
 logger = logging.getLogger(__name__)
 
 
 class DataFeed:
     """
     Real-time data feed manager.
-    
+
     Subscribes to order book updates via WebSocket and periodically
     refreshes positions via REST API. Provides a unified view of
     market state for the trading engine.
     """
-    
+
     def __init__(
         self,
         client: PolymarketClient,
         market_ids: list[str],
         position_refresh_interval: float = 5.0,
         on_update: Optional[Callable[[str, MarketState], None]] = None,
-        config = None,
+        config=None,
     ):
         self.client = client
         self.market_ids = list(market_ids)
@@ -47,13 +46,13 @@ class DataFeed:
         self.position_refresh_interval = position_refresh_interval
         self.on_update = on_update
         self.config = config
-        
+
         # In-memory state
         self._markets: dict[str, Market] = {}
         self._order_books: dict[str, OrderBook] = {}
         self._positions: dict[str, dict[TokenType, Position]] = {}
         self._market_states: dict[str, MarketState] = {}
-        
+
         # Tasks
         self._orderbook_task: Optional[asyncio.Task] = None
         self._position_task: Optional[asyncio.Task] = None
@@ -61,59 +60,57 @@ class DataFeed:
         self._priority_orderbook_task: Optional[asyncio.Task] = None
         self._running = False
         self._priority_market_ids: set[str] = set()
-        
+
         # Statistics
         self._update_count = 0
         self._last_update: dict[str, datetime] = {}
-    
+
     async def start(self) -> None:
         """
         Start the data feed.
-        
+
         Connects to order book streams and starts position refresh loop.
         """
         if self._running:
             logger.warning("DataFeed already running")
             return
-        
+
         self._running = True
         logger.info(f"Starting DataFeed for {len(self.market_ids)} markets")
-        
+
         # Fetch initial market info
         await self._fetch_markets()
-        
+
         # Fetch initial positions
         await self._refresh_positions()
-        
+
         # Start streaming order books
         self._orderbook_task = asyncio.create_task(
-            self._stream_orderbooks(),
-            name="orderbook_stream"
+            self._stream_orderbooks(), name="orderbook_stream"
         )
-        
+
         # Start position refresh loop
         self._position_task = asyncio.create_task(
-            self._position_refresh_loop(),
-            name="position_refresh"
+            self._position_refresh_loop(), name="position_refresh"
         )
         self._market_resync_task = asyncio.create_task(
             self._market_resync_loop(),
             name="market_resync",
         )
-        
+
         logger.info("DataFeed started successfully")
-    
+
     async def stop(self) -> None:
         """Stop the data feed."""
         self._running = False
-        
+
         if self._orderbook_task:
             self._orderbook_task.cancel()
             try:
                 await self._orderbook_task
             except asyncio.CancelledError:
                 pass
-        
+
         if self._position_task:
             self._position_task.cancel()
             try:
@@ -128,9 +125,9 @@ class DataFeed:
                     await task
                 except asyncio.CancelledError:
                     pass
-        
+
         logger.info("DataFeed stopped")
-    
+
     async def _fetch_markets(self) -> None:
         """Fetch market information for all monitored markets."""
         try:
@@ -147,9 +144,7 @@ class DataFeed:
                     or 0.0
                 )
                 eligible = [
-                    market
-                    for market in markets
-                    if market.volume_24h >= min_volume
+                    market for market in markets if market.volume_24h >= min_volume
                 ]
                 self._replace_market_snapshot(eligible)
                 logger.info(
@@ -168,7 +163,7 @@ class DataFeed:
                     if market is not None:
                         markets.append(market)
                 self._replace_market_snapshot(markets)
-                
+
         except Exception as e:
             logger.error(f"Failed to fetch markets: {e}")
             raise
@@ -295,21 +290,37 @@ class DataFeed:
                 )
             except asyncio.CancelledError:
                 raise
-    
+
     async def _stream_orderbooks(self) -> None:
         """Stream order book updates."""
+        broad_stream_enabled = getattr(
+            getattr(self.config, "mode", None),
+            "polymarket_broad_orderbook_stream_enabled",
+            True,
+        )
+        if broad_stream_enabled is not True:
+            logger.info(
+                "Polymarket broad orderbook stream disabled; "
+                "verified pair snapshots own cross-platform reads"
+            )
+            while self._running:
+                await asyncio.sleep(60)
+            return
+
         # Use simulation for demo/screenshots, real data for production
         # Check config.mode.data_mode (set in config.yaml)
-        use_simulation = getattr(self.config, 'use_simulation', False)
-        
+        use_simulation = getattr(self.config, "use_simulation", False)
+
         while self._running:
             try:
-                async for market_id, orderbook in self.client.stream_orderbook(self.market_ids, use_simulation=use_simulation):
+                async for market_id, orderbook in self.client.stream_orderbook(
+                    self.market_ids, use_simulation=use_simulation
+                ):
                     if not self._running:
                         break
-                    
+
                     self._record_orderbook(market_id, orderbook)
-                    
+
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -322,7 +333,7 @@ class DataFeed:
         self._last_update[market_id] = datetime.utcnow()
         self._update_count += 1
         self._update_market_state(market_id)
-    
+
     async def _position_refresh_loop(self) -> None:
         """Periodically refresh positions."""
         while self._running:
@@ -333,82 +344,85 @@ class DataFeed:
                 raise
             except Exception as e:
                 logger.error(f"Position refresh error: {e}")
-    
+
     async def _refresh_positions(self) -> None:
         """Fetch current positions from API."""
         try:
             self._positions = await self.client.get_positions()
             logger.debug(f"Refreshed positions for {len(self._positions)} markets")
-            
+
             # Update market states with new positions
             for market_id in self._positions:
                 if market_id in self._order_books:
                     self._update_market_state(market_id)
-                    
+
         except Exception as e:
             logger.warning(f"Failed to refresh positions: {e}")
-    
+
     def _update_market_state(self, market_id: str) -> None:
         """Update the complete market state for a market."""
         if market_id not in self._markets:
             return
-        
+
         state = MarketState(
-            market=self._markets.get(market_id, Market(market_id=market_id, condition_id=market_id, question="")),
+            market=self._markets.get(
+                market_id,
+                Market(market_id=market_id, condition_id=market_id, question=""),
+            ),
             order_book=self._order_books.get(market_id, OrderBook(market_id=market_id)),
             positions=self._positions.get(market_id, {}),
             open_orders=[],  # Will be populated by execution engine
             timestamp=datetime.utcnow(),
         )
-        
+
         self._market_states[market_id] = state
-        
+
         # Notify callback if set
         if self.on_update:
             try:
                 self.on_update(market_id, state)
             except Exception as e:
                 logger.error(f"Update callback error for {market_id}: {e}")
-    
+
     def get_market_state(self, market_id: str) -> Optional[MarketState]:
         """
         Get the latest state snapshot for a market.
-        
+
         Returns None if the market hasn't been loaded yet.
         """
         return self._market_states.get(market_id)
-    
+
     def get_all_market_states(self) -> dict[str, MarketState]:
         """Get all current market states."""
         return self._market_states.copy()
-    
+
     def get_order_book(self, market_id: str) -> Optional[OrderBook]:
         """Get the latest order book for a market."""
         return self._order_books.get(market_id)
-    
+
     def get_position(self, market_id: str, token_type: TokenType) -> Optional[Position]:
         """Get position for a specific market and token."""
         market_positions = self._positions.get(market_id, {})
         return market_positions.get(token_type)
-    
+
     def get_positions(self, market_id: str) -> dict[TokenType, Position]:
         """Get all positions for a market."""
         return self._positions.get(market_id, {})
-    
+
     def get_market(self, market_id: str) -> Optional[Market]:
         """Get market information."""
         return self._markets.get(market_id)
-    
+
     @property
     def update_count(self) -> int:
         """Get total number of order book updates received."""
         return self._update_count
-    
+
     @property
     def is_running(self) -> bool:
         """Check if the data feed is running."""
         return self._running
-    
+
     def get_staleness(self, market_id: str) -> Optional[float]:
         """
         Get time since last update for a market (in seconds).
@@ -417,11 +431,11 @@ class DataFeed:
         if market_id not in self._last_update:
             return None
         return (datetime.utcnow() - self._last_update[market_id]).total_seconds()
-    
+
     async def wait_for_data(self, timeout: float = 10.0) -> bool:
         """
         Wait until data is available for all markets.
-        
+
         Returns True if data is available, False on timeout.
         """
         start = datetime.utcnow()

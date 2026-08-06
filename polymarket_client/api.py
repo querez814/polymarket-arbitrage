@@ -906,17 +906,16 @@ class PolymarketClient(BasePolymarketClient):
                     "Suppressing stale Polymarket token with no orderbook: %s",
                     token_id,
                 )
-            else:
-                logger.warning(f"Failed to fetch orderbook for token {token_id}: {e}")
-            return TokenOrderBook(token_type=token_type)
+                return TokenOrderBook(token_type=token_type)
+            logger.warning("Polymarket orderbook HTTP failure for token %s", token_id)
+            raise
         except Exception as e:
-            logger.warning(f"Failed to fetch orderbook for token {token_id}: {e}")
-            # Return empty book
-            return TokenOrderBook(
-                token_type=token_type,
-                bids=OrderBookSide(levels=[]),
-                asks=OrderBookSide(levels=[]),
+            logger.warning(
+                "Polymarket orderbook read failed for token %s (%s)",
+                token_id,
+                type(e).__name__,
             )
+            raise
 
     def _generate_simulated_orderbook(self, market_id: str) -> OrderBook:
         """Generate a simulated order book for testing."""

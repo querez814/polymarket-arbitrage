@@ -7,8 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from core.cross_platform_arb import MarketPair
 from polymarket_client.models import OrderBook
+from utils.http_resilience import CircuitOpenError
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,60 @@ class PairSnapshotError(RuntimeError):
         super().__init__(reason_code)
         self.reason_code = reason_code
         self.evidence = evidence or {}
+
+
+def _require_fresh_orderbook(
+    venue: str,
+    orderbook: OrderBook | None,
+    observed_at: datetime,
+    max_age_seconds: float,
+) -> None:
+    if orderbook is None:
+        raise PairSnapshotError(f"missing_{venue}_orderbook")
+    if not any(
+        side.levels
+        for token_book in (orderbook.yes, orderbook.no)
+        for side in (token_book.bids, token_book.asks)
+    ):
+        raise PairSnapshotError(f"empty_{venue}_orderbook")
+    timestamp = orderbook.timestamp
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise PairSnapshotError(f"naive_{venue}_orderbook_timestamp")
+    age_seconds = (
+        observed_at.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
+    ).total_seconds()
+    if age_seconds < 0:
+        raise PairSnapshotError(
+            f"future_{venue}_orderbook_timestamp",
+            evidence={"age_seconds": age_seconds},
+        )
+    if age_seconds > max_age_seconds:
+        raise PairSnapshotError(
+            f"stale_{venue}_orderbook",
+            evidence={
+                "age_seconds": age_seconds,
+                "max_age_seconds": max_age_seconds,
+            },
+        )
+
+
+def require_pair_snapshot_fresh(
+    snapshot: PairSnapshot, *, observed_at: datetime | None = None
+) -> None:
+    """Revalidate a cached paired snapshot immediately before evaluation."""
+    checked_at = observed_at or datetime.now(timezone.utc)
+    _require_fresh_orderbook(
+        "polymarket",
+        snapshot.polymarket_book,
+        checked_at,
+        snapshot.max_age_seconds,
+    )
+    _require_fresh_orderbook(
+        "kalshi",
+        snapshot.kalshi_book,
+        checked_at,
+        snapshot.max_age_seconds,
+    )
 
 
 class PairSnapshotSource:
@@ -62,6 +119,11 @@ class PairSnapshotSource:
                 "paired_snapshot_timeout",
                 evidence={"timeout_seconds": self._timeout_seconds},
             ) from exc
+        except (CircuitOpenError, httpx.HTTPError, ConnectionError, OSError) as exc:
+            raise PairSnapshotError(
+                "paired_snapshot_upstream_unavailable",
+                evidence={"error_type": type(exc).__name__},
+            ) from exc
         except Exception as exc:
             reason_code = getattr(exc, "reason_code", None)
             evidence = getattr(exc, "evidence", None)
@@ -84,33 +146,7 @@ class PairSnapshotSource:
         orderbook: OrderBook | None,
         observed_at: datetime,
     ) -> None:
-        if orderbook is None:
-            raise PairSnapshotError(f"missing_{venue}_orderbook")
-        if not any(
-            side.levels
-            for token_book in (orderbook.yes, orderbook.no)
-            for side in (token_book.bids, token_book.asks)
-        ):
-            raise PairSnapshotError(f"empty_{venue}_orderbook")
-        timestamp = orderbook.timestamp
-        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-            raise PairSnapshotError(f"naive_{venue}_orderbook_timestamp")
-        age_seconds = (
-            observed_at.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
-        ).total_seconds()
-        if age_seconds < 0:
-            raise PairSnapshotError(
-                f"future_{venue}_orderbook_timestamp",
-                evidence={"age_seconds": age_seconds},
-            )
-        if age_seconds > self._max_age_seconds:
-            raise PairSnapshotError(
-                f"stale_{venue}_orderbook",
-                evidence={
-                    "age_seconds": age_seconds,
-                    "max_age_seconds": self._max_age_seconds,
-                },
-            )
+        _require_fresh_orderbook(venue, orderbook, observed_at, self._max_age_seconds)
 
 
 def executable_top_capacity(snapshot: PairSnapshot) -> float:

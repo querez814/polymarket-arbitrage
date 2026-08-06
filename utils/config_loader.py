@@ -169,6 +169,7 @@ class ModeConfig:
     semantic_min_kalshi_open_interest: int = 0
     polymarket_market_resync_seconds: float = 1800.0
     polymarket_priority_refresh_seconds: float = 2.0
+    polymarket_broad_orderbook_stream_enabled: bool = True
 
 
 @dataclass
@@ -586,6 +587,9 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
 def validate_config(config: BotConfig) -> None:
     """Validate a configuration, including mutations applied after loading."""
     errors = []
+
+    if not isinstance(config.mode.polymarket_broad_orderbook_stream_enabled, bool):
+        errors.append("polymarket_broad_orderbook_stream_enabled must be a boolean")
 
     # Trading validation
     if config.trading.risk_profile.lower() not in (

@@ -1011,7 +1011,7 @@ class SemanticMarketPipeline:
 
         global_token_index: dict[str, set[int]] = {}
         for index, document in enumerate(kalshi_docs):
-            for token in _retrieval_tokens(document.semantic_text):
+            for token in _identity_tokens(document.semantic_text):
                 global_token_index.setdefault(token, set()).add(index)
 
         structural = 0
@@ -1023,7 +1023,7 @@ class SemanticMarketPipeline:
             scores: list[tuple[float, MarketDocument]] = []
             candidate_indexes: set[int] = set()
             max_posting = max(20, int(len(kalshi_docs) * 0.20))
-            for token in _retrieval_tokens(poly_doc.semantic_text):
+            for token in _identity_tokens(poly_doc.semantic_text):
                 posting = global_token_index.get(token, set())
                 if len(posting) <= max_posting:
                     candidate_indexes.update(posting)
@@ -1395,6 +1395,66 @@ _RETRIEVAL_NOISE = frozenset(
         "than",
     }
 )
+
+_IDENTITY_NOISE = _RETRIEVAL_NOISE | frozenset(
+    {
+        "according",
+        "announce",
+        "announcement",
+        "candidate",
+        "cutoff",
+        "date",
+        "description",
+        "expected",
+        "expiration",
+        "her",
+        "hers",
+        "his",
+        "official",
+        "oracle",
+        "outcome",
+        "outcomes",
+        "politics",
+        "president",
+        "presidential",
+        "prevail",
+        "primary",
+        "resolution",
+        "resolves",
+        "result",
+        "retire",
+        "retirement",
+        "rules",
+        "secondary",
+        "semantic",
+        "source",
+        "title",
+    }
+)
+
+
+def _identity_tokens(text: str) -> set[str]:
+    """Return proposition-specific terms used to create verifier candidates.
+
+    Resolution prose remains available to embeddings and the verifier, but
+    generic contract boilerplate and event-family words cannot connect two
+    different subjects before verification.
+    """
+    normalized = text.casefold()
+    aliases = (
+        (r"\bconsumer\s+price\s+index\b", " cpi "),
+        (r"\bexcluding\s+food\s+and\s+energy\b", " core "),
+        (r"\bfederal\s+reserve\b", " fed "),
+    )
+    for pattern, replacement in aliases:
+        normalized = re.sub(pattern, replacement, normalized)
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", normalized)
+        if len(token) >= 3
+        and token not in _IDENTITY_NOISE
+        and not re.fullmatch(r"20\d{2}", token)
+    }
 
 
 def _retrieval_tokens(text: str) -> set[str]:

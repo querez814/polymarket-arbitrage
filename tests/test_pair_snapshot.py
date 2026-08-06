@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 from core.cross_platform_arb import CrossPlatformDirectionEvaluation, MarketPair
@@ -21,6 +22,7 @@ from polymarket_client.models import (
 from polymarket_client.api import OrderBookNormalizationError
 from run_with_dashboard import TradingBotWithDashboard
 from utils.config_loader import BotConfig
+from utils.http_resilience import CircuitOpenError
 from utils.paper_trade_store import PaperTradeStore
 
 
@@ -197,6 +199,57 @@ async def test_pair_snapshot_preserves_reason_coded_ingestion_failure():
 
 
 @pytest.mark.asyncio
+async def test_pair_snapshot_converts_open_circuit_to_pair_local_retry():
+    class PolymarketClient:
+        async def get_orderbook(self, market_id):
+            raise CircuitOpenError("endpoint circuit open for 12.0s")
+
+    class KalshiClient:
+        async def get_orderbook_unified(self, ticker):
+            return _book_with_depth(ticker, datetime.now(timezone.utc))
+
+    pair = MarketPair("poly-1", "KX-1", "Alice?", "Alice?", 0.98)
+    with pytest.raises(PairSnapshotError) as captured:
+        await PairSnapshotSource(
+            PolymarketClient(),
+            KalshiClient(),
+            max_age_seconds=5,
+            timeout_seconds=1,
+        ).fetch(pair)
+
+    assert captured.value.reason_code == "paired_snapshot_upstream_unavailable"
+    assert captured.value.evidence == {"error_type": "CircuitOpenError"}
+
+
+@pytest.mark.asyncio
+async def test_pair_snapshot_converts_http_status_to_pair_local_retry():
+    request = httpx.Request("GET", "https://venue.example/book")
+    response = httpx.Response(503, request=request)
+
+    class PolymarketClient:
+        async def get_orderbook(self, market_id):
+            raise httpx.HTTPStatusError(
+                "service unavailable", request=request, response=response
+            )
+
+    class KalshiClient:
+        async def get_orderbook_unified(self, ticker):
+            return _book_with_depth(ticker, datetime.now(timezone.utc))
+
+    pair = MarketPair("poly-1", "KX-1", "Alice?", "Alice?", 0.98)
+    with pytest.raises(PairSnapshotError) as captured:
+        await PairSnapshotSource(
+            PolymarketClient(),
+            KalshiClient(),
+            max_age_seconds=5,
+            timeout_seconds=1,
+        ).fetch(pair)
+
+    assert captured.value.reason_code == "paired_snapshot_upstream_unavailable"
+    assert captured.value.evidence == {"error_type": "HTTPStatusError"}
+
+
+@pytest.mark.asyncio
 async def test_discovery_preflight_keeps_only_fresh_pairs_with_executable_capacity():
     now = datetime.now(timezone.utc)
     usable = MarketPair(
@@ -282,6 +335,40 @@ async def test_transient_preflight_failure_stays_on_scanner_retry_cadence():
     assert passed == [pair]
     assert evidence[pair.pair_id]["result"] == "retry_pending"
     assert pair.pair_id not in bot._preflight_snapshots
+
+
+@pytest.mark.asyncio
+async def test_upstream_preflight_failure_stays_on_scanner_retry_cadence():
+    pair = MarketPair("poly-circuit", "KX-CIRCUIT", "Circuit?", "Circuit?", 0.98)
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            raise PairSnapshotError("paired_snapshot_upstream_unavailable")
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.pair_snapshot_source = SnapshotSource()
+
+    passed, evidence = await bot._preflight_verified_pairs([pair])
+
+    assert passed == [pair]
+    assert evidence[pair.pair_id]["result"] == "retry_pending"
+
+
+@pytest.mark.asyncio
+async def test_empty_preflight_book_stays_on_scanner_retry_cadence():
+    pair = MarketPair("poly-empty", "KX-EMPTY", "Empty?", "Empty?", 0.98)
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            raise PairSnapshotError("empty_polymarket_orderbook")
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.pair_snapshot_source = SnapshotSource()
+
+    passed, evidence = await bot._preflight_verified_pairs([pair])
+
+    assert passed == [pair]
+    assert evidence[pair.pair_id]["result"] == "retry_pending"
 
 
 @pytest.mark.asyncio
@@ -410,3 +497,116 @@ async def test_cross_platform_scanner_evaluates_the_pair_snapshot_not_global_cac
         }
     finally:
         bot.paper_trade_store.close()
+
+
+@pytest.mark.asyncio
+async def test_scanner_isolates_unexpected_snapshot_failure_and_evaluates_next_pair():
+    from dashboard.server import dashboard_state
+
+    broken = MarketPair("poly-broken", "KX-BROKEN", "Broken?", "Broken?", 0.98)
+    usable = MarketPair("poly-good", "KX-GOOD", "Good?", "Good?", 0.98)
+    now = datetime.now(timezone.utc)
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            if pair is broken:
+                raise ValueError("malformed payload")
+            return PairSnapshot(
+                pair.pair_id,
+                _book_with_depth(pair.polymarket_id, now),
+                _book_with_depth(pair.kalshi_ticker, now),
+                5,
+            )
+
+    class PairMonitor:
+        def due_pairs(self, pairs):
+            return [DuePair(pair=pair, tier="cold") for pair in pairs]
+
+        def mark_evaluated(self, *args, **kwargs):
+            pass
+
+    class Detector:
+        min_edge = 0.02
+
+        def get_last_direction_evaluations(self, pair_id):
+            return ()
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = [broken, usable]
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = Detector()
+    bot.kalshi_client = type("KalshiMetrics", (), {"request_metrics": {}})()
+    bot.pair_snapshot_source = SnapshotSource()
+    evaluated = []
+
+    async def evaluate(pair, polymarket_book, kalshi_book):
+        evaluated.append(pair.pair_id)
+        bot._running = False
+        return None, None
+
+    bot.evaluate_cross_platform_pair = evaluate
+
+    await bot._scan_cross_platform_pairs()
+
+    assert evaluated == [usable.pair_id]
+    assert dashboard_state.cross_platform["scan_status"] == "degraded"
+    assert dashboard_state.cross_platform["last_pair_snapshot_unexpected_error"] == {
+        "error_type": "ValueError",
+        "pair_id": broken.pair_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_scanner_rejects_cached_preflight_snapshot_that_aged_out():
+    stale_pair = MarketPair("poly-stale", "KX-STALE", "Stale?", "Stale?", 0.98)
+    fresh_pair = MarketPair("poly-fresh", "KX-FRESH", "Fresh?", "Fresh?", 0.98)
+    now = datetime.now(timezone.utc)
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            return PairSnapshot(
+                pair.pair_id,
+                _book_with_depth(pair.polymarket_id, now),
+                _book_with_depth(pair.kalshi_ticker, now),
+                5,
+            )
+
+    class PairMonitor:
+        def due_pairs(self, pairs):
+            return [DuePair(pair=pair, tier="cold") for pair in pairs]
+
+        def mark_evaluated(self, *args, **kwargs):
+            pass
+
+    class Detector:
+        min_edge = 0.02
+
+        def get_last_direction_evaluations(self, pair_id):
+            return ()
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = [stale_pair, fresh_pair]
+    bot._preflight_snapshots[stale_pair.pair_id] = PairSnapshot(
+        stale_pair.pair_id,
+        _book_with_depth(stale_pair.polymarket_id, now - timedelta(seconds=10)),
+        _book_with_depth(stale_pair.kalshi_ticker, now - timedelta(seconds=10)),
+        5,
+    )
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = Detector()
+    bot.kalshi_client = type("KalshiMetrics", (), {"request_metrics": {}})()
+    bot.pair_snapshot_source = SnapshotSource()
+    evaluated = []
+
+    async def evaluate(pair, polymarket_book, kalshi_book):
+        evaluated.append(pair.pair_id)
+        bot._running = False
+        return None, None
+
+    bot.evaluate_cross_platform_pair = evaluate
+
+    await bot._scan_cross_platform_pairs()
+
+    assert evaluated == [fresh_pair.pair_id]

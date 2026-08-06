@@ -221,6 +221,64 @@ def test_resolution_criteria_can_generate_candidates_for_paraphrased_titles():
     assert result.metrics.retrieved_candidates == 1
 
 
+def test_shared_resolution_boilerplate_cannot_join_different_subjects():
+    pipeline = SemanticMarketPipeline(retrieval_floor=0.0)
+    result = asyncio.run(
+        pipeline.match(
+            [
+                _poly(
+                    "Will LeBron James announce his retirement before 2027?",
+                    category="Sports",
+                    description="Resolves Yes according to an official announcement.",
+                )
+            ],
+            [
+                _kalshi(
+                    "Will Kawhi Leonard announce his retirement before 2027?",
+                    ticker="KX-KAWHI-RETIRE",
+                    category="Sports",
+                    event_title="NBA player retirement",
+                    rules_primary="Resolves Yes according to an official announcement.",
+                    close_time=datetime(2027, 1, 1, tzinfo=timezone.utc),
+                    expiration_time=datetime(2027, 1, 1, tzinfo=timezone.utc),
+                )
+            ],
+        )
+    )
+
+    assert result.metrics.structural_candidates == 0
+    assert result.metrics.verified_candidates == 0
+
+
+def test_identity_retrieval_normalizes_cpi_abbreviation_and_core_alias():
+    pipeline = SemanticMarketPipeline(retrieval_floor=0.0)
+    result = asyncio.run(
+        pipeline.match(
+            [
+                _poly(
+                    "Core CPI for July 2026?",
+                    category="Economics",
+                    description="",
+                    end_date=datetime(2026, 7, 31, tzinfo=timezone.utc),
+                )
+            ],
+            [
+                _kalshi(
+                    "Consumer price index excluding food and energy in Jul 2026?",
+                    ticker="KX-CORECPI-26JUL-T03",
+                    category="Economics",
+                    event_title="July 2026 inflation report",
+                    close_time=datetime(2026, 7, 31, tzinfo=timezone.utc),
+                    expiration_time=datetime(2026, 7, 31, tzinfo=timezone.utc),
+                )
+            ],
+        )
+    )
+
+    assert result.metrics.structural_candidates == 1
+    assert result.metrics.retrieved_candidates == 1
+
+
 def test_pipeline_structurally_excludes_non_overlapping_markets():
     pipeline = SemanticMarketPipeline()
 

@@ -17,7 +17,7 @@ def _market(market_id: str, *, liquidity: float, volume_24h: float) -> Market:
     )
 
 
-def _config(*, min_volume=50.0, resync_seconds=1800.0):
+def _config(*, min_volume=50.0, resync_seconds=1800.0, broad_orderbook_stream=True):
     return SimpleNamespace(
         use_simulation=False,
         mode=SimpleNamespace(
@@ -25,6 +25,7 @@ def _config(*, min_volume=50.0, resync_seconds=1800.0):
             semantic_min_polymarket_volume_24h=min_volume,
             polymarket_market_resync_seconds=resync_seconds,
             polymarket_priority_refresh_seconds=0.01,
+            polymarket_broad_orderbook_stream_enabled=broad_orderbook_stream,
         ),
     )
 
@@ -89,9 +90,7 @@ def test_priority_lane_keeps_matched_market_books_fresh():
 
     async def exercise():
         feed = DataFeed(Client(), [], config=_config())
-        feed._markets = {
-            "matched": _market("matched", liquidity=0, volume_24h=50)
-        }
+        feed._markets = {"matched": _market("matched", liquidity=0, volume_24h=50)}
         feed.market_ids = ["matched"]
         feed._running = True
         feed.set_priority_markets(["matched"])
@@ -108,3 +107,33 @@ def test_priority_lane_keeps_matched_market_books_fresh():
     feed = asyncio.run(exercise())
 
     assert "matched" in feed._order_books
+
+
+def test_broad_orderbook_stream_can_be_disabled_for_pair_scoped_paper_runtime():
+    called = False
+
+    class Client:
+        async def stream_orderbook(self, market_ids, use_simulation=False):
+            nonlocal called
+            called = True
+            yield "unexpected", OrderBook(market_id="unexpected")
+
+    async def exercise():
+        feed = DataFeed(
+            Client(),
+            ["market-1"],
+            config=_config(broad_orderbook_stream=False),
+        )
+        feed._running = True
+        task = asyncio.create_task(feed._stream_orderbooks())
+        await asyncio.sleep(0)
+        feed._running = False
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(exercise())
+
+    assert called is False

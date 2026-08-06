@@ -57,6 +57,7 @@ from core.pair_snapshot import (
     PairSnapshotError,
     PairSnapshotSource,
     executable_top_capacity,
+    require_pair_snapshot_fresh,
 )
 from core.semantic_market_matching import (
     OpenAIEmbeddingClient,
@@ -1106,6 +1107,9 @@ class TradingBotWithDashboard:
                     if item["result"] == "usable"
                 ]
             )
+            preflight_usable_pairs = dashboard_state.cross_platform[
+                "preflight_usable_pairs"
+            ]
             dashboard_state.cross_platform["preflight_rejections"] = dict(
                 Counter(
                     item["result"]
@@ -1194,7 +1198,8 @@ class TradingBotWithDashboard:
                         {
                             **vars(pipeline_metrics),
                             "rules_equivalent_pairs": len(rules_verified_pairs),
-                            "preflight_usable_pairs": len(self._matched_pairs),
+                            "preflight_usable_pairs": preflight_usable_pairs,
+                            "preflight_tracked_pairs": len(self._matched_pairs),
                             "preflight_rejections": dashboard_state.cross_platform[
                                 "preflight_rejections"
                             ],
@@ -1293,9 +1298,12 @@ class TradingBotWithDashboard:
                 try:
                     snapshot = await self.pair_snapshot_source.fetch(pair)
                 except PairSnapshotError as exc:
-                    transient = exc.reason_code == "paired_snapshot_timeout" or any(
+                    transient = exc.reason_code in {
+                        "paired_snapshot_timeout",
+                        "paired_snapshot_upstream_unavailable",
+                    } or any(
                         exc.reason_code.startswith(prefix)
-                        for prefix in ("stale_", "missing_")
+                        for prefix in ("stale_", "missing_", "empty_")
                     )
                     return (
                         pair,
@@ -1570,12 +1578,33 @@ class TradingBotWithDashboard:
                         due_pair.pair.pair_id, None
                     )
                     if preflight is not None:
-                        return preflight
+                        try:
+                            require_pair_snapshot_fresh(preflight)
+                            return preflight
+                        except PairSnapshotError as exc:
+                            return exc
                     async with snapshot_limit:
                         try:
                             return await self.pair_snapshot_source.fetch(due_pair.pair)
                         except PairSnapshotError as exc:
                             return exc
+                        except Exception as exc:
+                            logger.warning(
+                                "Pair snapshot isolated unexpected %s for %s",
+                                type(exc).__name__,
+                                due_pair.pair.pair_id,
+                            )
+                            dashboard_state.cross_platform["scan_status"] = "degraded"
+                            dashboard_state.cross_platform[
+                                "last_pair_snapshot_unexpected_error"
+                            ] = {
+                                "error_type": type(exc).__name__,
+                                "pair_id": due_pair.pair.pair_id,
+                            }
+                            return PairSnapshotError(
+                                "paired_snapshot_unexpected_error",
+                                evidence={"error_type": type(exc).__name__},
+                            )
 
                 snapshot_results = await asyncio.gather(
                     *(fetch_due_snapshot(due_pair) for due_pair in due_pairs)

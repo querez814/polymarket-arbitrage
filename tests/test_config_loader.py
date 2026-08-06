@@ -736,6 +736,8 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.is_dry_run is True
     assert config.use_simulation is False
     assert config.mode.dry_run_initial_balance == 5_000
+    assert config.mode.cross_platform_execution_enabled is False
+    assert config.mode.polymarket_broad_orderbook_stream_enabled is False
     assert config.mode.paper_locked_arb_enabled is True
     assert config.mode.simulate_fills is False
     assert config.trading.bundle_arb_enabled is False
@@ -758,6 +760,14 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.news_catalyst.scan_interval_seconds == pytest.approx(1800)
     assert config.news_catalyst.max_daily_api_calls == 60
     assert config.news_catalyst.mispricing_detector_enabled is False
+
+
+def test_broad_orderbook_stream_flag_requires_real_boolean():
+    config = BotConfig()
+    config.mode.polymarket_broad_orderbook_stream_enabled = "false"
+
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        validate_config(config)
 
 
 def test_paper_locked_arb_rejects_random_fill_mode():

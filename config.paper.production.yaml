@@ -74,6 +74,9 @@ mode:
   semantic_min_kalshi_open_interest: 1
   polymarket_market_resync_seconds: 1800
   polymarket_priority_refresh_seconds: 2
+  # Cross-platform paper evaluation fetches only verified pairs. Polling every
+  # active Polymarket book would starve those reads through the shared circuit.
+  polymarket_broad_orderbook_stream_enabled: false
 
 logging:
   console_level: INFO
