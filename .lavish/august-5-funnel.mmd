@@ -1,0 +1,19 @@
+flowchart TD
+  A["1,186 Polymarket<br/>10,000 Kalshi markets"] --> B["157,124 structural candidates"]
+  B --> C["8,237 retrieved candidates"]
+  C --> D["500 model-verified candidates"]
+  D --> E["47 equivalent pairs<br/>trade eligible"]
+  D --> F["453 non-equivalent<br/>manual review"]
+  E --> G["128,502 scheduled evaluations"]
+  G --> H["128,351 fresh paired snapshots"]
+  H --> I["Polymarket parser selected<br/>outer book: 0.001 / 0.999"]
+  I --> J["128,351 labeled<br/>edge below threshold"]
+  J --> K["0 opportunities<br/>0 order attempts<br/>$0 paper P&L"]
+  classDef source fill:#151522,stroke:#4488ff,color:#e8e8f0,stroke-width:2px;
+  classDef good fill:#10251d,stroke:#00d986,color:#e8e8f0,stroke-width:2px;
+  classDef warn fill:#2a2010,stroke:#ffaa00,color:#e8e8f0,stroke-width:2px;
+  classDef bad fill:#2b131a,stroke:#ff4466,color:#e8e8f0,stroke-width:3px;
+  class A,B,C,D source;
+  class E,G,H good;
+  class F warn;
+  class I,J,K bad;

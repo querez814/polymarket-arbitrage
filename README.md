@@ -196,7 +196,7 @@ python run_with_dashboard.py
 # Open http://localhost:8000 in your browser
 ```
 
-For a production-shaped performance observation with a fixed $1,000 paper
+For a production-shaped performance observation with a fixed $5,000 paper
 balance and real public market data, use:
 
 ```bash
@@ -222,6 +222,18 @@ Each launch creates a numbered run in the configured paper SQLite database.
 The dashboard shows the active run timer, projected-at-settlement run PnL,
 transaction count, and five most recent runs. Full run history is available from `GET /api/paper-runs`;
 an uncleanly stopped run is retained as `interrupted` at its last heartbeat.
+Every cross-platform direction is persisted with the exact book prices, visible
+size, book age, authoritative venue fees, slippage reserve, threshold, and
+decision reason. Generate a report while the process is still running or after
+the shift without taking the writer lock:
+
+```bash
+uv run --with-requirements requirements.txt \
+  python scripts/report_paper_run.py --db data/paper_performance.db
+```
+
+The report labels projected locked paper PnL separately from realized
+settlement PnL and includes two-leg receipts for every simulated paired fill.
 
 Before a long real-data observation, prove the complete detector-to-persisted
 paper-fill lifecycle with a deterministic venue-shaped fixture:
@@ -237,8 +249,9 @@ public books concurrently and reports either an after-cost edge or an honest
 no-edge result. Its first invocation prints canonical venue metadata and an
 approval hash; pass that exact hash back with `--approve-pair-hash` to bind the
 evaluation to those IDs and resolution terms. It hard-pins both clients to
-dry-run and cannot place orders. Run `--help` for the identifiers and explicit
-fee assumptions.
+dry-run and cannot place orders. Fee curves are loaded from current public venue
+metadata; missing or unsupported economics fail closed. Run `--help` for the
+identifiers and controls.
 
 ### 4. Other Run Modes
 

@@ -1,0 +1,1306 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nightwatch — August 5 Autopsy and Recovery Plan</title>
+<style>
+:root{--bg:#09090e;--panel:#12121a;--card:#191923;--line:#2b2b3b;--text:#e8e8ef;--muted:#9898a8;--red:#ff4466;--green:#00df87;--blue:#4b8dff;--yellow:#ffae24;--purple:#aa66ff}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 8% 0,rgba(75,141,255,.14),transparent 34rem),radial-gradient(circle at 90% 3%,rgba(255,68,102,.10),transparent 30rem),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,sans-serif;line-height:1.5}code,.mono,table{font-family:"SFMono-Regular",Consolas,monospace}.shell{width:min(1240px,calc(100% - 28px));margin:auto;padding:24px 0 72px}.top{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;color:var(--muted);font:700 12px/1.4 "SFMono-Regular",monospace;letter-spacing:.08em}.brand{color:var(--text)}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--red);box-shadow:0 0 14px var(--red);margin-right:8px}.panel{background:linear-gradient(145deg,rgba(25,25,35,.97),rgba(18,18,26,.97));border:1px solid var(--line);border-radius:17px;box-shadow:0 22px 70px rgba(0,0,0,.32);min-width:0}header{margin-top:16px;padding:clamp(26px,6vw,66px);border-color:rgba(255,68,102,.48)}.eyebrow{color:var(--red);font:900 11px/1.3 "SFMono-Regular",monospace;text-transform:uppercase;letter-spacing:.16em}h1{font-size:clamp(42px,7vw,82px);line-height:.96;letter-spacing:-.055em;margin:14px 0 20px;max-width:1050px}h2{font-size:clamp(25px,3.2vw,40px);line-height:1.05;letter-spacing:-.03em;margin:6px 0 10px}h3{margin:0 0 7px;font-size:17px}p{overflow-wrap:anywhere}.lede{font-size:clamp(17px,2vw,23px);color:#c9c9d3;max-width:980px}.verdict{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:28px}.truth{padding:18px;border:1px solid var(--line);border-radius:12px;background:rgba(8,8,13,.5)}.truth strong{display:block;font-size:20px;margin-bottom:4px}.truth span{font-size:13px;color:var(--muted)}.truth.bad{border-left:4px solid var(--red)}.truth.safe{border-left:4px solid var(--green)}.metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:11px;margin:14px 0}.metric{padding:18px}.label{color:var(--muted);font:800 10px/1.3 "SFMono-Regular",monospace;letter-spacing:.1em;text-transform:uppercase}.value{font-size:clamp(27px,3.7vw,43px);font-weight:950;letter-spacing:-.045em;margin:5px 0}.note{color:var(--muted);font-size:11px}.red{color:var(--red)}.green{color:var(--green)}.blue{color:var(--blue)}.yellow{color:var(--yellow)}section{padding:clamp(22px,4vw,38px);margin-top:16px}.head{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;flex-wrap:wrap;margin-bottom:20px}.head p{color:var(--muted);max-width:780px;margin:0}.badge{display:inline-flex;padding:5px 9px;border-radius:999px;border:1px solid var(--line);font:900 10px/1.3 "SFMono-Regular",monospace;text-transform:uppercase;letter-spacing:.05em;white-space:normal}.badge.red{color:var(--red);border-color:rgba(255,68,102,.38);background:rgba(255,68,102,.09)}.badge.green{color:var(--green);border-color:rgba(0,223,135,.32);background:rgba(0,223,135,.08)}.badge.yellow{color:var(--yellow);border-color:rgba(255,174,36,.34);background:rgba(255,174,36,.08)}.evidence-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.evidence{padding:20px;border:1px solid var(--line);border-radius:13px;background:rgba(8,8,13,.46)}.book{display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;margin:14px 0}.price{padding:13px;border-radius:10px;background:#0b0b11;border:1px solid var(--line);text-align:center}.price strong{font:950 25px/1 "SFMono-Regular",monospace;display:block}.price small{color:var(--muted)}.arrow{color:var(--red);font-size:22px}.source{padding:13px 15px;border:1px solid var(--line);border-radius:10px;background:#0d0d13;color:var(--muted);font:12px/1.55 "SFMono-Regular",monospace;overflow-wrap:anywhere}.diagram{display:block;width:min(100%,780px);margin:12px auto 0;background:#fff;border-radius:13px;padding:10px}.stack{display:grid;gap:10px}.step{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:13px;align-items:center;padding:15px;border:1px solid var(--line);border-radius:12px;background:rgba(8,8,13,.45)}.rank{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:rgba(75,141,255,.13);color:var(--blue);font-weight:950}.step p{margin:3px 0 0;color:var(--muted);font-size:13px}.risk{font:800 10px/1.3 "SFMono-Regular",monospace;color:var(--muted);text-align:right}.callout{padding:18px;border-radius:12px;border:1px solid rgba(255,174,36,.32);background:rgba(255,174,36,.07);margin-top:14px}.controls{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:13px}button,input{font:inherit}button{border:1px solid var(--line);background:#0e0e15;color:var(--muted);padding:9px 12px;border-radius:9px;cursor:pointer}button.active,button:hover{border-color:var(--blue);color:var(--text);background:rgba(75,141,255,.11)}input{min-width:min(100%,320px);flex:1;padding:10px 12px;border-radius:9px;border:1px solid var(--line);background:#0d0d13;color:var(--text)}.table-wrap{overflow:auto;max-height:720px;border:1px solid var(--line);border-radius:12px}table{border-collapse:collapse;width:100%;min-width:1120px;font-size:11px}th,td{padding:12px 13px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}th{position:sticky;top:0;z-index:2;background:#101018;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-size:9px}td small{display:block;color:var(--muted);margin-top:4px;max-width:330px;overflow-wrap:anywhere}tr[hidden]{display:none}.limitations{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.lim{padding:19px;border:1px solid var(--line);border-radius:12px}.lim p{margin:6px 0 0;color:var(--muted);font-size:13px}footer{margin-top:16px;padding:20px;color:var(--muted);font-size:12px}@media(max-width:900px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.verdict,.evidence-grid,.limitations{grid-template-columns:1fr}}@media(max-width:560px){.metrics{grid-template-columns:1fr}.shell{width:calc(100% - 18px)}header,section{padding:19px}.step{grid-template-columns:40px minmax(0,1fr)}.risk{grid-column:2;text-align:left}}
+</style></head><body><main class="shell">
+<div class="top"><div class="brand"><span class="dot"></span>NIGHTWATCH / AUTOPSY + RECOVERY PLAN</div><div>AUG 05, 2026 · VERIFIED EVIDENCE · PRODUCTION-QUALITY PLAN</div></div>
+<header class="panel"><div class="eyebrow">Corrected conclusion</div><h1>The run was invalidated by a book-parsing defect.</h1><p class="lede">Nightwatch did not merely “find no edge.” It selected Polymarket’s outermost prices as top of book—typically <span class="mono">0.001 / 0.999</span>—then rejected every one of 128,351 fresh evaluations. The zero-trade result cannot be used as evidence that the shift contained no executable arbitrage.</p><div class="verdict"><div class="truth bad"><strong>Primary cause: wrong price level</strong><span>The client slices venue levels before normalizing their order. The first returned level is the worst, not the best.</span></div><div class="truth safe"><strong>Safety outcome: no money was put at risk</strong><span>The run was dry-run only. There were zero order attempts, zero fills, and zero venue mutations.</span></div></div></header>
+<div class="metrics"><article class="metric panel"><div class="label">Runtime</div><div class="value">7.51h</div><div class="note">$5,000 paper balance</div></article><article class="metric panel"><div class="label">Trade-eligible pairs</div><div class="value blue">47</div><div class="note">equivalent contracts</div></article><article class="metric panel"><div class="label">Fresh evaluations</div><div class="value green">128,351</div><div class="note">99.88% snapshot success</div></article><article class="metric panel"><div class="label">Corrupted rejections</div><div class="value red">128,351</div><div class="note">all labeled below edge</div></article><article class="metric panel"><div class="label">Trades / P&amp;L</div><div class="value red">0 / $0</div><div class="note">no order attempt reached</div></article></div>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Definitive proof</div><h2>One verified pair, raw venue vs. Nightwatch</h2></div><span class="badge red">REPRODUCED AUG 05 · READ ONLY</span></div><div class="evidence-grid"><article class="evidence"><h3>Polymarket raw YES book</h3><p>The venue returned bids ascending and asks descending. Its metadata independently reported the same true top of book.</p><div class="book"><div class="price"><small>first bid</small><strong class="red">.001</strong></div><div class="arrow">→</div><div class="price"><small>actual best bid</small><strong class="green">.005</strong></div></div><div class="book"><div class="price"><small>first ask</small><strong class="red">.999</strong></div><div class="arrow">→</div><div class="price"><small>actual best ask</small><strong class="green">.006</strong></div></div><div class="source">Market 559662 · Mark Cuban 2028 Democratic nomination<br>Gamma: bestBid=.005, bestAsk=.006<br>CLOB: bids .001→.005; asks .999→.006</div></article><article class="evidence"><h3>Nightwatch’s read-only evaluation</h3><p>The app selected index zero on each side after truncating to ten levels. It therefore manufactured a 99.8¢ spread on both YES and NO.</p><div class="book"><div class="price"><small>Nightwatch YES</small><strong class="red">.001 / .999</strong></div><div class="arrow">≠</div><div class="price"><small>venue YES</small><strong class="green">.005 / .006</strong></div></div><div class="source">status=no_after_cost_edge<br>polymarket YES=.001/.999 · NO=.001/.999<br>kalshi YES=.009/.011 · NO=.989/.991<br>venue_mutations=0</div></article></div><div class="callout"><strong>What this proves:</strong> the detector evaluated corrupted Polymarket top-of-book values. <strong>What it does not prove:</strong> that this particular pair was profitable—the corrected current spread is only 0.3¢ before fees. Historical per-evaluation values were not persisted, so the exact number of missed shift trades is unknowable.</div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Full path</div><h2>Where the 7.5-hour run stopped</h2></div><span class="badge red">BAD INPUT → CONSISTENT REJECTION</span></div><img class="diagram" src="august-5-funnel.png" alt="Nightwatch discovery and evaluation funnel ending in zero trades due to corrupted top-of-book parsing"></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Persisted funnel</div><h2>The scanner was busy; execution never received a signal</h2></div></div><div class="evidence-grid"><article class="evidence"><h3>Cross-venue lane</h3><p><strong>128,502</strong> due → <strong>128,351</strong> fresh → <strong>128,351</strong> edge rejects → <strong>0</strong> opportunities → <strong>0</strong> order attempts.</p><p class="mono">146 paired timeouts · 5 stale Kalshi books</p></article><article class="evidence"><h3>Same-venue bundle lane</h3><p>The final log checkpoint showed 9,381 scans across 1,192 market states and 168 event groups, also with zero opportunities.</p><p class="mono">This path consumed the same incorrectly normalized Polymarket books, so its zero is also not trustworthy.</p></article></div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Every retained potential</div><h2>157 auditable candidate pairs from the shift</h2><p>The final semantic cycle processed 500 candidates: 47 equivalent and 453 non-equivalent. The app persisted all 47 equivalent pairs plus only the top 100 review candidates per cycle; across the shift that left 110 distinct review rows. The unretained review rows cannot be reconstructed after shutdown.</p></div><span class="badge green">47 ELIGIBLE · 110 REVIEW</span></div><div class="controls"><button class="active" data-filter="all">All 157</button><button data-filter="eligible">Eligible 47</button><button data-filter="review">Different contracts 110</button><input id="search" placeholder="Search candidate, ticker, or question…"></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Polymarket</th><th>Kalshi</th><th>Relation</th><th>Retrieval</th><th>Confidence</th><th>Execution status</th><th>Seen</th></tr></thead><tbody><tr data-status="eligible" data-search="will mark cuban win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will mark cuban be the democratic presidential nominee in 2028? kxpresnomd-28-mc">
+          <td>1</td>
+          <td><strong>Will Mark Cuban win the 2028 Democratic presidential nomination?</strong><small>0x9d4f94f82de9d13ff1d3318639ab9000ee2533949e525343156f374fb00bd9b1</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Mark Cuban be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-MC</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.948</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will erika kirk win the 2028 republican presidential nomination? 2028 republican presidential nominee — will erika kirk be the nominee for the presidency for the republican party? kxpresnomr-28-ekir">
+          <td>2</td>
+          <td><strong>Will Erika Kirk win the 2028 Republican presidential nomination?</strong><small>0x7abed80b88301210ee83b7b14ec41bc9a5161e1af07254fbb26c6e2bf7182766</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Erika Kirk be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-EKIR</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.946</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will elissa slotkin win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will elissa slotkin be the democratic presidential nominee in 2028? kxpresnomd-28-eslo">
+          <td>3</td>
+          <td><strong>Will Elissa Slotkin win the 2028 Democratic presidential nomination?</strong><small>0xe50c71cc5e2372bf0f6194a02e51459dd03b2c7b2d78a0d4650e5f36c425338b</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Elissa Slotkin be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-ESLO</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.946</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will jared polis win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will jared polis be the democratic presidential nominee in 2028? kxpresnomd-28-jp">
+          <td>4</td>
+          <td><strong>Will Jared Polis win the 2028 Democratic presidential nomination?</strong><small>0x8fbcb151e2c988df5a43abb02298014b7daf34c008f3eed9188dd16a2a19bec1</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Jared Polis be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JP</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.945</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will robert f. kennedy jr. win the 2028 republican presidential nomination? 2028 republican presidential nominee — will robert f. kennedy jr. be the nominee for the presidency for the republican party? kxpresnomr-28-rfk">
+          <td>5</td>
+          <td><strong>Will Robert F. Kennedy Jr. win the 2028 Republican presidential nomination?</strong><small>0xc510176cf39d73295354fc797d84b510d050b45d29d6c9735ee18cdbc4fd6463</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Robert F. Kennedy Jr. be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-RFK</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.945</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will vivek ramaswamy win the 2028 republican presidential nomination? 2028 republican presidential nominee — will vivek ramaswamy be the nominee for the presidency for the republican party? kxpresnomr-28-vr">
+          <td>6</td>
+          <td><strong>Will Vivek Ramaswamy win the 2028 Republican presidential nomination?</strong><small>0xd997dc2a212a7d6673375a3b016db1fb214247142f8cde0cbf07f8e6d789877c</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Vivek Ramaswamy be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-VR</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.945</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will gretchen whitmer win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will gretchen whitmer be the democratic presidential nominee in 2028? kxpresnomd-28-gw">
+          <td>7</td>
+          <td><strong>Will Gretchen Whitmer win the 2028 Democratic presidential nomination?</strong><small>0xe39adea057926dc197fe30a441f57a340b2a232d5a687010f78bba9b6e02620f</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Gretchen Whitmer be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-GW</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.944</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will stephen a. smith win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will stephen a. smith be the democratic presidential nominee in 2028? kxpresnomd-28-sas">
+          <td>8</td>
+          <td><strong>Will Stephen A. Smith win the 2028 Democratic presidential nomination?</strong><small>0xc8f1cf5d4f26e0fd9c8fe89f2a7b3263b902cf14fde7bfccef525753bb492e47</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Stephen A. Smith be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-SAS</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.944</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will tim walz win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will tim walz be the democratic presidential nominee in 2028? kxpresnomd-28-tw">
+          <td>9</td>
+          <td><strong>Will Tim Walz win the 2028 Democratic presidential nomination?</strong><small>0x3265b10daeb30dbcc3214bd02e488551d0a5d3028392f4152e4750b943fbfc91</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Tim Walz be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-TW</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.943</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will pete hegseth win the 2028 republican presidential nomination? 2028 republican presidential nominee — will pete hegseth be the nominee for the presidency for the republican party? kxpresnomr-28-pheg">
+          <td>10</td>
+          <td><strong>Will Pete Hegseth win the 2028 Republican presidential nomination?</strong><small>0x5f3b3456b2d6ef0d6f15d7492162725057be78d738d2465456e2835f1d89046c</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Pete Hegseth be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-PHEG</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.943</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will josh shapiro win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will josh shapiro be the democratic presidential nominee in 2028? kxpresnomd-28-js">
+          <td>11</td>
+          <td><strong>Will Josh Shapiro win the 2028 Democratic presidential nomination?</strong><small>0xd65891729ce093cc12236856837eba1a0872fc7998fd4294c21346f7db68079c</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Josh Shapiro be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JS</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.942</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will ruben gallego win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will ruben gallego be the democratic presidential nominee in 2028? kxpresnomd-28-rgal">
+          <td>12</td>
+          <td><strong>Will Ruben Gallego win the 2028 Democratic presidential nomination?</strong><small>0x98933c78b5e277b62d91a6c174b412218de000b54c4c67ec8673bf561cec6e81</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Ruben Gallego be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-RGAL</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.942</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will gina raimondo win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will gina raimondo be the democratic presidential nominee in 2028? kxpresnomd-28-gr">
+          <td>13</td>
+          <td><strong>Will Gina Raimondo win the 2028 Democratic presidential nomination?</strong><small>0xcb239105ed21a2420ba4d85090b9bc32755c56601ffdc528afd17fd6282fe930</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Gina Raimondo be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-GR</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.942</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will andy beshear win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will andy beshear be the democratic presidential nominee in 2028? kxpresnomd-28-ab">
+          <td>14</td>
+          <td><strong>Will Andy Beshear win the 2028 Democratic presidential nomination?</strong><small>0x1d519b87999e3d4e90e1e8f57b5eee73a0ba488ff3fdb70867f294733aba84a9</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Andy Beshear be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-AB</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.942</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will gavin newsom win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will gavin newsom be the democratic presidential nominee in 2028? kxpresnomd-28-gn">
+          <td>15</td>
+          <td><strong>Will Gavin Newsom win the 2028 Democratic presidential nomination?</strong><small>0x0f49db97f71c68b1e42a6d16e3de93d85dbf7d4148e3f018eb79e88554be9f75</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Gavin Newsom be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-GN</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.942</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will ro khanna win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will ro khanna be the democratic presidential nominee in 2028? kxpresnomd-28-rkha">
+          <td>16</td>
+          <td><strong>Will Ro Khanna win the 2028 Democratic presidential nomination?</strong><small>0x20d0bc282552ac5ec6f61cd7101cb42a5948cae07e7651bdf40ede1a8b2c5eac</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Ro Khanna be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-RKHA</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.942</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will j.d. vance win the 2028 republican presidential nomination? 2028 republican presidential nominee — will j.d. vance be the nominee for the presidency for the republican party? kxpresnomr-28-jdv">
+          <td>17</td>
+          <td><strong>Will J.D. Vance win the 2028 Republican presidential nomination?</strong><small>0x18b1c135d0a40c5894da9412e77311827d9caf16cf4cd6591b247a34730af919</small></td>
+          <td><strong>2028 Republican presidential nominee — Will J.D. Vance be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-JDV</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.941</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will nikki haley win the 2028 republican presidential nomination? 2028 republican presidential nominee — will nikki haley be the nominee for the presidency for the republican party? kxpresnomr-28-nh">
+          <td>18</td>
+          <td><strong>Will Nikki Haley win the 2028 Republican presidential nomination?</strong><small>0xd7a0d72b19ca48b06b0029684677f581e32f133c367d7a19c2f1e4ad07066af7</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Nikki Haley be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-NH</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.941</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will jasmine crockett win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will jasmine crockett be the nominee for the presidency for the democratic party? kxpresnomd-28-jcro">
+          <td>19</td>
+          <td><strong>Will Jasmine Crockett win the 2028 Democratic presidential nomination?</strong><small>0x3cd6e52603d80ddbbdac9b1a4d43f9b7faa6aae4fae4d0fdfad3bd58454da7d3</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Jasmine Crockett be the nominee for the Presidency for the Democratic party?</strong><small>KXPRESNOMD-28-JCRO</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.941</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will j.b. pritzker win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will j.b. pritzker be the democratic presidential nominee in 2028? kxpresnomd-28-jbp">
+          <td>20</td>
+          <td><strong>Will J.B. Pritzker win the 2028 Democratic presidential nomination?</strong><small>0xe883f2fda25a605a184bb5fe583afce6cc21ea0b348b6a3728ec3067553c548d</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will J.B. Pritzker be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JBP</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.940</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will zohran mamdani win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will zohran mamdani be the democratic presidential nominee in 2028? kxpresnomd-28-zmam">
+          <td>21</td>
+          <td><strong>Will Zohran Mamdani win the 2028 Democratic presidential nomination?</strong><small>0x3535fb2f4aef6619dde8b367cb5e5d209526bb496d5d9778428c58a0252435e3</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Zohran Mamdani be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-ZMAM</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.940</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will liz cheney win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will liz cheney be the democratic presidential nominee in 2028? kxpresnomd-28-lc">
+          <td>22</td>
+          <td><strong>Will Liz Cheney win the 2028 Democratic presidential nomination?</strong><small>0x46dbd48d6bde5b81edb480e0f676a2cdda6c6b592c4d86a9367c7ad5a9870195</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Liz Cheney be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-LC</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.940</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will kristi noem win the 2028 republican presidential nomination? 2028 republican presidential nominee — will kristi noem be the nominee for the presidency for the republican party? kxpresnomr-28-knoe">
+          <td>23</td>
+          <td><strong>Will Kristi Noem win the 2028 Republican presidential nomination?</strong><small>0x5f1b1caf70eb994bfff2986727a05a3ac9f7ec8b0da4017f7732596d023e5a07</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Kristi Noem be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-KNOE</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.939</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will katie britt win the 2028 republican presidential nomination? 2028 republican presidential nominee — will katie britt be the nominee for the presidency for the republican party? kxpresnomr-28-kb">
+          <td>24</td>
+          <td><strong>Will Katie Britt win the 2028 Republican presidential nomination?</strong><small>0x61a1278884fa70d68d4bcaaf72fad55bbdb063cac28c6947472ca91635fab10f</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Katie Britt be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-KB</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.939</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will mark kelly win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will mark kelly be the democratic presidential nominee in 2028? kxpresnomd-28-mk">
+          <td>25</td>
+          <td><strong>Will Mark Kelly win the 2028 Democratic presidential nomination?</strong><small>0x36db77c539bcc8c7bf0686c1b99f30c5a5eed1f53d3b3a27a071550c81f83701</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Mark Kelly be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-MK</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.939</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will marjorie taylor greene win the 2028 republican presidential nomination? 2028 republican presidential nominee — will marjorie taylor greene be the nominee for the presidency for the republican party? kxpresnomr-28-mtg">
+          <td>26</td>
+          <td><strong>Will Marjorie Taylor Greene win the 2028 Republican presidential nomination?</strong><small>0x17902b9490c6a73152772316b4705935c5c6801ba269f2afc81686532e34fb9a</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Marjorie Taylor Greene be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-MTG</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will tulsi gabbard win the 2028 republican presidential nomination? 2028 republican presidential nominee — will tulsi gabbard be the nominee for the presidency for the republican party? kxpresnomr-28-tg">
+          <td>27</td>
+          <td><strong>Will Tulsi Gabbard win the 2028 Republican presidential nomination?</strong><small>0x9cd77217b2ab264fe4f6d302f662c0a91f349fe5798f1f98d70bb2311712791b</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Tulsi Gabbard be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-TG</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will john fetterman win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will john fetterman be the democratic presidential nominee in 2028? kxpresnomd-28-jf">
+          <td>28</td>
+          <td><strong>Will John Fetterman win the 2028 Democratic presidential nomination?</strong><small>0xca1d1139b0c3a29983407f499476ae642482788e841a277eb86faeeb9fa4a85c</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will John Fetterman be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JF</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will chris murphy win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will chris murphy be the democratic presidential nominee in 2028? kxpresnomd-28-cmur">
+          <td>29</td>
+          <td><strong>Will Chris Murphy win the 2028 Democratic presidential nomination?</strong><small>0xc720fcfa9e29346a976902f87e0f0f3bdc31d43af501b4fdef4f1780a30dd359</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Chris Murphy be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-CMUR</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will cory booker win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will cory booker be the democratic presidential nominee in 2028? kxpresnomd-28-cboo">
+          <td>30</td>
+          <td><strong>Will Cory Booker win the 2028 Democratic presidential nomination?</strong><small>0x1970bcce75e3674660917ae4685b433a9b1e0152d810a8d7c346dfd5e00694c2</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Cory Booker be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-CBOO</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will candace owens win the 2028 republican presidential nomination? 2028 republican presidential nominee — will candace owens be the nominee for the presidency for the republican party? kxpresnomr-28-cowe">
+          <td>31</td>
+          <td><strong>Will Candace Owens win the 2028 Republican presidential nomination?</strong><small>0x8764d4aba85c6e80a4823850fe9ff2d4dc17081f3be0a50a856765d7b1cb1fe7</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Candace Owens be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-COWE</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will byron donalds win the 2028 republican presidential nomination? 2028 republican presidential nominee — will byron donalds be the nominee for the presidency for the republican party? kxpresnomr-28-bd">
+          <td>32</td>
+          <td><strong>Will Byron Donalds win the 2028 Republican presidential nomination?</strong><small>0xd1747284d6048b2a3dcfbee489db405f36de18f9590197dd0e5c9f0c246bf050</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Byron Donalds be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-BD</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.938</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will phil murphy win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will phil murphy be the democratic presidential nominee in 2028? kxpresnomd-28-phi">
+          <td>33</td>
+          <td><strong>Will Phil Murphy win the 2028 Democratic presidential nomination?</strong><small>0x29283b56d3eec6d1d89fff51793d9d2e01579d2379b1d3e9ebda175d3561e809</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Phil Murphy be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-PHI</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.937</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will marco rubio win the 2028 republican presidential nomination? 2028 republican presidential nominee — will marco rubio be the nominee for the presidency for the republican party? kxpresnomr-28-mr">
+          <td>34</td>
+          <td><strong>Will Marco Rubio win the 2028 Republican presidential nomination?</strong><small>0x21ad31a46bfaa51650766eff6dc69c866959e32d965ffb116020e37694b6317d</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Marco Rubio be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-MR</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.936</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will lebron james win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will lebron james be the democratic presidential nominee in 2028? kxpresnomd-28-ljam">
+          <td>35</td>
+          <td><strong>Will LeBron James win the 2028 Democratic presidential nomination?</strong><small>0x8b203037c7c0e21b500314f8398d2a8ea294b7ce1f4f9185f426425a3505bc45</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Lebron James be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-LJAM</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.936</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will jon stewart win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will jon stewart be the democratic presidential nominee in 2028? kxpresnomd-28-jste">
+          <td>36</td>
+          <td><strong>Will Jon Stewart win the 2028 Democratic presidential nomination?</strong><small>0xfee07be730188c94cd3644ed6f107fa3ea2dfab9989ce8d39aeeae064766abe3</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Jon Stewart be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JSTE</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.936</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will josh hawley win the 2028 republican presidential nomination? 2028 republican presidential nominee — will josh hawley be the nominee for the presidency for the republican party? kxpresnomr-28-jh">
+          <td>37</td>
+          <td><strong>Will Josh Hawley win the 2028 Republican presidential nomination?</strong><small>0x4d4bceee5f59f75230c6438f69fc913a6da7afa4098ce0734655045c02a730fc</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Josh Hawley be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-JH</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.936</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will pete buttigieg win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will pete buttigieg be the democratic presidential nominee in 2028? kxpresnomd-28-pb">
+          <td>38</td>
+          <td><strong>Will Pete Buttigieg win the 2028 Democratic presidential nomination?</strong><small>0x4c325469d9b516ef4e6b8f73a81a12607dec075e3c2fd454f91765aaeafc4760</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Pete Buttigieg be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-PB</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.936</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will alexandria ocasio-cortez win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will alexandria ocasio-cortez be the democratic presidential nominee in 2028? kxpresnomd-28-aoc">
+          <td>39</td>
+          <td><strong>Will Alexandria Ocasio-Cortez win the 2028 Democratic presidential nomination?</strong><small>0xe6bcc2f1dd025ce5e1833190f7c60a71171c94f805df55b9ab0ded695ec93565</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Alexandria Ocasio-Cortez be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-AOC</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.935</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will raphael warnock win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will raphael warnock be the democratic presidential nominee in 2028? kxpresnomd-28-rw">
+          <td>40</td>
+          <td><strong>Will Raphael Warnock win the 2028 Democratic presidential nomination?</strong><small>0xdce84960dce38aa4a5800a5eba7c9ac34d2ce49ba9d44c42572c472d468af264</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Raphael Warnock be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-RW</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.935</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will sarah huckabee sanders win the 2028 republican presidential nomination? 2028 republican presidential nominee — will sarah huckabee sanders be the nominee for the presidency for the republican party? kxpresnomr-28-shs">
+          <td>41</td>
+          <td><strong>Will Sarah Huckabee Sanders win the 2028 Republican presidential nomination?</strong><small>0x00ad3bb5284b0b2314b1a2d42812fe292f606619c6278bd95c9d905816c240f6</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Sarah Huckabee Sanders be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-SHS</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.934</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will greg abbott win the 2028 republican presidential nomination? 2028 republican presidential nominee — will greg abbott be the nominee for the presidency for the republican party? kxpresnomr-28-ga">
+          <td>42</td>
+          <td><strong>Will Greg Abbott win the 2028 Republican presidential nomination?</strong><small>0x214093035e429b91df322bd20c55d9f611f741f67472a63f7623a9afc0cffa57</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Greg Abbott be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-GA</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.934</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will ron desantis win the 2028 republican presidential nomination? 2028 republican presidential nominee — will ron desantis be the nominee for the presidency for the republican party? kxpresnomr-28-rds">
+          <td>43</td>
+          <td><strong>Will Ron DeSantis win the 2028 Republican presidential nomination?</strong><small>0x64d31a2af85518c6718a5757a35b840f08eca20c1e22c0eb1e96ec01cc55b8b6</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Ron DeSantis be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-RDS</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.934</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will brian kemp win the 2028 republican presidential nomination? 2028 republican presidential nominee — will brian kemp be the nominee for the presidency for the republican party? kxpresnomr-28-bk">
+          <td>44</td>
+          <td><strong>Will Brian Kemp win the 2028 Republican presidential nomination?</strong><small>0x42631e1a8c8e6389422b58b8e15b1b551892b9833651aa3bab25afab124354b5</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Brian Kemp be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-BK</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.934</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will elise stefanik win the 2028 republican presidential nomination? 2028 republican presidential nominee — will elise stefanik be the nominee for the presidency for the republican party? kxpresnomr-28-es">
+          <td>45</td>
+          <td><strong>Will Elise Stefanik win the 2028 Republican presidential nomination?</strong><small>0x655b4bfdfa55a95c24d6e9bf7e7cd62f1b57da9a1f4c7f40f090b8ba847dffa2</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Elise Stefanik be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-ES</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.933</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>29</td>
+        </tr><tr data-status="eligible" data-search="will james talarico win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will james talarico be the democratic presidential nominee in 2028? kxpresnomd-28-jtal">
+          <td>46</td>
+          <td><strong>Will James Talarico win the 2028 Democratic presidential nomination?</strong><small>0xb91be12388b3d4079c3ed9b5783cb42d8c33051d37746a49300227e0f45fc089</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will James Talarico be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JTAL</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.933</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="eligible" data-search="will glenn youngkin win the 2028 republican presidential nomination? 2028 republican presidential nominee — will glenn youngkin be the nominee for the presidency for the republican party? kxpresnomr-28-gy">
+          <td>47</td>
+          <td><strong>Will Glenn Youngkin win the 2028 Republican presidential nomination?</strong><small>0xd0c4c60c8e68ee15974df3aa7d217225e98020fab9fcdb32d10f8e3d285e1619</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Glenn Youngkin be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-GY</small></td>
+          <td><span class="badge green">equivalent</span></td>
+          <td>0.933</td><td>0.98</td>
+          <td><span class="badge green">trade eligible</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will the democrats win the idaho senate race in 2026? idaho senate winner? (2028) — will democratics win the senate race in idaho? senateid-28-d">
+          <td>48</td>
+          <td><strong>Will the Democrats win the Idaho Senate race in 2026?</strong><small>0xbf4144ee69c04fafaf23f455cee1e240cb4a643aec6276ef6159929a4a070280</small></td>
+          <td><strong>Idaho Senate winner? (2028) — Will Democratics win the Senate race in Idaho?</strong><small>SENATEID-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>7</td>
+        </tr><tr data-status="review" data-search="will the democrats win the south carolina senate race in 2026? south carolina senate winner? (2028) — will democratics win the senate race in south carolina? senatesc-28-d">
+          <td>49</td>
+          <td><strong>Will the Democrats win the South Carolina Senate race in 2026?</strong><small>0x4de72138204727d2821bff847d8158819ab5b591db1b5b263676126cbb3a0430</small></td>
+          <td><strong>South Carolina Senate winner? (2028) — Will Democratics win the Senate race in South Carolina?</strong><small>SENATESC-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.892</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>14</td>
+        </tr><tr data-status="review" data-search="will the republicans win the florida senate race in 2026? florida senate winner? (2028) — will republicans win the senate race in florida? senatefl-28-r">
+          <td>50</td>
+          <td><strong>Will the Republicans win the Florida Senate race in 2026?</strong><small>0xe655180a65e17b6959aa722821312de23513cba6c6d2e3a55f47f198977316bf</small></td>
+          <td><strong>Florida Senate winner? (2028) — Will Republicans win the Senate race in Florida?</strong><small>SENATEFL-28-R</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.891</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>14</td>
+        </tr><tr data-status="review" data-search="will the democrats win the ohio senate race in 2026? ohio senate winner? (2028) — will democratics win the senate race in ohio? senateoh-28-d">
+          <td>51</td>
+          <td><strong>Will the Democrats win the Ohio Senate race in 2026?</strong><small>0x968a1a79e001d49fa3ee1429e3b95eb01797587740f86d4e6becf3ab1b275bfb</small></td>
+          <td><strong>Ohio Senate winner? (2028) — Will Democratics win the Senate race in Ohio?</strong><small>SENATEOH-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.891</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>7</td>
+        </tr><tr data-status="review" data-search="will the democrats win the north carolina senate race in 2026? north carolina senate winner? (2028) — will democratics win the senate race in north carolina? senatenc-28-d">
+          <td>52</td>
+          <td><strong>Will the Democrats win the North Carolina Senate race in 2026?</strong><small>0x129dbcb7d39ff8df5f0d7685a2db6400b5db37d3963914486fbb7fd2bc96a923</small></td>
+          <td><strong>North Carolina Senate winner? (2028) — Will Democratics win the Senate race in North Carolina?</strong><small>SENATENC-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.891</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>13</td>
+        </tr><tr data-status="review" data-search="will the democrats win the florida senate race in 2026? florida senate winner? (2028) — will democratics win the senate race in florida? senatefl-28-d">
+          <td>53</td>
+          <td><strong>Will the Democrats win the Florida Senate race in 2026?</strong><small>0x0465cd005a54781e052b679e2c42c7ae5b772490fdda54316f157bf537536456</small></td>
+          <td><strong>Florida Senate winner? (2028) — Will Democratics win the Senate race in Florida?</strong><small>SENATEFL-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>10</td>
+        </tr><tr data-status="review" data-search="will the republicans win the vermont governor race in 2026? vermont governor winner? (2028) — will the republican party win the governorship in vermont govpartyvt-28-r">
+          <td>54</td>
+          <td><strong>Will the Republicans win the Vermont governor race in 2026?</strong><small>0x6664de877892786b699c552ef88f25ff6e4828f9a847e4f40e4d6d9cd30b1485</small></td>
+          <td><strong>Vermont Governor Winner? (2028) — Will the Republican party win the governorship in Vermont</strong><small>GOVPARTYVT-28-R</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>1.00</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>8</td>
+        </tr><tr data-status="review" data-search="will katie britt win the 2028 republican presidential nomination? 2028 republican vp nominee — will katie britt be the nominee for the vice presidency for the republican party? kxvpresnomr-28-kb">
+          <td>55</td>
+          <td><strong>Will Katie Britt win the 2028 Republican presidential nomination?</strong><small>0x61a1278884fa70d68d4bcaaf72fad55bbdb063cac28c6947472ca91635fab10f</small></td>
+          <td><strong>2028 Republican VP nominee — Will Katie Britt be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-KB</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.909</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will kamala harris win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will kamala harris be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-kh">
+          <td>56</td>
+          <td><strong>Will Kamala Harris win the 2028 Democratic presidential nomination?</strong><small>0x909659c9436228e2be56d5582ba6188166f2f8bf3c596335512c8f2e380d01ec</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Kamala Harris be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-KH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.909</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will mark cuban win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will mark cuban be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-mc">
+          <td>57</td>
+          <td><strong>Will Mark Cuban win the 2028 Democratic presidential nomination?</strong><small>0x9d4f94f82de9d13ff1d3318639ab9000ee2533949e525343156f374fb00bd9b1</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Mark Cuban be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-MC</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.909</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will gretchen whitmer win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will gretchen whitmer be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-gw">
+          <td>58</td>
+          <td><strong>Will Gretchen Whitmer win the 2028 Democratic presidential nomination?</strong><small>0xe39adea057926dc197fe30a441f57a340b2a232d5a687010f78bba9b6e02620f</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Gretchen Whitmer be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-GW</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.908</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will erika kirk win the 2028 republican presidential nomination? 2028 republican vp nominee — will erika kirk be the nominee for the vice presidency for the republican party? kxvpresnomr-28-ekir">
+          <td>59</td>
+          <td><strong>Will Erika Kirk win the 2028 Republican presidential nomination?</strong><small>0x7abed80b88301210ee83b7b14ec41bc9a5161e1af07254fbb26c6e2bf7182766</small></td>
+          <td><strong>2028 Republican VP nominee — Will Erika Kirk be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-EKIR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.907</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will gina raimondo win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will gina raimondo be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-grai">
+          <td>60</td>
+          <td><strong>Will Gina Raimondo win the 2028 Democratic presidential nomination?</strong><small>0xcb239105ed21a2420ba4d85090b9bc32755c56601ffdc528afd17fd6282fe930</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Gina Raimondo be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-GRAI</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.907</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will tulsi gabbard win the 2028 republican presidential nomination? 2028 republican vp nominee — will tulsi gabbard be the nominee for the vice presidency for the republican party? kxvpresnomr-28-tgab">
+          <td>61</td>
+          <td><strong>Will Tulsi Gabbard win the 2028 Republican presidential nomination?</strong><small>0x9cd77217b2ab264fe4f6d302f662c0a91f349fe5798f1f98d70bb2311712791b</small></td>
+          <td><strong>2028 Republican VP nominee — Will Tulsi Gabbard be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-TGAB</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.906</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will josh shapiro win the 2028 us presidential election? 2028 democratic presidential nominee — will josh shapiro be the democratic presidential nominee in 2028? kxpresnomd-28-js">
+          <td>62</td>
+          <td><strong>Will Josh Shapiro win the 2028 US Presidential Election?</strong><small>0x5969cbb46aca5319b19e19a3c6f63de098950b675bf268f30f4d035508da1957</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Josh Shapiro be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JS</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.906</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will liz cheney win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will liz cheney be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-lche">
+          <td>63</td>
+          <td><strong>Will Liz Cheney win the 2028 Democratic presidential nomination?</strong><small>0x46dbd48d6bde5b81edb480e0f676a2cdda6c6b592c4d86a9367c7ad5a9870195</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Liz Cheney be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-LCHE</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.905</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will jasmine crockett win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will jasmine crockett be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-jcro">
+          <td>64</td>
+          <td><strong>Will Jasmine Crockett win the 2028 Democratic presidential nomination?</strong><small>0x3cd6e52603d80ddbbdac9b1a4d43f9b7faa6aae4fae4d0fdfad3bd58454da7d3</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Jasmine Crockett be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-JCRO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.905</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will nikki haley win the 2028 republican presidential nomination? 2028 republican vp nominee — will nikki haley be the nominee for the vice presidency for the republican party? kxvpresnomr-28-nh">
+          <td>65</td>
+          <td><strong>Will Nikki Haley win the 2028 Republican presidential nomination?</strong><small>0xd7a0d72b19ca48b06b0029684677f581e32f133c367d7a19c2f1e4ad07066af7</small></td>
+          <td><strong>2028 Republican VP nominee — Will Nikki Haley be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-NH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.905</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will elissa slotkin win the 2028 us presidential election? 2028 democratic presidential nominee — will elissa slotkin be the democratic presidential nominee in 2028? kxpresnomd-28-eslo">
+          <td>66</td>
+          <td><strong>Will Elissa Slotkin win the 2028 US Presidential Election?</strong><small>0xe1eaf3522af050d959be13efd170e96aa974f9913312a1b71716e7a4bf8be6b7</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Elissa Slotkin be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-ESLO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.905</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will j.d. vance win the 2028 republican presidential nomination? 2028 republican vp nominee — will j.d. vance be the nominee for the vice presidency for the republican party? kxvpresnomr-28-jdv">
+          <td>67</td>
+          <td><strong>Will J.D. Vance win the 2028 Republican presidential nomination?</strong><small>0x18b1c135d0a40c5894da9412e77311827d9caf16cf4cd6591b247a34730af919</small></td>
+          <td><strong>2028 Republican VP nominee — Will J.D. Vance be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-JDV</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.904</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will stephen a. smith win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will stephen a. smith be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-ssmi">
+          <td>68</td>
+          <td><strong>Will Stephen A. Smith win the 2028 Democratic presidential nomination?</strong><small>0xc8f1cf5d4f26e0fd9c8fe89f2a7b3263b902cf14fde7bfccef525753bb492e47</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Stephen A. Smith be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-SSMI</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.904</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will robert f. kennedy jr. win the 2028 republican presidential nomination? 2028 republican vp nominee — will robert f. kennedy jr. be the nominee for the vice presidency for the republican party? kxvpresnomr-28-rfk">
+          <td>69</td>
+          <td><strong>Will Robert F. Kennedy Jr. win the 2028 Republican presidential nomination?</strong><small>0xc510176cf39d73295354fc797d84b510d050b45d29d6c9735ee18cdbc4fd6463</small></td>
+          <td><strong>2028 Republican VP nominee — Will Robert F. Kennedy Jr. be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-RFK</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.903</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will josh shapiro win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will josh shapiro be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-js">
+          <td>70</td>
+          <td><strong>Will Josh Shapiro win the 2028 Democratic presidential nomination?</strong><small>0xd65891729ce093cc12236856837eba1a0872fc7998fd4294c21346f7db68079c</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Josh Shapiro be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-JS</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.903</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will mark kelly win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will mark kelly be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-mkel">
+          <td>71</td>
+          <td><strong>Will Mark Kelly win the 2028 Democratic presidential nomination?</strong><small>0x36db77c539bcc8c7bf0686c1b99f30c5a5eed1f53d3b3a27a071550c81f83701</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Mark Kelly be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-MKEL</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.902</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will tim walz win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will tim walz be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-tw">
+          <td>72</td>
+          <td><strong>Will Tim Walz win the 2028 Democratic presidential nomination?</strong><small>0x3265b10daeb30dbcc3214bd02e488551d0a5d3028392f4152e4750b943fbfc91</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Tim Walz be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-TW</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.902</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will elissa slotkin win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will elissa slotkin be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-eslo">
+          <td>73</td>
+          <td><strong>Will Elissa Slotkin win the 2028 Democratic presidential nomination?</strong><small>0xe50c71cc5e2372bf0f6194a02e51459dd03b2c7b2d78a0d4650e5f36c425338b</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Elissa Slotkin be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-ESLO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.902</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will the democrats win the south dakota senate race in 2026? south dakota senate winner? (2028) — will democratics win the senate race in south dakota? senatesd-28-d">
+          <td>74</td>
+          <td><strong>Will the Democrats win the South Dakota Senate race in 2026?</strong><small>0xf4f5714f7e70dda23fcbe21b9de67060cd6ab7a8a972686ff8495e45059ae531</small></td>
+          <td><strong>South Dakota Senate winner? (2028) — Will Democratics win the Senate race in South Dakota?</strong><small>SENATESD-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.901</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>6</td>
+        </tr><tr data-status="review" data-search="will sarah huckabee sanders win the 2028 republican presidential nomination? 2028 republican vp nominee — will sarah huckabee sanders be the nominee for the vice presidency for the republican party? kxvpresnomr-28-shs">
+          <td>75</td>
+          <td><strong>Will Sarah Huckabee Sanders win the 2028 Republican presidential nomination?</strong><small>0x00ad3bb5284b0b2314b1a2d42812fe292f606619c6278bd95c9d905816c240f6</small></td>
+          <td><strong>2028 Republican VP nominee — Will Sarah Huckabee Sanders be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-SHS</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.901</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will jared polis win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will jared polis be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-jpol">
+          <td>76</td>
+          <td><strong>Will Jared Polis win the 2028 Democratic presidential nomination?</strong><small>0x8fbcb151e2c988df5a43abb02298014b7daf34c008f3eed9188dd16a2a19bec1</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Jared Polis be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-JPOL</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.901</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will byron donalds win the 2028 republican presidential nomination? 2028 republican vp nominee — will byron donalds be the nominee for the vice presidency for the republican party? kxvpresnomr-28-bd">
+          <td>77</td>
+          <td><strong>Will Byron Donalds win the 2028 Republican presidential nomination?</strong><small>0xd1747284d6048b2a3dcfbee489db405f36de18f9590197dd0e5c9f0c246bf050</small></td>
+          <td><strong>2028 Republican VP nominee — Will Byron Donalds be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-BD</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.899</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will chris murphy win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will chris murphy be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-cmur">
+          <td>78</td>
+          <td><strong>Will Chris Murphy win the 2028 Democratic presidential nomination?</strong><small>0xc720fcfa9e29346a976902f87e0f0f3bdc31d43af501b4fdef4f1780a30dd359</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Chris Murphy be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-CMUR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.898</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will gavin newsom win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will gavin newsom be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-gn">
+          <td>79</td>
+          <td><strong>Will Gavin Newsom win the 2028 Democratic presidential nomination?</strong><small>0x0f49db97f71c68b1e42a6d16e3de93d85dbf7d4148e3f018eb79e88554be9f75</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Gavin Newsom be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-GN</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.897</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>21</td>
+        </tr><tr data-status="review" data-search="will zohran mamdani win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will zohran mamdani be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-zmam">
+          <td>80</td>
+          <td><strong>Will Zohran Mamdani win the 2028 Democratic presidential nomination?</strong><small>0x3535fb2f4aef6619dde8b367cb5e5d209526bb496d5d9778428c58a0252435e3</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Zohran Mamdani be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-ZMAM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.897</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>21</td>
+        </tr><tr data-status="review" data-search="will pete buttigieg win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will pete buttigieg be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-pb">
+          <td>81</td>
+          <td><strong>Will Pete Buttigieg win the 2028 Democratic presidential nomination?</strong><small>0x4c325469d9b516ef4e6b8f73a81a12607dec075e3c2fd454f91765aaeafc4760</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Pete Buttigieg be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-PB</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.896</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>20</td>
+        </tr><tr data-status="review" data-search="will jamie dimon win the 2028 us presidential election? 2028 democratic presidential nominee — will jamie dimon be the democratic presidential nominee in 2028? kxpresnomd-28-jam">
+          <td>82</td>
+          <td><strong>Will Jamie Dimon win the 2028 US Presidential Election?</strong><small>0xa9549c44687993a9a154347c6907092341459b927efaa3f2b49009ca2c4e40a1</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Jamie Dimon be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JAM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.896</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>26</td>
+        </tr><tr data-status="review" data-search="will michelle obama win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will michelle obama be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-mo">
+          <td>83</td>
+          <td><strong>Will Michelle Obama win the 2028 Democratic presidential nomination?</strong><small>0x3e218c99a1335641b3a5ee6c887521d19b0c28fddd6b99c254a07968e35c0b1b</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Michelle Obama be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-MO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.896</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>18</td>
+        </tr><tr data-status="review" data-search="will lebron james win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will lebron james be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-ljam">
+          <td>84</td>
+          <td><strong>Will LeBron James win the 2028 Democratic presidential nomination?</strong><small>0x8b203037c7c0e21b500314f8398d2a8ea294b7ce1f4f9185f426425a3505bc45</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Lebron James be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-LJAM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.896</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>18</td>
+        </tr><tr data-status="review" data-search="will j.b. pritzker win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will j.b. pritzker be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-jbp">
+          <td>85</td>
+          <td><strong>Will J.B. Pritzker win the 2028 Democratic presidential nomination?</strong><small>0xe883f2fda25a605a184bb5fe583afce6cc21ea0b348b6a3728ec3067553c548d</small></td>
+          <td><strong>2028 Democratic VP nominee — Will J.B. Pritzker be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-JBP</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>18</td>
+        </tr><tr data-status="review" data-search="will ro khanna win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will ro khanna be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-rkha">
+          <td>86</td>
+          <td><strong>Will Ro Khanna win the 2028 Democratic presidential nomination?</strong><small>0x20d0bc282552ac5ec6f61cd7101cb42a5948cae07e7651bdf40ede1a8b2c5eac</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Ro Khanna be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-RKHA</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>18</td>
+        </tr><tr data-status="review" data-search="will ruben gallego win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will ruben gallego be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-rgal">
+          <td>87</td>
+          <td><strong>Will Ruben Gallego win the 2028 Democratic presidential nomination?</strong><small>0x98933c78b5e277b62d91a6c174b412218de000b54c4c67ec8673bf561cec6e81</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Ruben Gallego be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-RGAL</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>18</td>
+        </tr><tr data-status="review" data-search="will john fetterman win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will john fetterman be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-jf">
+          <td>88</td>
+          <td><strong>Will John Fetterman win the 2028 Democratic presidential nomination?</strong><small>0xca1d1139b0c3a29983407f499476ae642482788e841a277eb86faeeb9fa4a85c</small></td>
+          <td><strong>2028 Democratic VP nominee — Will John Fetterman be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-JF</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>17</td>
+        </tr><tr data-status="review" data-search="will tim walz win the 2028 us presidential election? 2028 democratic presidential nominee — will tim walz be the democratic presidential nominee in 2028? kxpresnomd-28-tw">
+          <td>89</td>
+          <td><strong>Will Tim Walz win the 2028 US Presidential Election?</strong><small>0xae70ab9bf1c3726fe430a2ba8b517697ae24e0f0ab554b876a5b521153068882</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Tim Walz be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-TW</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>25</td>
+        </tr><tr data-status="review" data-search="will phil murphy win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will phil murphy be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-pmur">
+          <td>90</td>
+          <td><strong>Will Phil Murphy win the 2028 Democratic presidential nomination?</strong><small>0x29283b56d3eec6d1d89fff51793d9d2e01579d2379b1d3e9ebda175d3561e809</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Phil Murphy be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-PMUR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>17</td>
+        </tr><tr data-status="review" data-search="will andy beshear win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will andy beshear be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-ab">
+          <td>91</td>
+          <td><strong>Will Andy Beshear win the 2028 Democratic presidential nomination?</strong><small>0x1d519b87999e3d4e90e1e8f57b5eee73a0ba488ff3fdb70867f294733aba84a9</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Andy Beshear be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-AB</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.895</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>17</td>
+        </tr><tr data-status="review" data-search="will matt gaetz win the 2028 republican presidential nomination? 2028 republican vp nominee — will matt gaetz be the nominee for the vice presidency for the republican party? kxvpresnomr-28-mg">
+          <td>92</td>
+          <td><strong>Will Matt Gaetz win the 2028 Republican presidential nomination?</strong><small>0xf2cea45ec282af4f302d2ab85ede73678cd692ebf8c3ab6d52bfa5e19f44c553</small></td>
+          <td><strong>2028 Republican VP nominee — Will Matt Gaetz be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-MG</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>17</td>
+        </tr><tr data-status="review" data-search="will brian kemp win the 2028 republican presidential nomination? 2028 republican vp nominee — will brian kemp be the nominee for the vice presidency for the republican party? kxvpresnomr-28-bk">
+          <td>93</td>
+          <td><strong>Will Brian Kemp win the 2028 Republican presidential nomination?</strong><small>0x42631e1a8c8e6389422b58b8e15b1b551892b9833651aa3bab25afab124354b5</small></td>
+          <td><strong>2028 Republican VP nominee — Will Brian Kemp be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-BK</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>17</td>
+        </tr><tr data-status="review" data-search="will josh hawley win the 2028 republican presidential nomination? 2028 republican vp nominee — will josh hawley be the nominee for the vice presidency for the republican party? kxvpresnomr-28-jh">
+          <td>94</td>
+          <td><strong>Will Josh Hawley win the 2028 Republican presidential nomination?</strong><small>0x4d4bceee5f59f75230c6438f69fc913a6da7afa4098ce0734655045c02a730fc</small></td>
+          <td><strong>2028 Republican VP nominee — Will Josh Hawley be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-JH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>16</td>
+        </tr><tr data-status="review" data-search="will glenn youngkin win the 2028 republican presidential nomination? 2028 republican vp nominee — will glenn youngkin be the nominee for the vice presidency for the republican party? kxvpresnomr-28-gy">
+          <td>95</td>
+          <td><strong>Will Glenn Youngkin win the 2028 Republican presidential nomination?</strong><small>0xd0c4c60c8e68ee15974df3aa7d217225e98020fab9fcdb32d10f8e3d285e1619</small></td>
+          <td><strong>2028 Republican VP nominee — Will Glenn Youngkin be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-GY</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>14</td>
+        </tr><tr data-status="review" data-search="will elise stefanik win the 2028 republican presidential nomination? 2028 republican vp nominee — will elise stefanik be the nominee for the vice presidency for the republican party? kxvpresnomr-28-es">
+          <td>96</td>
+          <td><strong>Will Elise Stefanik win the 2028 Republican presidential nomination?</strong><small>0x655b4bfdfa55a95c24d6e9bf7e7cd62f1b57da9a1f4c7f40f090b8ba847dffa2</small></td>
+          <td><strong>2028 Republican VP nominee — Will Elise Stefanik be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-ES</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.893</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>13</td>
+        </tr><tr data-status="review" data-search="will rahm emanuel win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will rahm emanuel be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-rema">
+          <td>97</td>
+          <td><strong>Will Rahm Emanuel win the 2028 Democratic presidential nomination?</strong><small>0x3dc47a72ac6bb265e9cefebd2a2eeed00966394cb2d07245b5c94138b60e82a3</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Rahm Emanuel be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-REMA</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.893</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>11</td>
+        </tr><tr data-status="review" data-search="will cory booker win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will cory booker be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-cboo">
+          <td>98</td>
+          <td><strong>Will Cory Booker win the 2028 Democratic presidential nomination?</strong><small>0x1970bcce75e3674660917ae4685b433a9b1e0152d810a8d7c346dfd5e00694c2</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Cory Booker be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-CBOO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.892</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>8</td>
+        </tr><tr data-status="review" data-search="will john thune win the 2028 republican presidential nomination? 2028 republican vp nominee — will john thune be the nominee for the vice presidency for the republican party? kxvpresnomr-28-jt">
+          <td>99</td>
+          <td><strong>Will John Thune win the 2028 Republican presidential nomination?</strong><small>0x7190eccbd0677d5d0ae8cdf598b37e945a346915c666dda11468dc9970657a56</small></td>
+          <td><strong>2028 Republican VP nominee — Will John Thune be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-JT</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.892</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>7</td>
+        </tr><tr data-status="review" data-search="will hunter biden win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will hunter biden be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-hbid">
+          <td>100</td>
+          <td><strong>Will Hunter Biden win the 2028 Democratic presidential nomination?</strong><small>0x1945a8b23e313ed7423b6b6fd556f9ab5578900376b565a61dc480a5f4f35d21</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Hunter Biden be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-HBID</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.891</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>7</td>
+        </tr><tr data-status="review" data-search="will marco rubio win the 2028 republican presidential nomination? 2028 republican vp nominee — will marco rubio be the nominee for the vice presidency for the republican party? kxvpresnomr-28-mr">
+          <td>101</td>
+          <td><strong>Will Marco Rubio win the 2028 Republican presidential nomination?</strong><small>0x21ad31a46bfaa51650766eff6dc69c866959e32d965ffb116020e37694b6317d</small></td>
+          <td><strong>2028 Republican VP nominee — Will Marco Rubio be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-MR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.890</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>5</td>
+        </tr><tr data-status="review" data-search="will wes moore win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will wes moore be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-wm">
+          <td>102</td>
+          <td><strong>Will Wes Moore win the 2028 Democratic presidential nomination?</strong><small>0x61d9486c0f7e14ed98f3b177b6adcb3cd45646c92e8bbfbf209789b86472d4b6</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Wes Moore be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-WM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.890</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>5</td>
+        </tr><tr data-status="review" data-search="will donald trump jr. win the 2028 republican presidential nomination? 2028 republican vp nominee — will donald j. trump jr. be the nominee for the vice presidency for the republican party? kxvpresnomr-28-djtjr">
+          <td>103</td>
+          <td><strong>Will Donald Trump Jr. win the 2028 Republican presidential nomination?</strong><small>0x4a9d58d4da874e26708f5bdb014eb07a06aeebb927068d169d43831595386557</small></td>
+          <td><strong>2028 Republican VP nominee — Will Donald J. Trump Jr. be the nominee for the Vice Presidency for the Republican party?</strong><small>KXVPRESNOMR-28-DJTJR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>5</td>
+        </tr><tr data-status="review" data-search="will alexandria ocasio-cortez win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will alexandria ocasio-cortez be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-aoc">
+          <td>104</td>
+          <td><strong>Will Alexandria Ocasio-Cortez win the 2028 Democratic presidential nomination?</strong><small>0xe6bcc2f1dd025ce5e1833190f7c60a71171c94f805df55b9ab0ded695ec93565</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Alexandria Ocasio-Cortez be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-AOC</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>3</td>
+        </tr><tr data-status="review" data-search="will jon stewart win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will jon stewart be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-jste">
+          <td>105</td>
+          <td><strong>Will Jon Stewart win the 2028 Democratic presidential nomination?</strong><small>0xfee07be730188c94cd3644ed6f107fa3ea2dfab9989ce8d39aeeae064766abe3</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Jon Stewart be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-JSTE</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>3</td>
+        </tr><tr data-status="review" data-search="will beto o’rourke win the 2028 democratic presidential nomination? 2028 democratic vp nominee — will beto o&#x27;rourke be the nominee for the vice presidency for the democratic party? kxvpresnomd-28-boro">
+          <td>106</td>
+          <td><strong>Will Beto O’Rourke win the 2028 Democratic presidential nomination?</strong><small>0x8ecd1d15e521b7d1020ad5596cc981c8764e9dcfbc3648f582e1a5138aee7185</small></td>
+          <td><strong>2028 Democratic VP nominee — Will Beto O&#x27;Rourke be the nominee for the Vice Presidency for the Democratic party?</strong><small>KXVPRESNOMD-28-BORO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.887</td><td>0.99</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>2</td>
+        </tr><tr data-status="review" data-search="will pete buttigieg win the 2028 us presidential election? 2028 democratic presidential nominee — will pete buttigieg be the democratic presidential nominee in 2028? kxpresnomd-28-pb">
+          <td>107</td>
+          <td><strong>Will Pete Buttigieg win the 2028 US Presidential Election?</strong><small>0x2c03c41e5032364cb7166e842bdd22913f28aa2c837d8432704aa89c338875c8</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Pete Buttigieg be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-PB</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.901</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will jb pritzker win the 2028 us presidential election? 2028 democratic presidential nominee — will j.b. pritzker be the democratic presidential nominee in 2028? kxpresnomd-28-jbp">
+          <td>108</td>
+          <td><strong>Will JB Pritzker win the 2028 US Presidential Election?</strong><small>0xefe6300fd8a053cca53df8f1bd536c5f571a136392c0516e7b16e39f1addecb0</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will J.B. Pritzker be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JBP</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.900</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will gretchen whitmer win the 2028 us presidential election? 2028 democratic presidential nominee — will gretchen whitmer be the democratic presidential nominee in 2028? kxpresnomd-28-gw">
+          <td>109</td>
+          <td><strong>Will Gretchen Whitmer win the 2028 US Presidential Election?</strong><small>0xfd6176f8c9a59105f80e060a77c4099881c5f2d9e0ceab88e55cf978462fab7f</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Gretchen Whitmer be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-GW</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.899</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will andy beshear win the 2028 us presidential election? 2028 democratic presidential nominee — will andy beshear be the democratic presidential nominee in 2028? kxpresnomd-28-ab">
+          <td>110</td>
+          <td><strong>Will Andy Beshear win the 2028 US Presidential Election?</strong><small>0x09ad4955c170d46c6d80b5f554435b19e229ff7dbe55370892b64782336cc3b9</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Andy Beshear be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-AB</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.898</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will zelenskyy and putin meet next in ukraine before 2027? will zelenskyy and putin speak? — volodymyr zelenskyy and vladimir putin meet before jan 1, 2027? kxzelenskyputin-29-27">
+          <td>111</td>
+          <td><strong>Will Zelenskyy and Putin meet next in Ukraine before 2027?</strong><small>0x5ae264c7a5977df65eca569e84f83aa52922bf9465f23dd69bc8b0b4a27fdf3c</small></td>
+          <td><strong>Will Zelenskyy and Putin speak? — Volodymyr Zelenskyy and Vladimir Putin meet before Jan 1, 2027?</strong><small>KXZELENSKYPUTIN-29-27</small></td>
+          <td><span class="badge yellow">subset</span></td>
+          <td>0.890</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>5</td>
+        </tr><tr data-status="review" data-search="will zelenskyy and putin not meet before 2027? will zelenskyy and putin speak? — volodymyr zelenskyy and vladimir putin meet before jan 1, 2027? kxzelenskyputin-29-27">
+          <td>112</td>
+          <td><strong>Will Zelenskyy and Putin not meet before 2027?</strong><small>0x032e40c71875723c5878c4385458f17aa5a6e90f6bb5c92fd75cf13a5a8ea3d4</small></td>
+          <td><strong>Will Zelenskyy and Putin speak? — Volodymyr Zelenskyy and Vladimir Putin meet before Jan 1, 2027?</strong><small>KXZELENSKYPUTIN-29-27</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>3</td>
+        </tr><tr data-status="review" data-search="will jd vance win the 2028 us presidential election? 2028 republican presidential nominee — will j.d. vance be the nominee for the presidency for the republican party? kxpresnomr-28-jdv">
+          <td>113</td>
+          <td><strong>Will JD Vance win the 2028 US Presidential Election?</strong><small>0x7ad403c3508f8e3912940fd1a913f227591145ca0614074208e0b962d5fcc422</small></td>
+          <td><strong>2028 Republican presidential nominee — Will J.D. Vance be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-JDV</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.887</td><td>0.98</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>9</td>
+        </tr><tr data-status="review" data-search="will gavin newsom win the 2028 us presidential election? 2028 democratic presidential nominee — will gavin newsom be the democratic presidential nominee in 2028? kxpresnomd-28-gn">
+          <td>114</td>
+          <td><strong>Will Gavin Newsom win the 2028 US Presidential Election?</strong><small>0x4567b275e6b667a6217f5cb4f06a797d3a1eaf1d0281fb5bc8c75e2046ae7e57</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Gavin Newsom be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-GN</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>0.96</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will zohran mamdani win the 2028 us presidential election? 2028 democratic presidential nominee — will zohran mamdani be the democratic presidential nominee in 2028? kxpresnomd-28-zmam">
+          <td>115</td>
+          <td><strong>Will Zohran Mamdani win the 2028 US Presidential Election?</strong><small>0xf05b4b55336a4c1c7b44c726911d2b559732cff7bad339084de86ae364dc85f6</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Zohran Mamdani be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-ZMAM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.894</td><td>0.96</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will alexandria ocasio-cortez win the 2028 us presidential election? 2028 democratic presidential nominee — will alexandria ocasio-cortez be the democratic presidential nominee in 2028? kxpresnomd-28-aoc">
+          <td>116</td>
+          <td><strong>Will Alexandria Ocasio-Cortez win the 2028 US Presidential Election?</strong><small>0xf232b565995e4b3a3e7fa6cef775eeff1cecd20ad7c013cb9fc8dadabfe279a9</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Alexandria Ocasio-Cortez be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-AOC</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.893</td><td>0.96</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>16</td>
+        </tr><tr data-status="review" data-search="will kamala harris win the 2028 us presidential election? 2028 democratic presidential nominee — will kamala harris be the democratic presidential nominee in 2028? kxpresnomd-28-kh">
+          <td>117</td>
+          <td><strong>Will Kamala Harris win the 2028 US Presidential Election?</strong><small>0xb3298af85e00aafad937c119444a5f2800a55343b7482eb75581f6e454432501</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Kamala Harris be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-KH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.892</td><td>0.96</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>16</td>
+        </tr><tr data-status="review" data-search="will pete hegseth win the 2028 us presidential election? 2028 republican presidential nominee — will pete hegseth be the nominee for the presidency for the republican party? kxpresnomr-28-pheg">
+          <td>118</td>
+          <td><strong>Will Pete Hegseth win the 2028 US Presidential Election?</strong><small>0xea649be6ea3447f3c145a173883c68a89faf4edda1f85109b76baa93b3ee7a87</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Pete Hegseth be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-PHEG</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.888</td><td>0.96</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>10</td>
+        </tr><tr data-status="review" data-search="will marco rubio announce a presidential run before 2027? when will marco rubio announce his presidential candidacy? — will marco rubio announce a run for president of the united states before jan 1, 2027? kxrubiorun-28-27jan01">
+          <td>119</td>
+          <td><strong>Will Marco Rubio announce a presidential run before 2027?</strong><small>0x5006bf5e4b17f5ec12692d9fa249647dedd3ab9a46c7485207487e9e08b95c95</small></td>
+          <td><strong>When will Marco Rubio announce his presidential candidacy? — Will Marco Rubio announce a run for President of the United States before Jan 1, 2027?</strong><small>KXRUBIORUN-28-27JAN01</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.95</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>22</td>
+        </tr><tr data-status="review" data-search="will michelle obama win the 2028 us presidential election? 2028 democratic presidential nominee — will michelle obama be the democratic presidential nominee in 2028? kxpresnomd-28-mo">
+          <td>120</td>
+          <td><strong>Will Michelle Obama win the 2028 US Presidential Election?</strong><small>0xbbbece074c2d4010e39e39c85ed67b1131180fcea616073c893fb6beaf51d783</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Michelle Obama be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-MO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.892</td><td>0.95</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>15</td>
+        </tr><tr data-status="review" data-search="will ro khanna win the 2028 us presidential election? 2028 democratic presidential nominee — will ro khanna be the democratic presidential nominee in 2028? kxpresnomd-28-rkha">
+          <td>121</td>
+          <td><strong>Will Ro Khanna win the 2028 US Presidential Election?</strong><small>0xb314f5dbf75919a34d4997e8b22e6793505e3377a690eaa11a75a2547e926bee</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Ro Khanna be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-RKHA</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.889</td><td>0.95</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>12</td>
+        </tr><tr data-status="review" data-search="will nikki haley win the 2028 us presidential election? 2028 republican presidential nominee — will nikki haley be the nominee for the presidency for the republican party? kxpresnomr-28-nh">
+          <td>122</td>
+          <td><strong>Will Nikki Haley win the 2028 US Presidential Election?</strong><small>0xe0173375b7eaccb836f7b92d28a9a2d1cc69e54e5a65fae89a5d7e49aadd332e</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Nikki Haley be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-NH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.889</td><td>0.95</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>13</td>
+        </tr><tr data-status="review" data-search="fannie mae ipo before 2027? when will fannie mae officially announce an ipo? kxipofannie-27jan01">
+          <td>123</td>
+          <td><strong>Fannie Mae IPO before 2027?</strong><small>0xb4eafb92f9038d98b9d457cea6ba034a1d362d60e68766749accbc9bc8b73172</small></td>
+          <td><strong>When will Fannie Mae officially announce an IPO?</strong><small>KXIPOFANNIE-27JAN01</small></td>
+          <td><span class="badge yellow">subset</span></td>
+          <td>0.888</td><td>0.90</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>3</td>
+        </tr><tr data-status="review" data-search="will jon ossoff announce a presidential run before 2027? when will jon ossoff announce his presidential candidacy? — will jon ossoff announce a run for president of the united states before jan 1, 2027? kxossoffrun-28-27jan01">
+          <td>124</td>
+          <td><strong>Will Jon Ossoff announce a Presidential run before 2027?</strong><small>0x8e7c4e8bb55ea1e2e3011f37f96bc254e156b26cd5ea092a7cade3ca268da7b7</small></td>
+          <td><strong>When will Jon Ossoff announce his presidential candidacy? — Will Jon Ossoff announce a run for President of the United States before Jan 1, 2027?</strong><small>KXOSSOFFRUN-28-27JAN01</small></td>
+          <td><span class="badge yellow">superset</span></td>
+          <td>0.931</td><td>0.88</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>27</td>
+        </tr><tr data-status="review" data-search="will kuomintang (kmt) win the most head of local government elections in the 2026 taiwan local elections? taiwan local elections winner? — will kuomintang win the most mayoral and magistrate races in taiwan’s 2026 local elections? kxtaiwanlocal-26nov28-kmt">
+          <td>125</td>
+          <td><strong>Will Kuomintang (KMT) win the most head of local government elections in the 2026 Taiwan local elections?</strong><small>0xc0f076bc4d90a44df34a729277e9d1f294f0cb60d2c3b1b3800908b1e15b923b</small></td>
+          <td><strong>Taiwan Local Elections winner? — Will Kuomintang win the most mayoral and magistrate races in Taiwan’s 2026 local elections?</strong><small>KXTAIWANLOCAL-26NOV28-KMT</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.920</td><td>0.88</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>13</td>
+        </tr><tr data-status="review" data-search="will the democrats win the new hampshire governor race in 2026? new hampshire governor winner? — will the democratic party win the governorship in new hampshire govpartynh-28-d">
+          <td>126</td>
+          <td><strong>Will the Democrats win the New Hampshire governor race in 2026?</strong><small>0x4900fd99a53dc19621b3de761cdd75401fcd5733d785b9840275fe14ccd7d74c</small></td>
+          <td><strong>New Hampshire Governor winner? — Will the Democratic party win the governorship in New Hampshire</strong><small>GOVPARTYNH-28-D</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.891</td><td>0.86</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>5</td>
+        </tr><tr data-status="review" data-search="will kamala harris announce a presidential run before 2027? when will kamala harris announce her presidential candidacy? — will kamala harris announce a run for president of the united states before jan 1, 2027? kxkamalarun-28-27jan01">
+          <td>127</td>
+          <td><strong>Will Kamala Harris announce a Presidential run before 2027?</strong><small>0x36114d2b2f66c9929b4151607d53472fb34c6d6888238f35d72cd51f30975873</small></td>
+          <td><strong>When will Kamala Harris announce her presidential candidacy? — Will Kamala Harris announce a run for President of the United States before Jan 1, 2027?</strong><small>KXKAMALARUN-28-27JAN01</small></td>
+          <td><span class="badge yellow">superset</span></td>
+          <td>0.922</td><td>0.80</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>7</td>
+        </tr><tr data-status="review" data-search="will gavin newsom announce a presidential run before 2027? when will gavin newsom announce his presidential candidacy? — will gavin newsom announce a run for president of the united states before jan 1, 2027? kxnewsomrun-28-27jan01">
+          <td>128</td>
+          <td><strong>Will Gavin Newsom announce a Presidential run before 2027?</strong><small>0x809eaa464104c09fbe8e54c582256dfa29b5061928790eea2e3d4908d96a7b5c</small></td>
+          <td><strong>When will Gavin Newsom announce his presidential candidacy? — Will Gavin Newsom announce a run for President of the United States before Jan 1, 2027?</strong><small>KXNEWSOMRUN-28-27JAN01</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.934</td><td>0.78</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>8</td>
+        </tr><tr data-status="review" data-search="will trump recognize somaliland before 2027? will trump recognize somaliland? kxrecogsomali-29-27">
+          <td>129</td>
+          <td><strong>Will Trump recognize Somaliland before 2027?</strong><small>0x48b6208c56c2bac5c29f4c91e951c2c17d706b38168d0487860e449a0bffb01a</small></td>
+          <td><strong>Will Trump recognize Somaliland?</strong><small>KXRECOGSOMALI-29-27</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.935</td><td>0.73</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>8</td>
+        </tr><tr data-status="review" data-search="will wes moore win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will wes moore be the democratic presidential nominee in 2028? kxpresnomd-28-wm">
+          <td>130</td>
+          <td><strong>Will Wes Moore win the 2028 Democratic presidential nomination?</strong><small>0x61d9486c0f7e14ed98f3b177b6adcb3cd45646c92e8bbfbf209789b86472d4b6</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Wes Moore be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-WM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.933</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will jon ossoff win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will jon ossoff be the democratic presidential nominee in 2028? kxpresnomd-28-joss">
+          <td>131</td>
+          <td><strong>Will Jon Ossoff win the 2028 Democratic presidential nomination?</strong><small>0x74dba1ce1ae9dd535414e85f2d9ab5ea32c0fb1acc9b7130b67e6d91217e24e1</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Jon Ossoff be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-JOSS</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.933</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will eric trump win the 2028 republican presidential nomination? 2028 republican presidential nominee — will eric trump be the nominee for the presidency for the republican party? kxpresnomr-28-etru">
+          <td>132</td>
+          <td><strong>Will Eric Trump win the 2028 Republican presidential nomination?</strong><small>0xca68152902c3581ab42feb04921b8b1cd3c4e80d06f255ae077259fca0bba15c</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Eric Trump be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-ETRU</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.932</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will andrew yang win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will andrew yang be the nominee for the presidency for the democratic party? kxpresnomd-28-ayan">
+          <td>133</td>
+          <td><strong>Will Andrew Yang win the 2028 Democratic presidential nomination?</strong><small>0x450810ae738a0ff820d3248f2b24937f63fb8c8cf422ed2a915125adb4d9d3c8</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Andrew Yang be the nominee for the Presidency for the Democratic party?</strong><small>KXPRESNOMD-28-AYAN</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.932</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will bernie sanders win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will bernie sanders be the democratic presidential nominee in 2028? kxpresnomd-28-bs">
+          <td>134</td>
+          <td><strong>Will Bernie Sanders win the 2028 Democratic presidential nomination?</strong><small>0x30cfb887558b20373a984da60c372fe5a90c0296aa6d8bb413a8aa7543846da2</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Bernie Sanders be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-BS</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.932</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will rahm emanuel win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will rahm emanuel be the democratic presidential nominee in 2028? kxpresnomd-28-rema">
+          <td>135</td>
+          <td><strong>Will Rahm Emanuel win the 2028 Democratic presidential nomination?</strong><small>0x3dc47a72ac6bb265e9cefebd2a2eeed00966394cb2d07245b5c94138b60e82a3</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Rahm Emanuel be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-REMA</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.932</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will roy cooper win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will roy cooper be the democratic presidential nominee in 2028? kxpresnomd-28-rc">
+          <td>136</td>
+          <td><strong>Will Roy Cooper win the 2028 Democratic presidential nomination?</strong><small>0x939eeb2dea216749bd409bedde483c3f2bfb0e24d4f2d34461c0b21c6e91f010</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Roy Cooper be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-RC</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.932</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will kamala harris win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will kamala harris be the democratic presidential nominee in 2028? kxpresnomd-28-kh">
+          <td>137</td>
+          <td><strong>Will Kamala Harris win the 2028 Democratic presidential nomination?</strong><small>0x909659c9436228e2be56d5582ba6188166f2f8bf3c596335512c8f2e380d01ec</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Kamala Harris be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-KH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.931</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will matt gaetz win the 2028 republican presidential nomination? 2028 republican presidential nominee — will matt gaetz be the nominee for the presidency for the republican party? kxpresnomr-28-mg">
+          <td>138</td>
+          <td><strong>Will Matt Gaetz win the 2028 Republican presidential nomination?</strong><small>0xf2cea45ec282af4f302d2ab85ede73678cd692ebf8c3ab6d52bfa5e19f44c553</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Matt Gaetz be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-MG</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.931</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will steve bannon win the 2028 republican presidential nomination? 2028 republican presidential nominee — will steve bannon be the nominee for the presidency for the republican party? kxpresnomr-28-ste">
+          <td>139</td>
+          <td><strong>Will Steve Bannon win the 2028 Republican presidential nomination?</strong><small>0xd5659eea81cada0bac656f5a9099861786cbae6755e2e1ac2c9e9441908b551f</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Steve Bannon be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-STE</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.931</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will tucker carlson win the 2028 republican presidential nomination? 2028 republican presidential nominee — will tucker carlson be the nominee for the presidency for the republican party? kxpresnomr-28-tcar">
+          <td>140</td>
+          <td><strong>Will Tucker Carlson win the 2028 Republican presidential nomination?</strong><small>0x4273517fc8141d57ad1528ede46efdceebdb6a4da746d5de5bad216564209a1e</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Tucker Carlson be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-TCAR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.930</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will john thune win the 2028 republican presidential nomination? 2028 republican presidential nominee — will john thune be the nominee for the presidency for the republican party? kxpresnomr-28-jt">
+          <td>141</td>
+          <td><strong>Will John Thune win the 2028 Republican presidential nomination?</strong><small>0x7190eccbd0677d5d0ae8cdf598b37e945a346915c666dda11468dc9970657a56</small></td>
+          <td><strong>2028 Republican presidential nominee — Will John Thune be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-JT</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.930</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will mike pence win the 2028 republican presidential nomination? 2028 republican presidential nominee — will mike pence be the nominee for the presidency for the republican party? kxpresnomr-28-mpen">
+          <td>142</td>
+          <td><strong>Will Mike Pence win the 2028 Republican presidential nomination?</strong><small>0x41c6341dd79903aca4bb0c29f5a7976946c3774d2fd72f38cbb7de7092144520</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Mike Pence be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-MPEN</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.930</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will hunter biden win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will hunter biden be the democratic presidential nominee in 2028? kxpresnomd-28-hbid">
+          <td>143</td>
+          <td><strong>Will Hunter Biden win the 2028 Democratic presidential nomination?</strong><small>0x1945a8b23e313ed7423b6b6fd556f9ab5578900376b565a61dc480a5f4f35d21</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Hunter Biden be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-HBID</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will ivanka trump win the 2028 republican presidential nomination? 2028 republican presidential nominee — will ivanka trump be the nominee for the presidency for the republican party? kxpresnomr-28-itru">
+          <td>144</td>
+          <td><strong>Will Ivanka Trump win the 2028 Republican presidential nomination?</strong><small>0x4f02b9cf70e514964fcb9aa2f7873d2b0d1aa0986da096cce7e6687e78da00f3</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Ivanka Trump be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-ITRU</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will beto o’rourke win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will beto o&#x27;rourke be the nominee for the presidency for the democratic party? kxpresnomd-28-boro">
+          <td>145</td>
+          <td><strong>Will Beto O’Rourke win the 2028 Democratic presidential nomination?</strong><small>0x8ecd1d15e521b7d1020ad5596cc981c8764e9dcfbc3648f582e1a5138aee7185</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Beto O&#x27;Rourke be the nominee for the Presidency for the Democratic party?</strong><small>KXPRESNOMD-28-BORO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will elon musk win the 2028 republican presidential nomination? 2028 republican presidential nominee — will elon musk be the nominee for the presidency for the republican party? kxpresnomr-28-em">
+          <td>146</td>
+          <td><strong>Will Elon Musk win the 2028 Republican presidential nomination?</strong><small>0xfbb80ea5f8fc02ee7df8bd4f58790e1d04b874078a49a7b7028a74a2075100c9</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Elon Musk be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-EM</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will ted cruz win the 2028 republican presidential nomination? 2028 republican presidential nominee — will ted cruz be the nominee for the presidency for the republican party? kxpresnomr-28-tc">
+          <td>147</td>
+          <td><strong>Will Ted Cruz win the 2028 Republican presidential nomination?</strong><small>0x0ac23db1e56971022bc7e822b907a2466c618b34104ea72bc9fa95e41c86a9c6</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Ted Cruz be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-TC</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will michelle obama win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will michelle obama be the democratic presidential nominee in 2028? kxpresnomd-28-mo">
+          <td>148</td>
+          <td><strong>Will Michelle Obama win the 2028 Democratic presidential nomination?</strong><small>0x3e218c99a1335641b3a5ee6c887521d19b0c28fddd6b99c254a07968e35c0b1b</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Michelle Obama be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-MO</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.928</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will tom cotton win the 2028 republican presidential nomination? 2028 republican presidential nominee — will tom cotton be the nominee for the presidency for the republican party? kxpresnomr-28-tcot">
+          <td>149</td>
+          <td><strong>Will Tom Cotton win the 2028 Republican presidential nomination?</strong><small>0x23d71fd1561572cdec9f1d7671b76f8917e5b6740f4a5577df8bb4289e74e4cd</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Tom Cotton be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-TCOT</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.927</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will graham platner win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will graham platner be the nominee for the presidency for the democratic party? kxpresnomd-28-gpla">
+          <td>150</td>
+          <td><strong>Will Graham Platner win the 2028 Democratic presidential nomination?</strong><small>0x6685b25cc7c89032efcdf81eb27fdc6bbf04a3e4299bcd99c9f3d62c8471001e</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Graham Platner be the nominee for the Presidency for the Democratic party?</strong><small>KXPRESNOMD-28-GPLA</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.926</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will rand paul win the 2028 republican presidential nomination? 2028 republican presidential nominee — will rand paul be the nominee for the presidency for the republican party? kxpresnomr-28-rpau">
+          <td>151</td>
+          <td><strong>Will Rand Paul win the 2028 Republican presidential nomination?</strong><small>0xd10bc768ede58b53ed400594240b0a0603134a32dab89ec823a18759cbc180ca</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Rand Paul be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-RPAU</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.926</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>29</td>
+        </tr><tr data-status="review" data-search="will thomas massie win the 2028 republican presidential nomination? 2028 republican presidential nominee — will thomas massie be the nominee for the presidency for the republican party? kxpresnomr-28-tmas">
+          <td>152</td>
+          <td><strong>Will Thomas Massie win the 2028 Republican presidential nomination?</strong><small>0x24258776d0a926b4550b0f213267b95ba0a7741fc972d0b3c2b5f6bf8ced2c50</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Thomas Massie be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-TMAS</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.922</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will donald trump jr. win the 2028 republican presidential nomination? 2028 republican presidential nominee — will donald j. trump jr. be the nominee for the presidency for the republican party? kxpresnomr-28-djtjr">
+          <td>153</td>
+          <td><strong>Will Donald Trump Jr. win the 2028 Republican presidential nomination?</strong><small>0x4a9d58d4da874e26708f5bdb014eb07a06aeebb927068d169d43831595386557</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Donald J. Trump Jr. be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-DJTJR</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.921</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>28</td>
+        </tr><tr data-status="review" data-search="will donald trump win the 2028 republican presidential nomination? 2028 republican presidential nominee — will donald j. trump be the nominee for the presidency for the republican party? kxpresnomr-28-djt">
+          <td>154</td>
+          <td><strong>Will Donald Trump win the 2028 Republican presidential nomination?</strong><small>0x895e01dbf3e6a33cd9a44ca0f8cdb5df1bd2b0b6ebed5300d28f8da7145145e4</small></td>
+          <td><strong>2028 Republican presidential nominee — Will Donald J. Trump be the nominee for the Presidency for the Republican party?</strong><small>KXPRESNOMR-28-DJT</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.918</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will dwayne &#x27;the rock&#x27; johnson win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will dwayne johnson be the nominee for the presidency for the democratic party? kxpresnomd-28-djoh">
+          <td>155</td>
+          <td><strong>Will Dwayne &#x27;The Rock&#x27; Johnson win the 2028 Democratic presidential nomination?</strong><small>0x8dbf6b51f302fd401065706245c144e93fe209abce183199433d4484b3ed8aff</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Dwayne Johnson be the nominee for the Presidency for the Democratic party?</strong><small>KXPRESNOMD-28-DJOH</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.917</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will barack obama win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will barack obama be the democratic presidential nominee in 2028? kxpresnomd-28-boba">
+          <td>156</td>
+          <td><strong>Will Barack Obama win the 2028 Democratic presidential nomination?</strong><small>0x88d67705780a3d922317ecb0c78a947a306174d0510df2ae89394d5abfb28206</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Barack Obama be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-BOBA</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.909</td><td>0.72</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr><tr data-status="review" data-search="will hillary clinton win the 2028 democratic presidential nomination? 2028 democratic presidential nominee — will hilary clinton be the democratic presidential nominee in 2028? kxpresnomd-28-hcli">
+          <td>157</td>
+          <td><strong>Will Hillary Clinton win the 2028 Democratic presidential nomination?</strong><small>0x663b88d3a8f2341bb8d878709dc78632bcaf7512e577bd15521e5d8ed933efbc</small></td>
+          <td><strong>2028 Democratic presidential nominee — Will Hilary Clinton be the Democratic Presidential nominee in 2028?</strong><small>KXPRESNOMD-28-HCLI</small></td>
+          <td><span class="badge yellow">independent</span></td>
+          <td>0.929</td><td>0.70</td>
+          <td><span class="badge yellow">blocked: different contract</span></td>
+          <td>30</td>
+        </tr></tbody></table></div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Implementation update · Aug 06</div><h2>The truth and evidence gates are now built and verified</h2><p>The historical conclusion above remains unchanged. This section records the replacement path that will generate auditable evidence for the next run.</p></div><span class="badge green">READY FOR $5K PAPER SOAK</span></div><div class="limitations"><article class="lim"><h3 class="green">Book and economics parity</h3><p>The exact Mark Cuban raw fixture now normalizes to YES <span class="mono">.005 / .006</span>. Real-data paper decisions require current pair-bound Polymarket and Kalshi fee metadata and fail closed when it is unavailable.</p></article><article class="lim"><h3 class="green">Live read-only canary</h3><p>The approved pair evaluated all four current directions with zero venue mutations. The strongest gross edge was 0.3¢; after fees and the conservative reserve it correctly returned <span class="mono">no_after_cost_edge</span>.</p></article><article class="lim"><h3 class="green">Deterministic paper receipt</h3><p>The fixture produced one atomic two-leg receipt and $0.5925 projected locked P&amp;L, with $0 realized settlement P&amp;L and zero venue mutations.</p></article><article class="lim"><h3 class="green">Durable shift evidence</h3><p>Every priced direction, complete semantic review cycle, near miss, paper decision, and paired simulated fill is persisted. <span class="mono">scripts/report_paper_run.py</span> reads the active ledger without taking the writer lock.</p></article></div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Target operating contract</div><h2>What “working” must mean next time</h2></div><span class="badge green">NON-NEGOTIABLE</span></div><div class="limitations"><article class="lim"><h3 class="green">Truthful inputs and decisions</h3><p>Every displayed bid/ask must match normalized raw venue depth. Every evaluated direction must leave an auditable record containing prices, available size, fees, slippage, thresholds, and the exact rejection or execution reason.</p></article><article class="lim"><h3 class="green">Truthful P&amp;L</h3><p>A paper fill appears only after both legs are executable at visible depth. The dashboard labels projected locked P&amp;L, unrealized mark-to-market, and realized settlement P&amp;L separately. Fixture proof never enters live-market totals.</p></article><article class="lim"><h3 class="blue">Opportunity-driven execution</h3><p>The engine executes every equivalent pair that clears authoritative costs, conservative slippage, minimum size, confirmation, cooldown, and risk capacity. It never trades merely because a shift has elapsed.</p></article><article class="lim"><h3 class="yellow">Evidence even when P&amp;L is zero</h3><p>A zero-trade run must still show the best observed gross and net edges, threshold distance, candidate coverage, book reliability, and why each pair did not trade. Zero becomes a result, not a mystery.</p></article></div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Full implementation plan</div><h2>Seven workstreams, in dependency order</h2><p>Each phase has a concrete code seam and a release gate. Later phases do not begin their market proof until earlier truth gates pass.</p></div><span class="badge green">QUALITY MODE</span></div><div class="stack">
+<div class="step"><div class="rank">1</div><div><h3>Repair Polymarket book normalization</h3><p><span class="mono">polymarket_client/api.py</span>: parse all raw levels, reject non-finite/out-of-range prices and non-positive sizes, sort bids descending and asks ascending, then enforce the depth limit. Preserve price-size pairing. Reject crossed books instead of silently evaluating them. <span class="mono">polymarket_client/models.py</span>: document the invariant that index zero is always executable best.</p><p><strong>Tests:</strong> reversed raw order, shuffled order, more than ten levels, duplicate prices, invalid levels, empty side, and the exact Mark Cuban raw-book fixture.</p></div><div class="risk"><strong class="red">GATE A</strong><br>raw parity</div></div>
+<div class="step"><div class="rank">2</div><div><h3>Make price corruption observable</h3><p>Add runtime invariants at the client boundary: best bid must equal the maximum retained bid; best ask must equal the minimum retained ask; books may not cross. Publish normalization failures and raw-vs-normalized diagnostics to operational state. Add a read-only canary that compares normalized values with venue metadata when metadata exposes best bid/ask.</p><p><strong>Tests:</strong> invariant failures are reason-coded and never reach either arbitrage detector.</p></div><div class="risk"><strong class="red">GATE B</strong><br>fail closed</div></div>
+<div class="step"><div class="rank">3</div><div><h3>Unify paper and production economics</h3><p><span class="mono">run_with_dashboard.py</span> must create <span class="mono">AuthoritativeEconomicsProvider</span> for real-data paper runs as well as production. <span class="mono">core/cross_platform_arb.py</span> receives the fresh pair-bound economics snapshot for every evaluation. Remove the real-data fallback that assumes 1.5% + 1% + $0.04 per contract. Missing, stale, inconsistent, or unsupported metadata remains a reason-coded fail-closed outcome.</p><p><strong>Tests:</strong> paper/live economics parity for fee-free and fee-enabled Polymarket markets, Kalshi quadratic rounding, stale metadata, wrong-pair metadata, and no off-chain gas charge.</p></div><div class="risk"><strong class="red">GATE C</strong><br>fee parity</div></div>
+<div class="step"><div class="rank">4</div><div><h3>Create a durable evaluation ledger</h3><p><span class="mono">utils/paper_trade_store.py</span>: add an append-only <span class="mono">cross_platform_evaluations</span> table keyed to <span class="mono">run_id</span>. Persist pair identity, observation time, direction, four venue top-of-book sides and sizes, snapshot ages, gross edge, fee components, slippage reserve, detector net edge, executable net edge, required threshold, suggested size, outcome, and reason code. Persist the complete semantic verification result set per discovery cycle rather than only the dashboard’s top 100 review rows.</p><p><strong>Tests:</strong> schema migration, foreign keys, atomic batch writes, restart durability, exact count reconciliation, and bounded query performance for a full shift.</p></div><div class="risk"><strong class="yellow">GATE D</strong><br>audit trail</div></div>
+<div class="step"><div class="rank">5</div><div><h3>Define one explicit execution waterfall</h3><p>Compute and persist: gross spread → authoritative venue fees → conservative slippage → executable net edge. Use one named profitability threshold at the final executable edge. Keep confirmation count, cooldown, liquidity fraction, order minimums, and risk capacity as separate gates with separate reason codes. Eliminate the current ambiguity where a 2¢ detector gate is followed by another 2¢ slippage deduction and another 2¢ minimum.</p><p><strong>Tests:</strong> boundary values one tick below/at/above every gate; two-observation confirmation; cooldown; capital, liquidity, and order-size caps.</p></div><div class="risk"><strong class="yellow">GATE E</strong><br>policy clarity</div></div>
+<div class="step"><div class="rank">6</div><div><h3>Rebuild paper execution and P&amp;L reporting</h3><p><span class="mono">core/paper_locked_arb.py</span> records both simulated legs with observed price, executable price, size, fee, and slippage. <span class="mono">dashboard</span> displays starting cash, committed capital, available cash, projected locked P&amp;L, unrealized mark-to-market, realized settlement P&amp;L, and equity—each with its source label. Never call projected locked profit “realized.” Add a near-miss table sorted by distance to executable threshold.</p><p><strong>Tests:</strong> ledger conservation, no capital recycling before settlement, partial visible depth, repeated observations, duplicate suppression, restart/replay, and dashboard/API reconciliation.</p></div><div class="risk"><strong class="yellow">GATE F</strong><br>P&amp;L truth</div></div>
+<div class="step"><div class="rank">7</div><div><h3>Run the release proof ladder</h3><p><strong>Offline:</strong> parser and economics regression suites, full test suite, deterministic locked-arbitrage acceptance receipt. <strong>Read-only live canary:</strong> manually verified equivalent pair, raw-vs-normalized book assertion, authoritative fee quote, zero venue mutations. <strong>Paper soak:</strong> $5,000 starting equity, continuous run, all evaluations persisted, no unexplained task death, final report generated directly from the ledger. Live-money canary remains a later, separately authorized gate.</p></div><div class="risk"><strong class="green">GATE G</strong><br>release proof</div></div>
+</div><div class="callout"><strong>Do not lower the profit threshold to force activity.</strong> First repair price truth, fee truth, and P&amp;L truth. Afterward the software can guarantee accurate evidence and execution when a real edge exists; it cannot guarantee that the market supplies an arbitrage during a particular shift.</div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">File-shaped delivery map</div><h2>Concrete changes and acceptance evidence</h2></div></div><div class="table-wrap" style="max-height:none"><table><thead><tr><th>Area</th><th>Primary files</th><th>Required change</th><th>Acceptance evidence</th></tr></thead><tbody>
+<tr><td>Book ingestion</td><td><span class="mono">polymarket_client/api.py<br>polymarket_client/models.py</span></td><td>Normalize, validate, sort, then truncate; publish invariant failures.</td><td>Raw fixture and live canary agree on best bid/ask and size.</td></tr>
+<tr><td>Economics</td><td><span class="mono">core/execution_economics.py<br>core/cross_platform_arb.py<br>run_with_dashboard.py</span></td><td>Authoritative pair-bound fee snapshots in real-data paper and live.</td><td>Identical paper/live net edge for the same snapshot and size.</td></tr>
+<tr><td>Evaluation audit</td><td><span class="mono">utils/paper_trade_store.py<br>run_with_dashboard.py</span></td><td>Persist every direction and complete semantic cycle with reason-coded outcomes.</td><td>Due = persisted success + persisted failures; no unaccounted decisions.</td></tr>
+<tr><td>Paper ledger</td><td><span class="mono">core/paper_locked_arb.py<br>dashboard/integration.py<br>dashboard/server.py</span></td><td>Two-leg receipts and separated P&amp;L categories with source labels.</td><td>Cash + committed capital + P&amp;L reconciliation survives restart.</td></tr>
+<tr><td>Verification</td><td><span class="mono">tests/test_*orderbook*<br>tests/test_execution_economics.py<br>tests/test_paper_*.py</span></td><td>Regression, integration, replay, invariants, and dashboard reconciliation.</td><td>Focused suites and full suite green; deterministic receipt plus live read-only canary.</td></tr>
+<tr><td>Operations</td><td><span class="mono">scripts/prove_paper_acceptance.py<br>scripts/evaluate_live_pair.py<br>docs/production-operations.md</span></td><td>One operator command for preflight, canary, soak, and final report.</td><td>Shift report generated from persisted state without inspecting transient memory.</td></tr>
+</tbody></table></div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Release criteria</div><h2>The next all-shift run starts only when these are green</h2></div></div><div class="evidence-grid"><article class="evidence"><span class="badge green">MUST PASS</span><h3>Correctness</h3><p>Raw/normalized top-of-book parity; no invalid or crossed books admitted; paper and live economics parity; exact threshold boundary tests.</p></article><article class="evidence"><span class="badge green">MUST PASS</span><h3>Auditability</h3><p>100% evaluation reconciliation; complete candidate retention; per-direction near misses; graceful run finalization with an immutable run ID.</p></article><article class="evidence"><span class="badge green">MUST PASS</span><h3>P&amp;L integrity</h3><p>Every paper trade has two leg receipts; capital conservation holds; projected, unrealized, and realized P&amp;L never mix; fixture P&amp;L is excluded.</p></article><article class="evidence"><span class="badge green">MUST PASS</span><h3>Operational proof</h3><p>Deterministic acceptance trade, live read-only canary, then a stable $5,000 paper soak. Zero unexplained critical-task exits and zero venue mutations.</p></article></div></section>
+
+<section class="panel"><div class="head"><div><div class="eyebrow">Team alignment</div><h2>Was it reasonable to expect “something”?</h2></div></div><div class="limitations"><article class="lim"><h3 class="green">Yes: expect observable candidates and truthful decisions</h3><p>Seven and a half hours should produce auditable market comparisons, near-miss distributions, and a trustworthy explanation. The current system failed that standard because prices were wrong and detailed decisions were not persisted.</p></article><article class="lim"><h3 class="yellow">No: do not require a trade by elapsed time</h3><p>A guaranteed trade requires relaxing profitability, adding market making/directional risk, or using a deterministic demo fixture. Those are different mandates. Cross-venue arbitrage should trade only when equivalent contracts clear real costs and risk gates.</p></article></div></section>
+
+<footer class="panel"><strong>Evidence:</strong> <span class="mono">paper_performance.db</span> run run_a97520aec2294dea88de; <span class="mono">logs/bot.log</span>; current read-only Gamma/CLOB/Kalshi public responses; code paths <span class="mono">polymarket_client/api.py</span>, <span class="mono">polymarket_client/models.py</span>, <span class="mono">core/cross_platform_arb.py</span>, <span class="mono">run_with_dashboard.py</span>. This report makes no claim that a profitable historical trade definitely existed; the run did not retain enough truthful price evidence to establish that.</footer>
+</main><script>
+const buttons=[...document.querySelectorAll('[data-filter]')], rows=[...document.querySelectorAll('tbody tr')], search=document.getElementById('search');let filter='all';function apply(){const q=search.value.trim().toLowerCase();rows.forEach(row=>{row.hidden=!((filter==='all'||row.dataset.status===filter)&&(!q||row.dataset.search.includes(q)))})}buttons.forEach(button=>button.addEventListener('click',()=>{filter=button.dataset.filter;buttons.forEach(item=>item.classList.toggle('active',item===button));apply()}));search.addEventListener('input',apply);
+</script></body></html>

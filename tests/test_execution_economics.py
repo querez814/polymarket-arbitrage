@@ -77,7 +77,7 @@ async def test_provider_binds_current_public_fee_metadata_to_exact_pair():
     class Poly:
         async def get_clob_market_info(self, market_id):
             assert market_id == "condition-live-1"
-            return {"tbf": 700, "fd": {"r": 0.07, "e": 1, "to": True}}
+            return {"tbf": 1000, "fd": {"r": 0.07, "e": 1, "to": True}}
 
     class Kalshi:
         async def get_fee_schedule(self, ticker):
@@ -119,3 +119,49 @@ async def test_provider_accepts_explicitly_fee_free_polymarket_market():
 
     assert snapshot.polymarket_fee_rate == Decimal("0")
     assert snapshot.polymarket_fee_exponent == Decimal("1")
+
+
+@pytest.mark.asyncio
+async def test_provider_reuses_fresh_pair_economics_to_protect_venue_rate_limits():
+    calls = {"polymarket": 0, "kalshi": 0}
+
+    class Poly:
+        async def get_clob_market_info(self, market_id):
+            calls["polymarket"] += 1
+            return {"tbf": 0, "fd": None}
+
+    class Kalshi:
+        async def get_fee_schedule(self, ticker):
+            calls["kalshi"] += 1
+            return KalshiFeeSchedule("quadratic", 1.0, "series")
+
+    pair = MarketPair("condition-1", "TICKER-1", "Question?", "Question?", 1.0)
+    provider = AuthoritativeEconomicsProvider(
+        Poly(),
+        Kalshi(),
+        cache_ttl=timedelta(seconds=20),
+    )
+
+    first = await provider.quote_pair(pair)
+    second = await provider.quote_pair(pair)
+
+    assert second is first
+    assert calls == {"polymarket": 1, "kalshi": 1}
+
+
+@pytest.mark.asyncio
+async def test_provider_turns_transport_failure_into_fail_closed_economics_error():
+    class Poly:
+        async def get_clob_market_info(self, market_id):
+            raise OSError("temporary DNS failure")
+
+    class Kalshi:
+        async def get_fee_schedule(self, ticker):
+            return KalshiFeeSchedule("quadratic", 1.0, "series")
+
+    pair = MarketPair("condition-1", "TICKER-1", "Question?", "Question?", 1.0)
+
+    with pytest.raises(EconomicsUnavailableError, match="unavailable") as failure:
+        await AuthoritativeEconomicsProvider(Poly(), Kalshi()).quote_pair(pair)
+
+    assert isinstance(failure.value.__cause__, OSError)

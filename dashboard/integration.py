@@ -252,6 +252,18 @@ class DashboardIntegration:
                 event.to_dict()
                 for event in self.paper_trade_store.recent_events(limit=200)
             ]
+            dashboard_state.cross_platform["evaluation_funnel"] = (
+                self.paper_trade_store.cross_platform_evaluation_funnel()
+            )
+            dashboard_state.cross_platform["evaluation_ledger_count"] = (
+                self.paper_trade_store.cross_platform_evaluation_count()
+            )
+            dashboard_state.cross_platform["near_misses"] = (
+                self.paper_trade_store.top_cross_platform_near_misses(limit=20)
+            )
+            dashboard_state.cross_platform["paper_trade_receipts"] = (
+                self.paper_trade_store.recent_cross_platform_paper_trades(limit=20)
+            )
         elif not dashboard_state.paper_history:
             dashboard_state.paper_history = []
 

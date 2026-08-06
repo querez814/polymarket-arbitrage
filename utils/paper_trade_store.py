@@ -5,6 +5,7 @@ Persistent SQLite ledger for paper trading lifecycle events.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import json
 import re
@@ -227,6 +228,32 @@ class PaperTradeStore:
                 seen_count INTEGER NOT NULL DEFAULT 1
             );
 
+            CREATE TABLE IF NOT EXISTS semantic_discovery_cycles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL
+                    REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
+                completed_at_utc TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                reviewed_pair_count INTEGER NOT NULL,
+                auto_approved_pair_count INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS semantic_pair_review_observations (
+                cycle_id INTEGER NOT NULL
+                    REFERENCES semantic_discovery_cycles(id) ON DELETE CASCADE,
+                pair_id TEXT NOT NULL,
+                polymarket_id TEXT NOT NULL,
+                kalshi_ticker TEXT NOT NULL,
+                polymarket_question TEXT NOT NULL,
+                kalshi_title TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                retrieval_score REAL NOT NULL,
+                verification_confidence REAL NOT NULL,
+                verification_reasons_json TEXT NOT NULL,
+                approval_status TEXT NOT NULL,
+                PRIMARY KEY (cycle_id, pair_id)
+            );
+
             CREATE TABLE IF NOT EXISTS news_catalyst_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 headline TEXT NOT NULL,
@@ -273,6 +300,84 @@ class PaperTradeStore:
                 PRIMARY KEY (run_id, reason_code)
             );
 
+            CREATE TABLE IF NOT EXISTS cross_platform_evaluations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL
+                    REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
+                observed_at_utc TEXT NOT NULL,
+                pair_id TEXT NOT NULL,
+                polymarket_id TEXT NOT NULL,
+                kalshi_ticker TEXT NOT NULL,
+                polymarket_question TEXT NOT NULL,
+                kalshi_title TEXT NOT NULL,
+                token TEXT NOT NULL CHECK (token IN ('YES', 'NO')),
+                buy_platform TEXT NOT NULL,
+                sell_platform TEXT NOT NULL,
+                buy_price REAL NOT NULL,
+                sell_price REAL NOT NULL,
+                buy_liquidity REAL NOT NULL,
+                sell_liquidity REAL NOT NULL,
+                polymarket_yes_bid REAL,
+                polymarket_yes_ask REAL,
+                polymarket_no_bid REAL,
+                polymarket_no_ask REAL,
+                polymarket_yes_bid_size REAL,
+                polymarket_yes_ask_size REAL,
+                polymarket_no_bid_size REAL,
+                polymarket_no_ask_size REAL,
+                kalshi_yes_bid REAL,
+                kalshi_yes_ask REAL,
+                kalshi_no_bid REAL,
+                kalshi_no_ask REAL,
+                kalshi_yes_bid_size REAL,
+                kalshi_yes_ask_size REAL,
+                kalshi_no_bid_size REAL,
+                kalshi_no_ask_size REAL,
+                polymarket_age_seconds REAL,
+                kalshi_age_seconds REAL,
+                gross_edge REAL NOT NULL,
+                fee_cost REAL NOT NULL,
+                slippage_reserve REAL NOT NULL,
+                net_edge REAL NOT NULL,
+                executable_net_edge REAL NOT NULL,
+                required_net_edge REAL NOT NULL,
+                suggested_size REAL NOT NULL,
+                outcome TEXT NOT NULL,
+                reason_code TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_cross_platform_trades (
+                trade_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL
+                    REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
+                pair_id TEXT NOT NULL,
+                market_question TEXT NOT NULL,
+                token TEXT NOT NULL CHECK (token IN ('YES', 'NO')),
+                contracts REAL NOT NULL,
+                gross_edge_per_contract REAL NOT NULL,
+                fee_cost_per_contract REAL NOT NULL,
+                slippage_per_contract REAL NOT NULL,
+                effective_edge_per_contract REAL NOT NULL,
+                committed_capital REAL NOT NULL,
+                projected_locked_pnl REAL NOT NULL,
+                observed_at_utc TEXT NOT NULL,
+                pnl_source TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS paper_cross_platform_legs (
+                trade_id TEXT NOT NULL
+                    REFERENCES paper_cross_platform_trades(trade_id)
+                    ON DELETE CASCADE,
+                leg_role TEXT NOT NULL CHECK (leg_role IN ('buy', 'hedge')),
+                platform TEXT NOT NULL,
+                market_id TEXT NOT NULL,
+                side TEXT NOT NULL,
+                observed_price REAL NOT NULL,
+                simulated_price REAL NOT NULL,
+                size REAL NOT NULL,
+                PRIMARY KEY (trade_id, leg_role)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_event_at
                 ON paper_trade_events (event_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_order_id
@@ -283,6 +388,8 @@ class PaperTradeStore:
                 ON paper_run_sessions (started_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_semantic_pair_reviews_status
                 ON semantic_pair_reviews (approval_status, verification_confidence DESC);
+            CREATE INDEX IF NOT EXISTS idx_semantic_discovery_cycles_run
+                ON semantic_discovery_cycles (run_id, completed_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_news_catalyst_events_scanned
                 ON news_catalyst_events (scanned_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_news_market_relevance_market
@@ -293,6 +400,12 @@ class PaperTradeStore:
                 ON news_catalyst_api_calls (called_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_cross_platform_evaluation_run
                 ON cross_platform_evaluation_counts (run_id);
+            CREATE INDEX IF NOT EXISTS idx_cross_platform_evaluations_run_time
+                ON cross_platform_evaluations (run_id, observed_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_cross_platform_evaluations_run_edge
+                ON cross_platform_evaluations (run_id, executable_net_edge DESC);
+            CREATE INDEX IF NOT EXISTS idx_paper_cross_platform_trades_run_time
+                ON paper_cross_platform_trades (run_id, observed_at_utc DESC);
             """)
         columns = {
             row["name"]
@@ -304,6 +417,26 @@ class PaperTradeStore:
             )
         if "run_id" not in columns:
             self._conn.execute("ALTER TABLE paper_trade_events ADD COLUMN run_id TEXT")
+        evaluation_columns = {
+            row["name"]
+            for row in self._conn.execute(
+                "PRAGMA table_info(cross_platform_evaluations)"
+            )
+        }
+        for column in (
+            "polymarket_yes_bid_size",
+            "polymarket_yes_ask_size",
+            "polymarket_no_bid_size",
+            "polymarket_no_ask_size",
+            "kalshi_yes_bid_size",
+            "kalshi_yes_ask_size",
+            "kalshi_no_bid_size",
+            "kalshi_no_ask_size",
+        ):
+            if column not in evaluation_columns:
+                self._conn.execute(
+                    f"ALTER TABLE cross_platform_evaluations ADD COLUMN {column} REAL"
+                )
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_run_id
             ON paper_trade_events (run_id)
@@ -613,6 +746,189 @@ class PaperTradeStore:
         )
         self._conn.commit()
 
+    def record_semantic_discovery_cycle(
+        self,
+        *,
+        pairs: list[dict[str, Any]],
+        metrics: dict[str, Any],
+        completed_at: Optional[datetime] = None,
+    ) -> int:
+        """Persist one complete semantic-review result set in one transaction."""
+        run_id = self._active_run_id
+        if run_id is None:
+            raise RuntimeError("semantic discovery requires an active paper run")
+        completed_at_utc = to_utc_iso(self._as_utc(completed_at))
+        metrics_json = json.dumps(metrics, sort_keys=True, separators=(",", ":"))
+        allowed_relations = {
+            "equivalent",
+            "subset",
+            "superset",
+            "independent",
+            "unverified",
+        }
+        allowed_statuses = {"auto_approved", "manual_review", "rejected"}
+        normalized: list[tuple[Any, ...]] = []
+        seen_pair_ids: set[str] = set()
+        for pair in pairs:
+            text_fields = (
+                "pair_id",
+                "polymarket_id",
+                "kalshi_ticker",
+                "polymarket_question",
+                "kalshi_title",
+                "relation",
+                "approval_status",
+            )
+            if any(
+                not isinstance(pair.get(field), str) or not pair[field].strip()
+                for field in text_fields
+            ):
+                raise ValueError(
+                    "semantic discovery pair fields must be non-empty text"
+                )
+            pair_id = pair["pair_id"]
+            if pair_id in seen_pair_ids:
+                raise ValueError("semantic discovery cycle contains duplicate pair_id")
+            seen_pair_ids.add(pair_id)
+            if pair["relation"] not in allowed_relations:
+                raise ValueError("unknown semantic relation")
+            if pair["approval_status"] not in allowed_statuses:
+                raise ValueError("unknown semantic approval status")
+            retrieval_score = pair.get("retrieval_score")
+            confidence = pair.get("verification_confidence")
+            if (
+                isinstance(retrieval_score, bool)
+                or not isinstance(retrieval_score, (int, float))
+                or isinstance(confidence, bool)
+                or not isinstance(confidence, (int, float))
+                or not math.isfinite(float(retrieval_score))
+                or not math.isfinite(float(confidence))
+                or not 0 <= float(retrieval_score) <= 1
+                or not 0 <= float(confidence) <= 1
+            ):
+                raise ValueError("semantic scores must be finite and in [0, 1]")
+            reasons = pair.get("verification_reasons", ())
+            if not isinstance(reasons, (list, tuple)) or not all(
+                isinstance(reason, str) for reason in reasons
+            ):
+                raise ValueError("verification reasons must be text")
+            normalized.append(
+                (
+                    pair_id,
+                    pair["polymarket_id"],
+                    pair["kalshi_ticker"],
+                    pair["polymarket_question"],
+                    pair["kalshi_title"],
+                    pair["relation"],
+                    float(retrieval_score),
+                    float(confidence),
+                    json.dumps(list(reasons), separators=(",", ":")),
+                    pair["approval_status"],
+                )
+            )
+        auto_approved_count = sum(
+            1 for pair in pairs if pair["approval_status"] == "auto_approved"
+        )
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cursor = self._conn.execute(
+                """
+                INSERT INTO semantic_discovery_cycles (
+                    run_id, completed_at_utc, metrics_json,
+                    reviewed_pair_count, auto_approved_pair_count
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    completed_at_utc,
+                    metrics_json,
+                    len(normalized),
+                    auto_approved_count,
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("failed to persist semantic discovery cycle")
+            cycle_id = int(cursor.lastrowid)
+            self._conn.executemany(
+                """
+                INSERT INTO semantic_pair_review_observations (
+                    cycle_id, pair_id, polymarket_id, kalshi_ticker,
+                    polymarket_question, kalshi_title, relation, retrieval_score,
+                    verification_confidence, verification_reasons_json,
+                    approval_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ((cycle_id, *row) for row in normalized),
+            )
+            now = completed_at_utc
+            self._conn.executemany(
+                """
+                INSERT INTO semantic_pair_reviews (
+                    pair_id, polymarket_id, kalshi_ticker, polymarket_question,
+                    kalshi_title, relation, retrieval_score, verification_confidence,
+                    verification_reasons_json, approval_status, first_seen_at_utc,
+                    last_seen_at_utc, seen_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(pair_id) DO UPDATE SET
+                    polymarket_id=excluded.polymarket_id,
+                    kalshi_ticker=excluded.kalshi_ticker,
+                    polymarket_question=excluded.polymarket_question,
+                    kalshi_title=excluded.kalshi_title,
+                    relation=excluded.relation,
+                    retrieval_score=excluded.retrieval_score,
+                    verification_confidence=excluded.verification_confidence,
+                    verification_reasons_json=excluded.verification_reasons_json,
+                    approval_status=excluded.approval_status,
+                    last_seen_at_utc=excluded.last_seen_at_utc,
+                    seen_count=semantic_pair_reviews.seen_count + 1
+                """,
+                ((*row, now, now) for row in normalized),
+            )
+            self._conn.commit()
+            return cycle_id
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def latest_semantic_discovery_cycle(
+        self,
+        *,
+        run_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Return the latest complete semantic result set for one run."""
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            return None
+        row = self._conn.execute(
+            """
+            SELECT * FROM semantic_discovery_cycles
+            WHERE run_id = ?
+            ORDER BY completed_at_utc DESC, id DESC
+            LIMIT 1
+            """,
+            (selected_run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["metrics"] = json.loads(result.pop("metrics_json"))
+        pair_rows = self._conn.execute(
+            """
+            SELECT * FROM semantic_pair_review_observations
+            WHERE cycle_id = ?
+            ORDER BY retrieval_score DESC, pair_id
+            """,
+            (result["id"],),
+        ).fetchall()
+        result["pairs"] = []
+        for pair_row in pair_rows:
+            pair = dict(pair_row)
+            pair["verification_reasons"] = json.loads(
+                pair.pop("verification_reasons_json")
+            )
+            result["pairs"].append(pair)
+        return result
+
     def recent_pair_reviews(self, limit: int = 200) -> list[dict[str, Any]]:
         rows = self._conn.execute(
             """
@@ -646,7 +962,9 @@ class PaperTradeStore:
             if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", reason_code):
                 raise ValueError("invalid cross-platform evaluation reason code")
             if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-                raise ValueError("cross-platform evaluation counts must be nonnegative integers")
+                raise ValueError(
+                    "cross-platform evaluation counts must be nonnegative integers"
+                )
             if count:
                 normalized[reason_code] = count
         if not normalized:
@@ -675,6 +993,414 @@ class PaperTradeStore:
             self._conn.rollback()
             raise
 
+    def record_cross_platform_evaluations(
+        self,
+        evaluations: list[dict[str, Any]],
+        *,
+        observed_at: Optional[datetime] = None,
+    ) -> None:
+        """Atomically persist auditable direction-level paper evaluations."""
+        if not evaluations:
+            return
+        run_id = self._active_run_id
+        if run_id is None:
+            raise RuntimeError("cross-platform evaluation requires an active paper run")
+        observed_at_utc = to_utc_iso(self._as_utc(observed_at))
+        string_fields = (
+            "pair_id",
+            "polymarket_id",
+            "kalshi_ticker",
+            "polymarket_question",
+            "kalshi_title",
+            "token",
+            "buy_platform",
+            "sell_platform",
+            "outcome",
+            "reason_code",
+        )
+        numeric_fields = (
+            "buy_price",
+            "sell_price",
+            "buy_liquidity",
+            "sell_liquidity",
+            "polymarket_yes_bid",
+            "polymarket_yes_ask",
+            "polymarket_no_bid",
+            "polymarket_no_ask",
+            "polymarket_yes_bid_size",
+            "polymarket_yes_ask_size",
+            "polymarket_no_bid_size",
+            "polymarket_no_ask_size",
+            "kalshi_yes_bid",
+            "kalshi_yes_ask",
+            "kalshi_no_bid",
+            "kalshi_no_ask",
+            "kalshi_yes_bid_size",
+            "kalshi_yes_ask_size",
+            "kalshi_no_bid_size",
+            "kalshi_no_ask_size",
+            "polymarket_age_seconds",
+            "kalshi_age_seconds",
+            "gross_edge",
+            "fee_cost",
+            "slippage_reserve",
+            "net_edge",
+            "executable_net_edge",
+            "required_net_edge",
+            "suggested_size",
+        )
+        rows = []
+        for evaluation in evaluations:
+            for field in string_fields:
+                value = evaluation.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{field} must be non-empty text")
+            if evaluation["token"] not in {"YES", "NO"}:
+                raise ValueError("token must be YES or NO")
+            if evaluation["buy_platform"] == evaluation["sell_platform"]:
+                raise ValueError("cross-platform direction must span two venues")
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", evaluation["reason_code"]):
+                raise ValueError("invalid cross-platform evaluation reason code")
+            for field in numeric_fields:
+                value = evaluation.get(field)
+                if value is None and field in {
+                    "polymarket_yes_bid",
+                    "polymarket_yes_ask",
+                    "polymarket_no_bid",
+                    "polymarket_no_ask",
+                    "polymarket_yes_bid_size",
+                    "polymarket_yes_ask_size",
+                    "polymarket_no_bid_size",
+                    "polymarket_no_ask_size",
+                    "kalshi_yes_bid",
+                    "kalshi_yes_ask",
+                    "kalshi_no_bid",
+                    "kalshi_no_ask",
+                    "kalshi_yes_bid_size",
+                    "kalshi_yes_ask_size",
+                    "kalshi_no_bid_size",
+                    "kalshi_no_ask_size",
+                    "polymarket_age_seconds",
+                    "kalshi_age_seconds",
+                }:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"{field} must be numeric")
+                if not math.isfinite(float(value)):
+                    raise ValueError(f"{field} must be finite")
+            rows.append(
+                (
+                    run_id,
+                    observed_at_utc,
+                    *(evaluation[field] for field in string_fields[:8]),
+                    *(evaluation.get(field) for field in numeric_fields),
+                    evaluation["outcome"],
+                    evaluation["reason_code"],
+                )
+            )
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            placeholders = ", ".join("?" for _ in rows[0])
+            self._conn.executemany(
+                f"""
+                INSERT INTO cross_platform_evaluations (
+                    run_id, observed_at_utc, pair_id, polymarket_id,
+                    kalshi_ticker, polymarket_question, kalshi_title, token,
+                    buy_platform, sell_platform, buy_price, sell_price,
+                    buy_liquidity, sell_liquidity,
+                    polymarket_yes_bid, polymarket_yes_ask,
+                    polymarket_no_bid, polymarket_no_ask,
+                    polymarket_yes_bid_size, polymarket_yes_ask_size,
+                    polymarket_no_bid_size, polymarket_no_ask_size,
+                    kalshi_yes_bid, kalshi_yes_ask,
+                    kalshi_no_bid, kalshi_no_ask,
+                    kalshi_yes_bid_size, kalshi_yes_ask_size,
+                    kalshi_no_bid_size, kalshi_no_ask_size,
+                    polymarket_age_seconds, kalshi_age_seconds,
+                    gross_edge, fee_cost, slippage_reserve, net_edge,
+                    executable_net_edge, required_net_edge, suggested_size,
+                    outcome, reason_code
+                ) VALUES ({placeholders})
+                """,
+                rows,
+            )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def record_cross_platform_paper_trade(
+        self,
+        *,
+        trade: dict[str, Any],
+        legs: list[dict[str, Any]],
+        run_equity: float,
+        run_pnl: float,
+    ) -> None:
+        """Atomically persist one paired paper fill and both venue leg receipts."""
+        run_id = self._active_run_id
+        if run_id is None:
+            raise RuntimeError("cross-platform paper trade requires an active run")
+        required_text = (
+            "trade_id",
+            "pair_id",
+            "market_question",
+            "token",
+            "observed_at_utc",
+            "pnl_source",
+        )
+        if any(
+            not isinstance(trade.get(field), str) or not trade[field].strip()
+            for field in required_text
+        ):
+            raise ValueError("paper trade identity fields must be non-empty text")
+        if trade["token"] not in {"YES", "NO"}:
+            raise ValueError("paper trade token must be YES or NO")
+        numeric_fields = (
+            "contracts",
+            "gross_edge_per_contract",
+            "fee_cost_per_contract",
+            "slippage_per_contract",
+            "effective_edge_per_contract",
+            "committed_capital",
+            "projected_locked_pnl",
+        )
+        for field in numeric_fields:
+            value = trade.get(field)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(f"{field} must be finite numeric data")
+        if trade["contracts"] <= 0 or trade["committed_capital"] <= 0:
+            raise ValueError("paper trade size and capital must be positive")
+        if trade["fee_cost_per_contract"] < 0 or trade["slippage_per_contract"] < 0:
+            raise ValueError("paper trade deductions must be non-negative")
+        if not all(math.isfinite(float(value)) for value in (run_equity, run_pnl)):
+            raise ValueError("paper run performance must be finite")
+        if len(legs) != 2 or {leg.get("leg_role") for leg in legs} != {
+            "buy",
+            "hedge",
+        }:
+            raise ValueError("paper trade receipt requires one buy and one hedge leg")
+        normalized_legs: list[tuple[Any, ...]] = []
+        platforms: set[str] = set()
+        for leg in legs:
+            for field in ("leg_role", "platform", "market_id", "side"):
+                if not isinstance(leg.get(field), str) or not leg[field].strip():
+                    raise ValueError("paper leg identity fields must be non-empty text")
+            platforms.add(leg["platform"])
+            for field in ("observed_price", "simulated_price", "size"):
+                value = leg.get(field)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                ):
+                    raise ValueError(f"paper leg {field} must be finite numeric data")
+            if not 0 < leg["observed_price"] < 1:
+                raise ValueError("observed paper leg price must be in (0, 1)")
+            if not 0 < leg["simulated_price"] < 1:
+                raise ValueError("simulated paper leg price must be in (0, 1)")
+            if leg["size"] <= 0:
+                raise ValueError("paper leg size must be positive")
+            normalized_legs.append(
+                (
+                    trade["trade_id"],
+                    leg["leg_role"],
+                    leg["platform"],
+                    leg["market_id"],
+                    leg["side"],
+                    leg["observed_price"],
+                    leg["simulated_price"],
+                    leg["size"],
+                )
+            )
+        if len(platforms) != 2:
+            raise ValueError("paper trade legs must span two distinct venues")
+        event_id = f"evt_{uuid.uuid4().hex[:16]}"
+        capital_per_contract = trade["committed_capital"] / trade["contracts"]
+        total_fee = trade["fee_cost_per_contract"] * trade["contracts"]
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                """
+                INSERT INTO paper_cross_platform_trades (
+                    trade_id, run_id, pair_id, market_question, token, contracts,
+                    gross_edge_per_contract, fee_cost_per_contract,
+                    slippage_per_contract, effective_edge_per_contract,
+                    committed_capital, projected_locked_pnl, observed_at_utc,
+                    pnl_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trade["trade_id"],
+                    run_id,
+                    trade["pair_id"],
+                    trade["market_question"],
+                    trade["token"],
+                    trade["contracts"],
+                    trade["gross_edge_per_contract"],
+                    trade["fee_cost_per_contract"],
+                    trade["slippage_per_contract"],
+                    trade["effective_edge_per_contract"],
+                    trade["committed_capital"],
+                    trade["projected_locked_pnl"],
+                    trade["observed_at_utc"],
+                    trade["pnl_source"],
+                ),
+            )
+            self._conn.executemany(
+                """
+                INSERT INTO paper_cross_platform_legs (
+                    trade_id, leg_role, platform, market_id, side,
+                    observed_price, simulated_price, size
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                normalized_legs,
+            )
+            self._conn.execute(
+                """
+                INSERT INTO paper_trade_events (
+                    event_id, event_type, event_at_utc, trade_id, market_id,
+                    market_question, token_type, side, price, size, notional, fee,
+                    strategy_tag, status, reason_code, reason_detail,
+                    is_simulated, simulation_label, pnl_source, run_id
+                ) VALUES (?, 'filled', ?, ?, ?, ?, ?, 'LOCKED_PAIR', ?, ?, ?, ?,
+                          'cross_platform_arb', 'capital_locked',
+                          'conservative_shadow_fill', ?, 1,
+                          'conservative_shadow_fill', ?, ?)
+                """,
+                (
+                    event_id,
+                    trade["observed_at_utc"],
+                    trade["trade_id"],
+                    trade["pair_id"],
+                    trade["market_question"],
+                    trade["token"],
+                    capital_per_contract,
+                    trade["contracts"],
+                    trade["committed_capital"],
+                    total_fee,
+                    "Two-leg simulated receipt; projected PnL is not settlement PnL.",
+                    trade["pnl_source"],
+                    run_id,
+                ),
+            )
+            self._conn.execute(
+                """
+                UPDATE paper_run_sessions
+                SET filled_count = filled_count + 1,
+                    transaction_count = transaction_count + 1,
+                    ending_equity = ?, pnl = ?
+                WHERE run_id = ? AND status = 'active'
+                """,
+                (float(run_equity), float(run_pnl), run_id),
+            )
+            if self._conn.execute("SELECT changes()").fetchone()[0] != 1:
+                raise sqlite3.IntegrityError(
+                    "paper trade run counter did not update an active run"
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def recent_cross_platform_paper_trades(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return paired trade receipts with their two simulated venue legs."""
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT * FROM paper_cross_platform_trades
+            WHERE run_id = ?
+            ORDER BY observed_at_utc DESC, trade_id DESC
+            LIMIT ?
+            """,
+            (selected_run_id, max(1, min(limit, 1000))),
+        ).fetchall()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            receipt = dict(row)
+            receipt["legs"] = [
+                dict(leg)
+                for leg in self._conn.execute(
+                    """
+                    SELECT leg_role, platform, market_id, side,
+                           observed_price, simulated_price, size
+                    FROM paper_cross_platform_legs
+                    WHERE trade_id = ?
+                    ORDER BY CASE leg_role WHEN 'buy' THEN 0 ELSE 1 END
+                    """,
+                    (receipt["trade_id"],),
+                ).fetchall()
+            ]
+            results.append(receipt)
+        return results
+
+    def recent_cross_platform_evaluations(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return recent direction evidence for one paper run."""
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT * FROM cross_platform_evaluations
+            WHERE run_id = ?
+            ORDER BY observed_at_utc DESC, id DESC
+            LIMIT ?
+            """,
+            (selected_run_id, max(1, min(limit, 10_000))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def cross_platform_evaluation_count(
+        self,
+        run_id: Optional[str] = None,
+    ) -> int:
+        """Return the number of durable direction evaluations for one run."""
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            return 0
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS count FROM cross_platform_evaluations WHERE run_id = ?",
+            (selected_run_id,),
+        ).fetchone()
+        return int(row["count"])
+
+    def top_cross_platform_near_misses(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Return the strongest skipped directions for operator inspection."""
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            return []
+        rows = self._conn.execute(
+            """
+            SELECT * FROM cross_platform_evaluations
+            WHERE run_id = ? AND outcome = 'skipped'
+            ORDER BY executable_net_edge DESC, observed_at_utc DESC, id DESC
+            LIMIT ?
+            """,
+            (selected_run_id, max(1, min(limit, 200))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def cross_platform_evaluation_funnel(
         self,
         run_id: Optional[str] = None,
@@ -697,10 +1423,7 @@ class PaperTradeStore:
             """,
             (selected_run_id,),
         ).fetchall()
-        return {
-            str(row["reason_code"]): int(row["observation_count"])
-            for row in rows
-        }
+        return {str(row["reason_code"]): int(row["observation_count"]) for row in rows}
 
     @staticmethod
     def _as_utc(value: Optional[datetime]) -> datetime:

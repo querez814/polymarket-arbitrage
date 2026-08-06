@@ -130,6 +130,31 @@ async def test_dashboard_integration_updates_paper_mode_fields():
     assert dashboard_state.portfolio["pnl_source"] == "paper"
 
 
+@pytest.mark.asyncio
+async def test_dashboard_exposes_durable_paper_evidence_ledgers(tmp_path):
+    from utils.paper_trade_store import PaperTradeStore
+
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        store.start_run(
+            starting_equity=5_000.0,
+            pnl_source="projected_locked_paper",
+        )
+        integration = DashboardIntegration(
+            mode="dry_run",
+            paper_trade_store=store,
+        )
+
+        await integration._update_state()
+
+        assert dashboard_state.cross_platform["evaluation_ledger_count"] == 0
+        assert dashboard_state.cross_platform["near_misses"] == []
+        assert dashboard_state.cross_platform["paper_trade_receipts"] == []
+        assert dashboard_state.cross_platform["evaluation_funnel"] == {}
+    finally:
+        store.close()
+
+
 def test_dashboard_state_preserves_trade_timestamp():
     state = DashboardState()
     state.add_trade(

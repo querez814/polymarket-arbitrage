@@ -51,10 +51,8 @@ async def _run(args: argparse.Namespace) -> dict:
             kalshi,
             max_age_seconds=args.max_age_seconds,
             timeout_seconds=args.timeout_seconds,
-            polymarket_taker_fee=args.polymarket_taker_fee,
-            kalshi_taker_fee=args.kalshi_taker_fee,
-            gas_cost=args.gas_cost,
             min_edge=args.min_edge,
+            slippage_reserve_per_contract=args.slippage_reserve_per_contract,
         )
         result["canonical_pair"] = canonical
         result["approved_pair_hash"] = pair_hash
@@ -69,10 +67,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--approve-pair-hash")
     parser.add_argument("--max-age-seconds", type=float, default=5.0)
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
-    parser.add_argument("--polymarket-taker-fee", type=float, default=0.015)
-    parser.add_argument("--kalshi-taker-fee", type=float, default=0.01)
-    parser.add_argument("--gas-cost", type=float, default=0.0)
     parser.add_argument("--min-edge", type=float, default=0.02)
+    parser.add_argument("--slippage-reserve-per-contract", type=float, default=0.02)
     args = parser.parse_args(argv)
     try:
         result = asyncio.run(_run(args))

@@ -1,5 +1,6 @@
 from core.cross_platform_arb import CrossPlatformOpportunity, MarketPair
 from core.paper_locked_arb import PaperLockedArbitrageLedger
+from utils.paper_trade_store import PaperTradeStore
 import pytest
 from datetime import datetime, timedelta, timezone
 
@@ -49,6 +50,11 @@ def test_shadow_trade_requires_confirmation_and_never_recycles_capital():
     assert trade.projected_locked_pnl == pytest.approx(0.24)
     assert ledger.observe(opportunity) is None
     assert ledger.summary()["capital_recycled"] is False
+    assert ledger.summary()["decision_counts"] == {
+        "awaiting_confirmation": 1,
+        "pair_cooldown_active": 1,
+        "paper_trade_recorded": 1,
+    }
 
 
 def test_shadow_ledger_cannot_commit_more_than_fixed_bankroll():
@@ -143,3 +149,49 @@ def test_pair_can_trade_again_only_after_configured_cooldown():
     assert ledger.observe(opportunity) is None
     now += timedelta(seconds=61)
     assert ledger.observe(opportunity) is not None
+
+
+def test_shadow_trade_persists_atomic_two_leg_receipt_and_separated_pnl(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(
+            starting_equity=5_000.0,
+            pnl_source="projected_locked_paper",
+        )
+        ledger = PaperLockedArbitrageLedger(
+            initial_balance=5_000.0,
+            max_plan_capital=250.0,
+            required_observations=1,
+            slippage_buffer_per_contract=0.02,
+            liquidity_fraction=0.10,
+            min_effective_edge=0.01,
+            store=store,
+        )
+
+        trade = ledger.observe(_opportunity())
+        receipts = store.recent_cross_platform_paper_trades(
+            run_id=run.run_id,
+            limit=10,
+        )
+        summary = ledger.summary()
+
+        assert trade is not None
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert receipt["trade_id"] == trade.trade_id
+        assert receipt["fee_cost_per_contract"] == pytest.approx(0.03)
+        assert receipt["slippage_per_contract"] == pytest.approx(0.02)
+        assert receipt["effective_edge_per_contract"] == pytest.approx(0.03)
+        assert {leg["leg_role"] for leg in receipt["legs"]} == {"buy", "hedge"}
+        buy_leg = next(leg for leg in receipt["legs"] if leg["leg_role"] == "buy")
+        hedge_leg = next(leg for leg in receipt["legs"] if leg["leg_role"] == "hedge")
+        assert buy_leg["simulated_price"] == pytest.approx(0.41)
+        assert hedge_leg["simulated_price"] == pytest.approx(0.47)
+        assert store.active_run().transaction_count == 1
+        assert summary["cash_balance"] == pytest.approx(4_992.24)
+        assert summary["reserved_cost_basis"] == pytest.approx(7.76)
+        assert summary["unrealized_mark_to_market_pnl"] == 0.0
+        assert summary["realized_settlement_pnl"] == 0.0
+        assert summary["projected_locked_pnl"] == pytest.approx(0.24)
+    finally:
+        store.close()

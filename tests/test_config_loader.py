@@ -137,7 +137,9 @@ mode:
         load_config(str(config_path))
 
 
-@pytest.mark.parametrize("field_name", ["max_order_attempts_per_minute", "max_daily_order_attempts"])
+@pytest.mark.parametrize(
+    "field_name", ["max_order_attempts_per_minute", "max_daily_order_attempts"]
+)
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "true"])
 def test_rejects_invalid_order_attempt_caps(tmp_path, field_name, value):
     config_path = tmp_path / "config.yaml"
@@ -195,13 +197,17 @@ def test_production_runtime_secrets_are_loaded_from_environment(tmp_path, monkey
     config_path = tmp_path / "config.yaml"
     config_path.write_text("mode:\n  trading_mode: dry_run\n", encoding="utf-8")
     monkeypatch.setenv("NIGHTWATCH_OPERATOR_TOKEN", "x" * 32)
-    monkeypatch.setenv("NIGHTWATCH_ALERT_WEBHOOK_URL", "https://alerts.example.test/nightwatch")
+    monkeypatch.setenv(
+        "NIGHTWATCH_ALERT_WEBHOOK_URL", "https://alerts.example.test/nightwatch"
+    )
     monkeypatch.setenv("NIGHTWATCH_ALERT_WEBHOOK_TOKEN", "alert-secret")
 
     config = load_config(str(config_path))
 
     assert config.production.operator_token == "x" * 32
-    assert config.production.alert_webhook_url == "https://alerts.example.test/nightwatch"
+    assert (
+        config.production.alert_webhook_url == "https://alerts.example.test/nightwatch"
+    )
     assert config.production.alert_webhook_token == "alert-secret"
 
 
@@ -729,7 +735,7 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
 
     assert config.is_dry_run is True
     assert config.use_simulation is False
-    assert config.mode.dry_run_initial_balance == 1_000
+    assert config.mode.dry_run_initial_balance == 5_000
     assert config.mode.paper_locked_arb_enabled is True
     assert config.mode.simulate_fills is False
     assert config.trading.bundle_arb_enabled is True

@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -10,6 +11,7 @@ from core.live_pair_evaluation import (
     evaluate_live_pair_readonly,
 )
 from core.cross_platform_arb import MarketPair
+from core.execution_economics import PairEconomics
 from kalshi_client.models import KalshiMarket
 from polymarket_client.models import (
     Market,
@@ -53,7 +55,11 @@ def test_deterministic_acceptance_marks_run_failed_when_fill_is_not_persisted(
     tmp_path, monkeypatch
 ):
     db_path = tmp_path / "failed-acceptance.db"
-    monkeypatch.setattr(PaperTradeStore, "record_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        PaperTradeStore,
+        "record_cross_platform_paper_trade",
+        lambda *args, **kwargs: None,
+    )
 
     with pytest.raises(RuntimeError, match="not persisted exactly once"):
         run_deterministic_paper_acceptance(db_path)
@@ -101,11 +107,29 @@ def test_live_pair_evaluation_is_read_only_and_reports_no_edge():
         async def get_orderbook_unified(self, ticker):
             return kalshi_book
 
+    class EconomicsProvider:
+        async def quote_pair(self, requested_pair):
+            assert requested_pair is pair
+            return PairEconomics(
+                pair_id=pair.pair_id,
+                polymarket_market_id=pair.polymarket_execution_id,
+                kalshi_ticker=pair.kalshi_ticker,
+                polymarket_fee_rate=Decimal("0"),
+                polymarket_fee_exponent=Decimal("1"),
+                polymarket_taker_only=True,
+                polymarket_order_gas_cost=Decimal("0"),
+                polymarket_gas_source="offchain_clob_order",
+                kalshi_fee_type="quadratic",
+                kalshi_fee_multiplier=Decimal("1"),
+                observed_at=clock,
+            )
+
     result = asyncio.run(
         evaluate_live_pair_readonly(
             pair,
             Poly(),
             Kalshi(),
+            economics_provider=EconomicsProvider(),
             clock=lambda: clock,
         )
     )
@@ -115,19 +139,20 @@ def test_live_pair_evaluation_is_read_only_and_reports_no_edge():
     assert result["snapshot"]["pair_id"] == pair.pair_id
     assert result["snapshot"]["polymarket"]["yes_bid"] == 0.49
     assert result["snapshot"]["kalshi"]["yes_ask"] == 0.51
-    assert result["fee_assumptions"]["polymarket_taker_fee"] == 0.015
+    assert result["economics"]["source"] == "authoritative_venue_metadata"
+    assert len(result["direction_evaluations"]) == 4
 
 
-def test_live_pair_evaluation_rejects_dishonest_negative_fee_assumptions():
+def test_live_pair_evaluation_rejects_dishonest_negative_slippage_assumption():
     pair = MarketPair("poly", "kalshi", "Same?", "Same?", 1.0)
 
-    with pytest.raises(ValueError, match="polymarket taker fee"):
+    with pytest.raises(ValueError, match="slippage"):
         asyncio.run(
             evaluate_live_pair_readonly(
                 pair,
                 object(),
                 object(),
-                polymarket_taker_fee=-0.01,
+                slippage_reserve_per_contract=-0.01,
             )
         )
 

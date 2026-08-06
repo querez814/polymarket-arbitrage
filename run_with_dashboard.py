@@ -42,7 +42,10 @@ from core.risk_manager import RiskManager, RiskConfig
 from core.portfolio import Portfolio
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketMatcher
 from core.decision_journal import DecisionJournal, DecisionOutcome
-from core.execution_economics import AuthoritativeEconomicsProvider
+from core.execution_economics import (
+    AuthoritativeEconomicsProvider,
+    EconomicsUnavailableError,
+)
 from core.execution_journal import ExecutionJournal
 from core.two_leg_execution import ExecutionPhase
 from core.operations import PersistentOperatorControls, WebhookAlertSink
@@ -137,6 +140,7 @@ class TradingBotWithDashboard:
             on_retry=self._on_cross_platform_task_retry,
         )
         self.production_runtime = None
+        self.economics_provider = None
         self.pair_monitor = None
         self.pair_snapshot_source = None
         self.execution_journal = None
@@ -258,20 +262,26 @@ class TradingBotWithDashboard:
             # Initialize cross-platform arbitrage engine
             self.cross_platform_engine = CrossPlatformArbEngine(
                 min_edge=self.config.trading.min_edge,
+                slippage_reserve_per_contract=(
+                    self.config.mode.paper_slippage_buffer_per_contract
+                    if self.config.is_dry_run
+                    else 0.0
+                ),
                 max_order_size=self.config.trading.cross_platform_max_order_size,
                 edge_size_multiplier=self.config.trading.cross_platform_edge_size_multiplier,
                 max_liquidity_fraction=self.config.trading.cross_platform_max_liquidity_fraction,
                 min_executable_size=(
                     self.config.trading.cross_platform_min_executable_size
                 ),
-                require_authoritative_economics=(
-                    self.config.is_live
-                    and self.config.mode.cross_platform_execution_enabled
-                ),
+                require_authoritative_economics=(self.config.mode.data_mode == "real"),
                 economics_max_age=timedelta(
                     seconds=self.config.production.economics_max_age_seconds
                 ),
             )
+            if self.config.mode.data_mode == "real":
+                self.economics_provider = AuthoritativeEconomicsProvider(
+                    self.client, self.kalshi_client
+                )
             if self.config.mode.semantic_matching_enabled:
                 api_key = os.environ.get("OPENAI_API_KEY", "").strip()
                 if not api_key:
@@ -325,8 +335,7 @@ class TradingBotWithDashboard:
                 cold_interval=self.config.mode.cold_pair_scan_seconds,
             )
             max_snapshot_age = (
-                self.cross_platform_engine.max_observation_age
-                or timedelta(seconds=5)
+                self.cross_platform_engine.max_observation_age or timedelta(seconds=5)
             ).total_seconds()
             self.pair_snapshot_source = PairSnapshotSource(
                 self.client,
@@ -436,9 +445,7 @@ class TradingBotWithDashboard:
             self.same_platform_detector = SamePlatformArbitrageDetector(
                 min_edge=self.config.trading.min_edge,
                 taker_fee_rate=150 / 10_000,
-                cooldown_seconds=max(
-                    5.0, self.config.trading.bundle_cooldown_seconds
-                ),
+                cooldown_seconds=max(5.0, self.config.trading.bundle_cooldown_seconds),
             )
 
         # Initialize data feed
@@ -623,26 +630,26 @@ class TradingBotWithDashboard:
                         }
                     )
                 state_update = {
-                        "status": (
-                            "daily_cap_reached"
-                            if result.status == "daily_cap_reached"
-                            else (
-                                "active"
-                                if self.config.news_catalyst.apply_priority_boost
-                                else "log_only"
-                            )
-                        ),
-                        "last_scan_at": datetime.utcnow().isoformat(),
-                        "api_calls_today": result.api_calls_today,
-                    }
+                    "status": (
+                        "daily_cap_reached"
+                        if result.status == "daily_cap_reached"
+                        else (
+                            "active"
+                            if self.config.news_catalyst.apply_priority_boost
+                            else "log_only"
+                        )
+                    ),
+                    "last_scan_at": datetime.utcnow().isoformat(),
+                    "api_calls_today": result.api_calls_today,
+                }
                 if result.status == "complete":
                     state_update["items"] = [
-                            {
-                                **item.model_dump(mode="json"),
-                                "matches": matches_by_item.get(index, []),
-                            }
-                            for index, item in enumerate(result.items)
-                        ]
+                        {
+                            **item.model_dump(mode="json"),
+                            "matches": matches_by_item.get(index, []),
+                        }
+                        for index, item in enumerate(result.items)
+                    ]
                 dashboard_state.news_catalysts.update(state_update)
                 self._update_pair_priority()
                 logger.info(
@@ -690,18 +697,16 @@ class TradingBotWithDashboard:
                 exc_info=True,
             )
             return retry_delay
-        logger.exception(
-            "News catalyst scan failed; skipping until the next interval"
-        )
+        logger.exception("News catalyst scan failed; skipping until the next interval")
         return self.config.news_catalyst.scan_interval_seconds
 
     def _update_pair_priority(self) -> None:
         if not self.data_feed:
             return
-        if (
-            self._news_market_scores_updated_at is not None
-            and datetime.now(timezone.utc) - self._news_market_scores_updated_at
-            > timedelta(hours=self.config.news_catalyst.lookback_hours)
+        if self._news_market_scores_updated_at is not None and datetime.now(
+            timezone.utc
+        ) - self._news_market_scores_updated_at > timedelta(
+            hours=self.config.news_catalyst.lookback_hours
         ):
             self._news_market_scores = {}
             self._news_market_scores_updated_at = None
@@ -732,8 +737,7 @@ class TradingBotWithDashboard:
             catalyst_boost_weight=self.config.news_catalyst.catalyst_boost_weight,
         )
         candidate_ids = [
-            row.polymarket_id
-            for row in rankings[: self.config.mode.hot_pair_limit]
+            row.polymarket_id for row in rankings[: self.config.mode.hot_pair_limit]
         ]
         dashboard_state.news_catalysts["boosted_markets"] = [
             {
@@ -1080,11 +1084,12 @@ class TradingBotWithDashboard:
 
             dashboard_state.cross_platform["matching_progress"] = 100
             dashboard_state.cross_platform["matched_pairs"] = len(self._matched_pairs)
-            pipeline_metrics = getattr(self.market_matcher, "last_pipeline_metrics", None)
+            pipeline_metrics = getattr(
+                self.market_matcher, "last_pipeline_metrics", None
+            )
             if pipeline_metrics is not None:
                 dashboard_state.cross_platform["semantic_metrics"] = {
-                    key: value
-                    for key, value in vars(pipeline_metrics).items()
+                    key: value for key, value in vars(pipeline_metrics).items()
                 }
             dashboard_state.cross_platform["last_matching_completed_at"] = (
                 datetime.utcnow().isoformat()
@@ -1095,27 +1100,50 @@ class TradingBotWithDashboard:
                 self._matched_pair_dashboard_row(pair)
                 for pair in self._matched_pairs[:50]
             ]
-            review_candidates = self.market_matcher.get_review_candidates()
+            all_review_candidates = self.market_matcher.get_review_candidates(
+                limit=None
+            )
+            review_candidates = all_review_candidates[:100]
             if self.paper_trade_store:
-                for pair in [*self._matched_pairs, *review_candidates]:
-                    self.paper_trade_store.record_pair_review(
-                        pair_id=pair.pair_id,
-                        polymarket_id=pair.polymarket_execution_id,
-                        kalshi_ticker=pair.kalshi_ticker,
-                        polymarket_question=pair.polymarket_question,
-                        kalshi_title=pair.kalshi_title,
-                        relation=pair.semantic_relation,
-                        retrieval_score=pair.similarity_score,
-                        verification_confidence=pair.verification_confidence,
-                        verification_reasons=pair.verification_reasons,
-                        approval_status=(
-                            "auto_approved"
-                            if pair.auto_approved
-                            else "manual_review"
-                        ),
-                    )
+                complete_pairs = {
+                    pair.pair_id: pair
+                    for pair in [*self._matched_pairs, *all_review_candidates]
+                }
+                cycle_id = self.paper_trade_store.record_semantic_discovery_cycle(
+                    pairs=[
+                        {
+                            "pair_id": pair.pair_id,
+                            "polymarket_id": pair.polymarket_execution_id,
+                            "kalshi_ticker": pair.kalshi_ticker,
+                            "polymarket_question": pair.polymarket_question,
+                            "kalshi_title": pair.kalshi_title,
+                            "relation": pair.semantic_relation,
+                            "retrieval_score": pair.similarity_score,
+                            "verification_confidence": (pair.verification_confidence),
+                            "verification_reasons": pair.verification_reasons,
+                            "approval_status": (
+                                "auto_approved"
+                                if pair.auto_approved
+                                else "manual_review"
+                            ),
+                        }
+                        for pair in complete_pairs.values()
+                    ],
+                    metrics=(
+                        vars(pipeline_metrics)
+                        if pipeline_metrics is not None
+                        else {
+                            "verified_candidates": len(self._matched_pairs),
+                            "review_candidates": len(all_review_candidates),
+                        }
+                    ),
+                )
+                dashboard_state.cross_platform["discovery_cycle_id"] = cycle_id
+                dashboard_state.cross_platform["durable_review_count"] = len(
+                    complete_pairs
+                )
             dashboard_state.cross_platform["review_candidate_count"] = len(
-                review_candidates
+                all_review_candidates
             )
             dashboard_state.cross_platform["review_candidates"] = [
                 {
@@ -1144,7 +1172,7 @@ class TradingBotWithDashboard:
                     ),
                     evidence={
                         "matched_pairs": 0,
-                        "review_candidates": len(review_candidates),
+                        "review_candidates": len(all_review_candidates),
                     },
                 )
                 return
@@ -1191,9 +1219,7 @@ class TradingBotWithDashboard:
             "kalshi_title": pair.kalshi_title,
             "similarity": pair.similarity_score,
             "category": pair.category,
-            "poly_yes": (
-                polymarket_book.best_bid_yes if polymarket_book else None
-            ),
+            "poly_yes": (polymarket_book.best_bid_yes if polymarket_book else None),
             "poly_no": polymarket_book.best_bid_no if polymarket_book else None,
             "kalshi_yes": kalshi_book.best_bid_yes if kalshi_book else None,
             "kalshi_no": kalshi_book.best_bid_no if kalshi_book else None,
@@ -1201,8 +1227,7 @@ class TradingBotWithDashboard:
 
     def _publish_matched_pairs_dashboard(self) -> None:
         dashboard_state.cross_platform["matched_pairs_data"] = [
-            self._matched_pair_dashboard_row(pair)
-            for pair in self._matched_pairs[:50]
+            self._matched_pair_dashboard_row(pair) for pair in self._matched_pairs[:50]
         ]
 
     def _on_cross_platform_task_retry(self, event: RestartEvent) -> None:
@@ -1312,8 +1337,18 @@ class TradingBotWithDashboard:
                 pair, polymarket_book, kalshi_book
             )
             return evaluation.opportunity, evaluation
+        economics = None
+        if self.config.mode.data_mode == "real":
+            if self.economics_provider is None:
+                raise EconomicsUnavailableError(
+                    "authoritative economics provider is unavailable"
+                )
+            economics = await self.economics_provider.quote_pair(pair)
         opportunity = self.cross_platform_engine.check_arbitrage(
-            pair, polymarket_book, kalshi_book
+            pair,
+            polymarket_book,
+            kalshi_book,
+            economics=economics,
         )
         if opportunity is not None and self.paper_locked_arb is not None:
             paper_trade = self.paper_locked_arb.observe(opportunity)
@@ -1347,6 +1382,7 @@ class TradingBotWithDashboard:
         while self._running:
             started = datetime.utcnow()
             evaluation_counts: Counter[str] = Counter()
+            evaluation_rows: list[dict] = []
             try:
                 due_pairs = (
                     self.pair_monitor.due_pairs(list(self._matched_pairs))
@@ -1366,6 +1402,9 @@ class TradingBotWithDashboard:
                 if self.client:
                     dashboard_state.cross_platform["polymarket_rest_metrics"] = (
                         self.client.request_metrics
+                    )
+                    dashboard_state.cross_platform["polymarket_orderbook_metrics"] = (
+                        self.client.orderbook_metrics
                     )
                 if not due_pairs:
                     await asyncio.sleep(0.25)
@@ -1434,6 +1473,23 @@ class TradingBotWithDashboard:
                                 pair, poly_ob, kalshi_ob
                             )
                         )
+                    except EconomicsUnavailableError as exc:
+                        evaluation_counts["economics_unavailable"] += 1
+                        self._record_cross_platform_decision(
+                            outcome=DecisionOutcome.SKIP,
+                            reason_code="economics_unavailable",
+                            explanation=(
+                                "No cross-platform trade: authoritative pair "
+                                "economics were unavailable."
+                            ),
+                            market_pair=pair,
+                            evidence={"error": str(exc)},
+                        )
+                        if self.pair_monitor:
+                            self.pair_monitor.mark_evaluated(
+                                pair.pair_id, observed_net_edge=0.0
+                            )
+                        continue
                     except RuntimeNotReadyError as exc:
                         evaluation_counts["production_runtime_not_ready"] += 1
                         dashboard_state.cross_platform["scan_status"] = (
@@ -1447,8 +1503,14 @@ class TradingBotWithDashboard:
                         )
                         await asyncio.sleep(2.0)
                         continue
-                    observed_net_edge = self.cross_platform_engine.estimate_best_net_edge(
-                        poly_ob, kalshi_ob
+                    direction_evaluations = (
+                        self.cross_platform_engine.get_last_direction_evaluations(
+                            pair.pair_id
+                        )
+                    )
+                    observed_net_edge = max(
+                        (item.executable_net_edge for item in direction_evaluations),
+                        default=0.0,
                     )
                     if self.pair_monitor:
                         self.pair_monitor.mark_evaluated(
@@ -1456,8 +1518,8 @@ class TradingBotWithDashboard:
                             observed_net_edge=observed_net_edge,
                             opportunity=opportunity is not None,
                         )
-                    dashboard_state.cross_platform["last_evaluation_latency_ms"] = round(
-                        (time.monotonic() - evaluation_started) * 1000, 2
+                    dashboard_state.cross_platform["last_evaluation_latency_ms"] = (
+                        round((time.monotonic() - evaluation_started) * 1000, 2)
                     )
                     dashboard_state.cross_platform["last_evaluation_tier"] = (
                         due_pair.tier
@@ -1474,9 +1536,93 @@ class TradingBotWithDashboard:
                         "kalshi_no_ask": kalshi_ob.best_ask_no,
                         "required_net_edge": self.cross_platform_engine.min_edge,
                     }
+                    if direction_evaluations:
+                        strongest_direction = max(
+                            direction_evaluations,
+                            key=lambda item: item.executable_net_edge,
+                        )
+                        evidence.update(
+                            {
+                                "best_gross_edge": strongest_direction.gross_edge,
+                                "best_fee_cost": strongest_direction.fee_cost,
+                                "best_slippage_reserve": (
+                                    strongest_direction.slippage_reserve
+                                ),
+                                "best_net_edge": strongest_direction.net_edge,
+                                "best_executable_net_edge": (
+                                    strongest_direction.executable_net_edge
+                                ),
+                                "best_direction": (
+                                    f"{strongest_direction.buy_platform}_to_"
+                                    f"{strongest_direction.sell_platform}_"
+                                    f"{strongest_direction.token.lower()}"
+                                ),
+                            }
+                        )
+                    if self.paper_trade_store and direction_evaluations:
+                        observed_at = datetime.now(timezone.utc)
+                        poly_age = max(
+                            0.0,
+                            (
+                                observed_at - poly_ob.timestamp.astimezone(timezone.utc)
+                            ).total_seconds(),
+                        )
+                        kalshi_age = max(
+                            0.0,
+                            (
+                                observed_at
+                                - kalshi_ob.timestamp.astimezone(timezone.utc)
+                            ).total_seconds(),
+                        )
+                        evaluation_rows.extend(
+                            {
+                                "pair_id": item.pair_id,
+                                "polymarket_id": pair.polymarket_execution_id,
+                                "kalshi_ticker": pair.kalshi_ticker,
+                                "polymarket_question": pair.polymarket_question,
+                                "kalshi_title": pair.kalshi_title,
+                                "token": item.token,
+                                "buy_platform": item.buy_platform,
+                                "sell_platform": item.sell_platform,
+                                "buy_price": item.buy_price,
+                                "sell_price": item.sell_price,
+                                "buy_liquidity": item.buy_liquidity,
+                                "sell_liquidity": item.sell_liquidity,
+                                "polymarket_yes_bid": poly_ob.best_bid_yes,
+                                "polymarket_yes_ask": poly_ob.best_ask_yes,
+                                "polymarket_no_bid": poly_ob.best_bid_no,
+                                "polymarket_no_ask": poly_ob.best_ask_no,
+                                "polymarket_yes_bid_size": poly_ob.yes.bids.best_size,
+                                "polymarket_yes_ask_size": poly_ob.yes.asks.best_size,
+                                "polymarket_no_bid_size": poly_ob.no.bids.best_size,
+                                "polymarket_no_ask_size": poly_ob.no.asks.best_size,
+                                "kalshi_yes_bid": kalshi_ob.best_bid_yes,
+                                "kalshi_yes_ask": kalshi_ob.best_ask_yes,
+                                "kalshi_no_bid": kalshi_ob.best_bid_no,
+                                "kalshi_no_ask": kalshi_ob.best_ask_no,
+                                "kalshi_yes_bid_size": kalshi_ob.yes.bids.best_size,
+                                "kalshi_yes_ask_size": kalshi_ob.yes.asks.best_size,
+                                "kalshi_no_bid_size": kalshi_ob.no.bids.best_size,
+                                "kalshi_no_ask_size": kalshi_ob.no.asks.best_size,
+                                "polymarket_age_seconds": poly_age,
+                                "kalshi_age_seconds": kalshi_age,
+                                "gross_edge": item.gross_edge,
+                                "fee_cost": item.fee_cost,
+                                "slippage_reserve": item.slippage_reserve,
+                                "net_edge": item.net_edge,
+                                "executable_net_edge": (item.executable_net_edge),
+                                "required_net_edge": (item.required_net_edge),
+                                "suggested_size": item.suggested_size,
+                                "outcome": item.outcome,
+                                "reason_code": item.reason_code,
+                            }
+                            for item in direction_evaluations
+                        )
 
                     if opportunity:
                         evaluation_counts["opportunity_detected"] += 1
+                        if self.paper_locked_arb is not None:
+                            evaluation_counts[self.paper_locked_arb.last_decision] += 1
                         opp_dict = {
                             "opportunity_id": opportunity.opportunity_id,
                             "market_pair": pair.polymarket_question,
@@ -1528,11 +1674,19 @@ class TradingBotWithDashboard:
                             evidence={**evidence, **opp_dict},
                         )
                     else:
-                        evaluation_counts["edge_below_threshold"] += 1
+                        rejection_reason = (
+                            strongest_direction.reason_code
+                            if direction_evaluations
+                            else "no_executable_direction"
+                        )
+                        evaluation_counts[rejection_reason] += 1
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
-                            reason_code="edge_below_threshold",
-                            explanation="No cross-platform trade: fee-adjusted edge is below the required threshold.",
+                            reason_code=rejection_reason,
+                            explanation=(
+                                "No cross-platform trade: the strongest direction "
+                                "did not clear executable economics."
+                            ),
                             market_pair=pair,
                             evidence=evidence,
                         )
@@ -1541,12 +1695,14 @@ class TradingBotWithDashboard:
 
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
+                self._persist_cross_platform_evaluations(evaluation_rows)
                 self._persist_cross_platform_evaluation_counts(evaluation_counts)
                 self._scanner_supervisor.mark_healthy()
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._persist_cross_platform_evaluations(evaluation_rows)
                 self._persist_cross_platform_evaluation_counts(evaluation_counts)
                 logger.exception("Cross-platform scan error: %s", e)
                 dashboard_state.cross_platform["scan_status"] = "error"
@@ -1557,6 +1713,17 @@ class TradingBotWithDashboard:
                     evidence={"error": str(e)},
                 )
                 raise
+
+    def _persist_cross_platform_evaluations(
+        self,
+        evaluations: list[dict],
+    ) -> None:
+        if not evaluations or self.paper_trade_store is None:
+            return
+        self.paper_trade_store.record_cross_platform_evaluations(evaluations)
+        dashboard_state.cross_platform["evaluation_ledger_count"] = (
+            self.paper_trade_store.cross_platform_evaluation_count()
+        )
 
     def _persist_cross_platform_evaluation_counts(
         self,

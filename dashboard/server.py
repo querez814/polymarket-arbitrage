@@ -13,7 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, TYPE_CHECKING, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -94,7 +101,7 @@ def _reason(body: Mapping[str, Any]) -> str:
 
 class DashboardState:
     """Holds the current state for the dashboard."""
-    
+
     def __init__(self):
         self.markets: dict = {}
         self.opportunities: list = []
@@ -128,7 +135,7 @@ class DashboardState:
         self.mode: str = "dry_run"
         self.last_update: datetime = utc_now()
         self.started_at: datetime = utc_now()
-        
+
         # Cross-platform (Polymarket + Kalshi)
         self.cross_platform: dict = {
             "enabled": False,
@@ -140,15 +147,19 @@ class DashboardState:
             "matched_pairs_data": [],  # Detailed data for display
             "review_candidate_count": 0,
             "review_candidates": [],
+            "evaluation_funnel": {},
+            "evaluation_ledger_count": 0,
+            "near_misses": [],
+            "paper_trade_receipts": [],
             "matching_progress": 0,  # Percentage of matching complete
             "matching_checked": 0,  # Number of comparisons done
             "matching_total": 0,  # Total comparisons to do
             "matching_status": "idle",  # idle/loading/matching/complete/no_matches/error
         }
-        
+
         # WebSocket connections
         self._connections: list[WebSocket] = []
-    
+
     def to_dict(self) -> dict:
         """Convert state to dictionary for JSON serialization."""
         uptime = (utc_now() - self.started_at).total_seconds()
@@ -181,58 +192,60 @@ class DashboardState:
             "display_timezone": display_timezone,
             "uptime_seconds": uptime,
         }
-    
+
     async def broadcast(self, data: dict) -> None:
         """Broadcast update to all connected WebSocket clients."""
         if not self._connections:
             return
-        
+
         message = json.dumps(data)
         disconnected = []
-        
+
         for ws in self._connections:
             try:
                 await ws.send_text(message)
             except Exception:
                 disconnected.append(ws)
-        
+
         for ws in disconnected:
             self._connections.remove(ws)
-    
+
     def add_opportunity(self, opportunity: dict) -> None:
         """Add a new opportunity."""
         opportunity.setdefault("timestamp", utc_now_iso())
         self.opportunities.append(opportunity)
         if len(self.opportunities) > 200:
             self.opportunities = self.opportunities[-100:]
-    
+
     def add_signal(self, signal: dict) -> None:
         """Add a new signal."""
         signal.setdefault("timestamp", utc_now_iso())
         self.signals.append(signal)
         if len(self.signals) > 200:
             self.signals = self.signals[-100:]
-    
+
     def add_trade(self, trade: dict) -> None:
         """Add a new trade."""
         trade.setdefault("timestamp", utc_now_iso())
         self.trades.append(trade)
         if len(self.trades) > 500:
             self.trades = self.trades[-250:]
-    
+
     def add_cross_platform_opportunity(self, opportunity: dict) -> None:
         """Add a cross-platform arbitrage opportunity."""
         opportunity.setdefault("timestamp", utc_now_iso())
         self.cross_platform["cross_opportunities"].append(opportunity)
         if len(self.cross_platform["cross_opportunities"]) > 100:
-            self.cross_platform["cross_opportunities"] = self.cross_platform["cross_opportunities"][-50:]
-    
+            self.cross_platform["cross_opportunities"] = self.cross_platform[
+                "cross_opportunities"
+            ][-50:]
+
     def add_decision(self, decision: dict) -> None:
         """Add a decision journal record."""
         self.decisions.append(decision)
         if len(self.decisions) > 1000:
             self.decisions = self.decisions[-500:]
-    
+
     def update_cross_platform_stats(
         self,
         kalshi_markets: int,
@@ -261,7 +274,7 @@ def create_app() -> FastAPI:
         description="Live monitoring dashboard for the trading bot",
         version="1.0.0",
     )
-    
+
     # Serve static files
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
@@ -325,7 +338,7 @@ def create_app() -> FastAPI:
                 content={"status": "not_ready", "reason": "trading_not_admitted"},
             )
         return {"status": "ready"}
-    
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
         """Serve the main dashboard page."""
@@ -333,7 +346,7 @@ def create_app() -> FastAPI:
         if html_path.exists():
             return html_path.read_text()
         return get_embedded_html()
-    
+
     @app.get("/history", response_class=HTMLResponse)
     async def trade_history_page():
         """Dedicated trade history page with expandable detail view."""
@@ -348,15 +361,20 @@ def create_app() -> FastAPI:
         if paper_trade_store is None:
             events = dashboard_state.paper_history[-limit:]
             if event_type:
-                events = [event for event in events if event.get("event_type") == event_type]
+                events = [
+                    event for event in events if event.get("event_type") == event_type
+                ]
             timeline_for_order = lambda _order_id: []
         else:
             events = [
                 event.to_dict()
-                for event in paper_trade_store.recent_events(limit=limit, event_type=event_type)
+                for event in paper_trade_store.recent_events(
+                    limit=limit, event_type=event_type
+                )
             ]
             timeline_for_order = lambda order_id: [
-                event.to_dict() for event in paper_trade_store.events_for_order(order_id)
+                event.to_dict()
+                for event in paper_trade_store.events_for_order(order_id)
             ]
 
         return build_trade_history_payload(
@@ -371,27 +389,27 @@ def create_app() -> FastAPI:
     async def get_state():
         """Get current dashboard state."""
         return dashboard_state.to_dict()
-    
+
     @app.get("/api/markets")
     async def get_markets():
         """Get current market data."""
         return {"markets": dashboard_state.markets}
-    
+
     @app.get("/api/opportunities")
     async def get_opportunities():
         """Get recent opportunities."""
         return {"opportunities": dashboard_state.opportunities[-50:]}
-    
+
     @app.get("/api/portfolio")
     async def get_portfolio():
         """Get portfolio state."""
         return dashboard_state.portfolio
-    
+
     @app.get("/api/risk")
     async def get_risk():
         """Get risk metrics."""
         return dashboard_state.risk
-    
+
     @app.get("/api/decisions")
     async def get_decisions():
         """Get recent decision journal records."""
@@ -399,7 +417,7 @@ def create_app() -> FastAPI:
             "decisions": dashboard_state.decisions[-200:],
             "summary": dashboard_state.decision_summary,
         }
-    
+
     @app.get("/api/timing")
     async def get_timing():
         """Get opportunity timing statistics."""
@@ -471,7 +489,7 @@ def create_app() -> FastAPI:
             "active_run": dashboard_state.run_session or None,
             "display_timezone": display_timezone,
         }
-    
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         """WebSocket endpoint for real-time updates."""
@@ -479,24 +497,24 @@ def create_app() -> FastAPI:
             await websocket.close(code=1008, reason="untrusted websocket origin")
             return
         if len(dashboard_state._connections) >= MAX_DASHBOARD_WEBSOCKETS:
-            await websocket.close(code=1013, reason="dashboard connection limit reached")
+            await websocket.close(
+                code=1013, reason="dashboard connection limit reached"
+            )
             return
         await websocket.accept()
         dashboard_state._connections.append(websocket)
-        
+
         try:
             # Send initial state
-            await websocket.send_text(json.dumps({
-                "type": "initial",
-                "data": dashboard_state.to_dict()
-            }))
-            
+            await websocket.send_text(
+                json.dumps({"type": "initial", "data": dashboard_state.to_dict()})
+            )
+
             # Keep connection alive and receive any commands
             while True:
                 try:
                     data = await asyncio.wait_for(
-                        websocket.receive_text(),
-                        timeout=30.0
+                        websocket.receive_text(), timeout=30.0
                     )
                     # Handle any commands from client
                     msg = json.loads(data)
@@ -505,7 +523,7 @@ def create_app() -> FastAPI:
                 except asyncio.TimeoutError:
                     # Send heartbeat
                     await websocket.send_text(json.dumps({"type": "heartbeat"}))
-                    
+
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -513,13 +531,13 @@ def create_app() -> FastAPI:
         finally:
             if websocket in dashboard_state._connections:
                 dashboard_state._connections.remove(websocket)
-    
+
     return app
 
 
 def get_embedded_html() -> str:
     """Return embedded HTML for the dashboard."""
-    return '''<!DOCTYPE html>
+    return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -2088,6 +2106,7 @@ def get_embedded_html() -> str:
                     </div>
                 </div>
                 <div class="matched-pairs-grid" id="matchedPairsGrid"></div>
+                <div id="paperEvidencePanel" style="margin-top: 1rem;"></div>
             </div>
         </section>
 
@@ -2822,6 +2841,28 @@ def get_embedded_html() -> str:
             const crossOpps = cp.cross_opportunities || [];
             const matchedPairsData = cp.matched_pairs_data || [];
             document.getElementById('crossOpportunities').textContent = crossOpps.length;
+
+            const evidencePanel = document.getElementById('paperEvidencePanel');
+            const paper = cp.paper_performance || {};
+            const nearMisses = Array.isArray(cp.near_misses) ? cp.near_misses : [];
+            const receipts = Array.isArray(cp.paper_trade_receipts) ? cp.paper_trade_receipts : [];
+            const funnel = cp.evaluation_funnel || {};
+            const strongest = nearMisses[0];
+            evidencePanel.innerHTML = `<div style="border: 1px solid var(--border-color); border-radius: 8px; padding: 0.85rem; background: var(--bg-secondary);">
+                <div style="font-weight: 700; margin-bottom: 0.55rem;">Paper evidence</div>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.65rem; font-size: 0.76rem;">
+                    <div><span style="color: var(--text-muted);">Directions stored</span><br><strong>${Number(cp.evaluation_ledger_count || 0).toLocaleString()}</strong></div>
+                    <div><span style="color: var(--text-muted);">Fresh snapshots</span><br><strong>${Number(funnel.paired_snapshot_fresh || 0).toLocaleString()}</strong></div>
+                    <div><span style="color: var(--text-muted);">Pair trades</span><br><strong>${Number(paper.trade_count || receipts.length || 0).toLocaleString()}</strong></div>
+                    <div><span style="color: var(--text-muted);">Projected locked PnL</span><br><strong>${formatCurrency(Number(paper.projected_locked_pnl || 0))}</strong></div>
+                    <div><span style="color: var(--text-muted);">Realized settlement PnL</span><br><strong>${formatCurrency(Number(paper.realized_settlement_pnl || 0))}</strong></div>
+                    <div><span style="color: var(--text-muted);">Cash available</span><br><strong>${formatCurrency(Number(paper.cash_balance || paper.available_capital || 0))}</strong></div>
+                </div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.65rem;">${strongest
+                    ? `Strongest near miss: ${escapeHtml(strongest.token)} ${escapeHtml(strongest.buy_platform)} → ${escapeHtml(strongest.sell_platform)} · executable edge ${(Number(strongest.executable_net_edge || 0) * 100).toFixed(2)}% · ${escapeHtml(strongest.reason_code)}`
+                    : 'No direction-level near misses have been recorded in this run yet.'}</div>
+                <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 0.35rem;">PnL source: ${escapeHtml(paper.pnl_source || 'unavailable')}</div>
+            </div>`;
             
             // 🔥 Update Live Opportunities Feed
             updateOpportunitiesFeed(state, cp, matchedPairsData);
@@ -3303,7 +3344,7 @@ def get_embedded_html() -> str:
         setInterval(fetchState, 5000);
     </script>
 </body>
-</html>'''
+</html>"""
 
 
 # Create the app

@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 _FIXED_POINT_PATTERN = re.compile(r"^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
 
 
-def _fee_schedule(fee_type: object, multiplier: object, *, source: str) -> KalshiFeeSchedule:
+def _fee_schedule(
+    fee_type: object, multiplier: object, *, source: str
+) -> KalshiFeeSchedule:
     if not isinstance(fee_type, str):
         raise ValueError("Kalshi fee type must be text")
     if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool):
@@ -206,7 +208,9 @@ class KalshiClient:
                     wait_time = self._resilience.retry_delay(
                         attempt, e.response.headers.get("Retry-After")
                     )
-                    logger.warning("Kalshi HTTP %s; retrying in %.2fs", status, wait_time)
+                    logger.warning(
+                        "Kalshi HTTP %s; retrying in %.2fs", status, wait_time
+                    )
                     await asyncio.sleep(wait_time)
                 elif status == 404:
                     logger.debug(f"Not found: {endpoint}")
@@ -284,7 +288,9 @@ class KalshiClient:
                     wait_time = self._resilience.retry_delay(
                         attempt, e.response.headers.get("Retry-After")
                     )
-                    logger.warning("Kalshi HTTP %s; retrying in %.2fs", status, wait_time)
+                    logger.warning(
+                        "Kalshi HTTP %s; retrying in %.2fs", status, wait_time
+                    )
                     await asyncio.sleep(wait_time)
                 elif status == 404:
                     logger.debug(f"Not found: {endpoint}")
@@ -590,9 +596,7 @@ class KalshiClient:
                     continue
                 market = self._parse_market(
                     raw_market,
-                    event_title=(
-                        event_title if isinstance(event_title, str) else ""
-                    ),
+                    event_title=(event_title if isinstance(event_title, str) else ""),
                     event_category=(
                         event_category if isinstance(event_category, str) else ""
                     ),
@@ -607,7 +611,9 @@ class KalshiClient:
                     self._markets_cache[market.ticker] = market
 
         next_cursor = data.get("cursor")
-        return markets, next_cursor if isinstance(next_cursor, str) and next_cursor else None
+        return markets, (
+            next_cursor if isinstance(next_cursor, str) and next_cursor else None
+        )
 
     async def list_all_event_markets(
         self,
@@ -820,30 +826,41 @@ class KalshiClient:
         if not ticker.strip():
             raise ValueError("ticker must be non-empty")
         market_payload = await self._get(f"/markets/{quote(ticker, safe='')}")
-        market = market_payload.get("market") if isinstance(market_payload, Mapping) else None
+        market = (
+            market_payload.get("market")
+            if isinstance(market_payload, Mapping)
+            else None
+        )
         if not isinstance(market, Mapping):
             raise ValueError("Kalshi market fee metadata is unavailable")
         event_ticker = market.get("event_ticker")
-        series_ticker = market.get("series_ticker")
         if not isinstance(event_ticker, str) or not event_ticker:
             raise ValueError("Kalshi fee metadata is missing event ticker")
-        if not isinstance(series_ticker, str) or not series_ticker:
-            raise ValueError("Kalshi fee metadata is missing series ticker")
 
-        event_payload, series_payload = await asyncio.gather(
-            self._get(f"/events/{quote(event_ticker, safe='')}"),
-            self._get(f"/series/{quote(series_ticker, safe='')}"),
+        event_payload = await self._get(f"/events/{quote(event_ticker, safe='')}")
+        event = (
+            event_payload.get("event") if isinstance(event_payload, Mapping) else None
         )
-        event = event_payload.get("event") if isinstance(event_payload, Mapping) else None
-        series = series_payload.get("series") if isinstance(series_payload, Mapping) else None
-        if not isinstance(event, Mapping) or not isinstance(series, Mapping):
-            raise ValueError("Kalshi fee metadata response is incomplete")
+        if not isinstance(event, Mapping):
+            raise ValueError("Kalshi event fee metadata is unavailable")
         override_type = event.get("fee_type_override")
         override_multiplier = event.get("fee_multiplier_override")
         if (override_type is None) != (override_multiplier is None):
             raise ValueError("Kalshi event fee override is incomplete")
         if override_type is not None:
             return _fee_schedule(override_type, override_multiplier, source="event")
+
+        series_ticker = event.get("series_ticker") or market.get("series_ticker")
+        if not isinstance(series_ticker, str) or not series_ticker:
+            raise ValueError("Kalshi fee metadata is missing series ticker")
+        series_payload = await self._get(f"/series/{quote(series_ticker, safe='')}")
+        series = (
+            series_payload.get("series")
+            if isinstance(series_payload, Mapping)
+            else None
+        )
+        if not isinstance(series, Mapping):
+            raise ValueError("Kalshi series fee metadata is unavailable")
         return _fee_schedule(
             series.get("fee_type"), series.get("fee_multiplier"), source="series"
         )
@@ -928,9 +945,7 @@ class KalshiClient:
                 rules_primary=str(data.get("rules_primary") or ""),
                 rules_secondary=str(data.get("rules_secondary") or ""),
                 settlement_source=str(
-                    data.get("settlement_source")
-                    or data.get("result_source")
-                    or ""
+                    data.get("settlement_source") or data.get("result_source") or ""
                 ),
             )
         except Exception as e:

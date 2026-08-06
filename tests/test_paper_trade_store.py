@@ -248,6 +248,45 @@ def test_semantic_pair_review_queue_is_persistent_and_upserted(tmp_path):
     store.close()
 
 
+def test_semantic_discovery_cycle_persists_every_reviewed_pair_atomically(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(
+            starting_equity=5000.0,
+            pnl_source="projected_locked_paper",
+        )
+        pairs = [
+            {
+                "pair_id": f"poly:{index}|kalshi:KX-{index}",
+                "polymarket_id": f"condition-{index}",
+                "kalshi_ticker": f"KX-{index}",
+                "polymarket_question": f"Will candidate {index} win?",
+                "kalshi_title": f"Candidate {index} wins?",
+                "relation": "unverified",
+                "retrieval_score": 0.80,
+                "verification_confidence": 0.65,
+                "verification_reasons": ("manual review required",),
+                "approval_status": "manual_review",
+            }
+            for index in range(125)
+        ]
+
+        cycle_id = store.record_semantic_discovery_cycle(
+            pairs=pairs,
+            metrics={"retrieved_candidates": 125, "verified_pairs": 0},
+        )
+        cycle = store.latest_semantic_discovery_cycle(run_id=run.run_id)
+
+        assert cycle_id > 0
+        assert cycle is not None
+        assert cycle["reviewed_pair_count"] == 125
+        assert cycle["metrics"]["retrieved_candidates"] == 125
+        assert len(cycle["pairs"]) == 125
+        assert len(store.recent_pair_reviews(limit=200)) == 125
+    finally:
+        store.close()
+
+
 def test_cross_platform_evaluation_funnel_persists_compact_reason_counts(tmp_path):
     store = PaperTradeStore(str(tmp_path / "paper.db"))
     try:
@@ -274,5 +313,100 @@ def test_cross_platform_evaluation_funnel_persists_compact_reason_counts(tmp_pat
             "stale_polymarket_orderbook": 1,
             "edge_below_threshold": 2,
         }
+    finally:
+        store.close()
+
+
+def test_cross_platform_evaluations_persist_exact_direction_evidence(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(
+            starting_equity=5000.0,
+            pnl_source="projected_locked_paper",
+        )
+        common = {
+            "pair_id": "poly:1|kalshi:KX-1",
+            "polymarket_id": "condition-1",
+            "kalshi_ticker": "KX-1",
+            "polymarket_question": "Will Alice win?",
+            "kalshi_title": "Alice wins?",
+            "polymarket_yes_bid": 0.49,
+            "polymarket_yes_ask": 0.50,
+            "polymarket_no_bid": 0.49,
+            "polymarket_no_ask": 0.50,
+            "polymarket_yes_bid_size": 100.0,
+            "polymarket_yes_ask_size": 110.0,
+            "polymarket_no_bid_size": 90.0,
+            "polymarket_no_ask_size": 95.0,
+            "kalshi_yes_bid": 0.51,
+            "kalshi_yes_ask": 0.52,
+            "kalshi_no_bid": 0.48,
+            "kalshi_no_ask": 0.49,
+            "kalshi_yes_bid_size": 80.0,
+            "kalshi_yes_ask_size": 85.0,
+            "kalshi_no_bid_size": 75.0,
+            "kalshi_no_ask_size": 70.0,
+            "polymarket_age_seconds": 0.10,
+            "kalshi_age_seconds": 0.12,
+            "slippage_reserve": 0.02,
+        }
+        store.record_cross_platform_evaluations(
+            [
+                {
+                    **common,
+                    "token": "YES",
+                    "buy_platform": "polymarket",
+                    "sell_platform": "kalshi",
+                    "buy_price": 0.50,
+                    "sell_price": 0.51,
+                    "buy_liquidity": 100.0,
+                    "sell_liquidity": 90.0,
+                    "gross_edge": 0.01,
+                    "fee_cost": 0.006,
+                    "net_edge": 0.004,
+                    "executable_net_edge": -0.016,
+                    "required_net_edge": 0.02,
+                    "suggested_size": 10.0,
+                    "outcome": "skipped",
+                    "reason_code": "edge_below_threshold",
+                },
+                {
+                    **common,
+                    "token": "NO",
+                    "buy_platform": "kalshi",
+                    "sell_platform": "polymarket",
+                    "buy_price": 0.49,
+                    "sell_price": 0.49,
+                    "buy_liquidity": 80.0,
+                    "sell_liquidity": 70.0,
+                    "gross_edge": 0.0,
+                    "fee_cost": 0.006,
+                    "net_edge": -0.006,
+                    "executable_net_edge": -0.026,
+                    "required_net_edge": 0.02,
+                    "suggested_size": 10.0,
+                    "outcome": "skipped",
+                    "reason_code": "edge_below_threshold",
+                },
+            ]
+        )
+
+        rows = store.recent_cross_platform_evaluations(run_id=run.run_id, limit=10)
+
+        assert len(rows) == 2
+        assert {row["token"] for row in rows} == {"YES", "NO"}
+        yes = next(row for row in rows if row["token"] == "YES")
+        assert yes["gross_edge"] == pytest.approx(0.01)
+        assert yes["fee_cost"] == pytest.approx(0.006)
+        assert yes["executable_net_edge"] == pytest.approx(-0.016)
+        assert yes["polymarket_yes_ask_size"] == pytest.approx(110.0)
+        assert yes["kalshi_yes_bid_size"] == pytest.approx(80.0)
+        assert yes["reason_code"] == "edge_below_threshold"
+        assert store.cross_platform_evaluation_count(run.run_id) == 2
+        near_misses = store.top_cross_platform_near_misses(
+            run_id=run.run_id,
+            limit=1,
+        )
+        assert near_misses[0]["token"] == "YES"
     finally:
         store.close()

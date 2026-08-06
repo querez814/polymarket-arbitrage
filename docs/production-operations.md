@@ -4,6 +4,41 @@ This runbook covers the locked Polymarket Global/Kalshi executor. It does not
 authorize a live exchange mutation. A minimum-size canary remains a separate,
 explicit operator decision after offline and deployment verification.
 
+## Paper release proof
+
+The paper configuration starts with $5,000, reads public venue data, persists
+every evaluated direction, and cannot submit exchange orders. Before an
+all-shift paper observation, run the deterministic lifecycle proof:
+
+```bash
+python scripts/prove_paper_acceptance.py --db data/paper_acceptance.db
+```
+
+Then run `scripts/evaluate_live_pair.py` for a manually reviewed equivalent
+pair. The first invocation prints the canonical pair and approval hash; the
+second invocation must finish with either `after_cost_edge` or
+`no_after_cost_edge`, authoritative economics, and `venue_mutations: 0`.
+
+Start the continuous paper runtime only after both proofs pass:
+
+```bash
+python run_with_dashboard.py \
+  --config config.paper.production.yaml --port 8888 --dry-run
+```
+
+The dashboard is at `http://127.0.0.1:8888`. A zero-trade run is valid only
+when it still records direction evidence and exact rejection reasons. Generate
+the final or in-progress shift report directly from SQLite:
+
+```bash
+python scripts/report_paper_run.py --db data/paper_performance.db
+```
+
+The reporter opens SQLite read-only and does not acquire the runtime's writer
+lock. `evaluated_no_trade` means current pairs were fully evaluated but did not
+clear costs and controls. `legacy_run_not_auditable` means the selected run
+predates direction-level evidence and must not be used to infer missed profit.
+
 ## Safety invariants
 
 - Each process start persists a halted state. Trading cannot resume until the

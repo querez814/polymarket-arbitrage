@@ -38,7 +38,8 @@ mode:
   kalshi_enabled: true
   min_match_similarity: 0.55
   cross_platform_refresh_seconds: 1800
-  dry_run_initial_balance: 1000
+  # Overnight paper observation balance. Venue execution remains disabled.
+  dry_run_initial_balance: 5000
   simulate_fills: false
   fill_probability: 0
   paper_locked_arb_enabled: true

@@ -65,6 +65,40 @@ async def test_live_cross_platform_pair_fails_closed_without_runtime_owner():
         await bot.evaluate_cross_platform_pair("pair", "poly-book", "kalshi-book")
 
 
+@pytest.mark.asyncio
+async def test_real_data_paper_pair_uses_authoritative_pair_economics():
+    config = BotConfig()
+    config.mode.trading_mode = "dry_run"
+    config.mode.data_mode = "real"
+    bot = TradingBotWithDashboard(config)
+    fee_snapshot = object()
+
+    class Provider:
+        async def quote_pair(self, pair):
+            assert pair == "pair"
+            return fee_snapshot
+
+    class Detector:
+        def check_arbitrage(
+            self, pair, polymarket_book, kalshi_book, *, economics: object
+        ):
+            assert pair == "pair"
+            assert polymarket_book == "poly-book"
+            assert kalshi_book == "kalshi-book"
+            assert economics is fee_snapshot
+            return "authoritative-paper-opportunity"
+
+    bot.cross_platform_engine = Detector()
+    bot.economics_provider = Provider()
+
+    opportunity, evaluation = await bot.evaluate_cross_platform_pair(
+        "pair", "poly-book", "kalshi-book"
+    )
+
+    assert opportunity == "authoritative-paper-opportunity"
+    assert evaluation is None
+
+
 def test_live_dashboard_binds_operator_routes_to_loopback_only():
     live = BotConfig()
     live.mode.trading_mode = "live"
@@ -139,7 +173,7 @@ async def test_zero_matches_is_an_honest_wait_state_not_a_started_scan():
         def get_cached_pairs(self):
             return []
 
-        def get_review_candidates(self):
+        def get_review_candidates(self, limit=100):
             return []
 
     bot.market_matcher = Matcher()
@@ -205,9 +239,7 @@ async def test_market_discovery_recovers_after_transient_upstream_503():
             nonlocal requests
             requests += 1
             if requests == 1:
-                request = httpx.Request(
-                    "GET", "https://trading-api.kalshi.com/events"
-                )
+                request = httpx.Request("GET", "https://trading-api.kalshi.com/events")
                 response = httpx.Response(503, request=request)
                 raise httpx.HTTPStatusError(
                     "temporary upstream failure",
@@ -243,10 +275,7 @@ async def test_market_discovery_recovers_after_transient_upstream_503():
     from dashboard.server import dashboard_state
 
     assert (
-        dashboard_state.cross_platform["task_restarts"][
-            "cross-platform discovery"
-        ]
-        >= 1
+        dashboard_state.cross_platform["task_restarts"]["cross-platform discovery"] >= 1
     )
     assert dashboard_state.cross_platform["last_transient_error"]["attempt"] == 1
 

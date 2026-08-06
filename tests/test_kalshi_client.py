@@ -78,7 +78,6 @@ async def test_get_fee_schedule_prefers_complete_event_override():
                     "fee_multiplier_override": 2,
                 }
             },
-            {"series": {"fee_type": "flat", "fee_multiplier": 9}},
         ]
     )
 
@@ -87,6 +86,36 @@ async def test_get_fee_schedule_prefers_complete_event_override():
     assert schedule.fee_type == "quadratic"
     assert schedule.fee_multiplier == 2.0
     assert schedule.source == "event"
+    assert client._get.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_fee_schedule_reads_series_ticker_from_parent_event():
+    client = KalshiClient(dry_run=True)
+    client._get = AsyncMock(
+        side_effect=[
+            {"market": {"event_ticker": "EVENT-1"}},
+            {
+                "event": {
+                    "series_ticker": "SERIES-1",
+                    "fee_type_override": None,
+                    "fee_multiplier_override": None,
+                }
+            },
+            {"series": {"fee_type": "quadratic", "fee_multiplier": 1.5}},
+        ]
+    )
+
+    schedule = await client.get_fee_schedule("TICKER-1")
+
+    assert schedule.fee_type == "quadratic"
+    assert schedule.fee_multiplier == 1.5
+    assert schedule.source == "series"
+    assert [call.args[0] for call in client._get.await_args_list] == [
+        "/markets/TICKER-1",
+        "/events/EVENT-1",
+        "/series/SERIES-1",
+    ]
 
 
 @pytest.mark.asyncio

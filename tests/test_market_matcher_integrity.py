@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.cross_platform_arb import MarketMatcher
+from core.cross_platform_arb import MarketMatcher, MarketPair
 
 
 @pytest.mark.parametrize(
@@ -228,3 +228,20 @@ def test_subthreshold_candidates_are_reviewable_but_not_matched():
     assert matches == []
     assert len(candidates) == 1
     assert 0.65 <= candidates[0].similarity_score < 0.90
+
+
+def test_complete_review_candidate_set_can_be_requested_for_durable_audit():
+    matcher = MarketMatcher()
+    matcher._review_candidates = {
+        f"pair-{index}": MarketPair(
+            polymarket_id=f"poly-{index}",
+            kalshi_ticker=f"kalshi-{index}",
+            polymarket_question=f"Question {index}?",
+            kalshi_title=f"Question {index}?",
+            similarity_score=0.70 + (index / 1000),
+        )
+        for index in range(125)
+    }
+
+    assert len(matcher.get_review_candidates()) == 100
+    assert len(matcher.get_review_candidates(limit=None)) == 125

@@ -2,10 +2,11 @@ import asyncio
 from datetime import timezone
 
 import httpx
+import pytest
 
 from kalshi_client.api import KalshiClient
 from kalshi_client.models import KalshiMarket
-from polymarket_client.api import PolymarketClient
+from polymarket_client.api import OrderBookNormalizationError, PolymarketClient
 from polymarket_client.models import TokenType
 
 
@@ -32,7 +33,151 @@ def test_polymarket_suppresses_token_after_first_no_orderbook_response():
 
     assert calls == 1
     assert first.bids.levels == second.bids.levels == []
-    assert metrics == {"requests": 1, "successes": 0, "not_found": 1}
+    assert metrics == {
+        "requests": 1,
+        "successes": 0,
+        "not_found": 1,
+        "normalization_failures": 0,
+    }
+
+
+def test_polymarket_orderbook_normalizes_raw_venue_depth_before_selecting_best():
+    """The CLOB API returns outer levels first; public books expose executable best."""
+
+    def handler(request: httpx.Request):
+        if request.url.host == "gamma-api.polymarket.com":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "559662",
+                    "conditionId": "condition-559662",
+                    "question": "Will Mark Cuban win?",
+                    "clobTokenIds": '["yes-token", "no-token"]',
+                    "active": True,
+                    "closed": False,
+                },
+            )
+        token_id = request.url.params["token_id"]
+        if token_id == "yes-token":
+            payload = {
+                "bids": [
+                    {"price": "0.001", "size": "2000"},
+                    {"price": "0.004", "size": "40"},
+                    {"price": "0.005", "size": "56"},
+                ],
+                "asks": [
+                    {"price": "0.999", "size": "5000"},
+                    {"price": "0.010", "size": "100"},
+                    {"price": "0.006", "size": "41"},
+                ],
+            }
+        else:
+            payload = {
+                "bids": [
+                    {"price": "0.001", "size": "5000"},
+                    {"price": "0.993", "size": "41"},
+                    {"price": "0.994", "size": "100"},
+                ],
+                "asks": [
+                    {"price": "0.999", "size": "2000"},
+                    {"price": "0.997", "size": "40"},
+                    {"price": "0.996", "size": "56"},
+                ],
+            }
+        return httpx.Response(200, request=request, json=payload)
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1, dry_run=False)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            return await client.get_orderbook("559662")
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    book = asyncio.run(exercise())
+
+    assert book.best_bid_yes == 0.005
+    assert book.yes.best_bid_size == 56.0
+    assert book.best_ask_yes == 0.006
+    assert book.yes.best_ask_size == 41.0
+    assert book.best_bid_no == 0.994
+    assert book.best_ask_no == 0.996
+
+
+def test_polymarket_orderbook_sorts_before_applying_depth_limit():
+    outer_bids = [
+        {"price": f"{value / 1000:.3f}", "size": "10"} for value in range(1, 12)
+    ]
+    outer_asks = [
+        {"price": f"{value / 1000:.3f}", "size": "10"} for value in range(999, 988, -1)
+    ]
+
+    def handler(request: httpx.Request):
+        if request.url.host == "gamma-api.polymarket.com":
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "depth-1",
+                    "conditionId": "condition-depth-1",
+                    "question": "Depth normalization?",
+                    "clobTokenIds": '["yes-depth", "no-depth"]',
+                    "active": True,
+                    "closed": False,
+                },
+            )
+        return httpx.Response(
+            200,
+            request=request,
+            json={"bids": outer_bids, "asks": outer_asks},
+        )
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1, dry_run=False)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            return await client.get_orderbook("depth-1")
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    book = asyncio.run(exercise())
+
+    assert book.best_bid_yes == 0.011
+    assert book.best_ask_yes == 0.989
+    assert len(book.yes.bids.levels) == 10
+    assert len(book.yes.asks.levels) == 10
+
+
+def test_polymarket_crossed_or_invalid_raw_book_fails_closed_with_reason_code():
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "bids": [{"price": "0.60", "size": "10"}],
+                "asks": [{"price": "0.50", "size": "10"}],
+            },
+        )
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(OrderBookNormalizationError) as captured:
+                await client._fetch_token_orderbook("crossed-token", TokenType.YES)
+            return captured.value, client.orderbook_metrics
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    error, metrics = asyncio.run(exercise())
+
+    assert error.reason_code == "polymarket_orderbook_normalization_failed"
+    assert error.evidence["token_id"] == "crossed-token"
+    assert metrics["normalization_failures"] == 1
 
 
 def test_polymarket_active_market_list_uses_ttl_cache():

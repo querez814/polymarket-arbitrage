@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from core.cross_platform_arb import MarketPair
+from core.cross_platform_arb import CrossPlatformDirectionEvaluation, MarketPair
 from core.pair_monitoring import DuePair
 from core.pair_snapshot import PairSnapshot, PairSnapshotError, PairSnapshotSource
 from polymarket_client.models import (
@@ -13,6 +13,7 @@ from polymarket_client.models import (
     TokenOrderBook,
     TokenType,
 )
+from polymarket_client.api import OrderBookNormalizationError
 from run_with_dashboard import TradingBotWithDashboard
 from utils.config_loader import BotConfig
 from utils.paper_trade_store import PaperTradeStore
@@ -152,6 +153,32 @@ async def test_pair_snapshot_rejects_an_empty_book_as_unusable_evidence():
 
 
 @pytest.mark.asyncio
+async def test_pair_snapshot_preserves_reason_coded_ingestion_failure():
+    class PolymarketClient:
+        async def get_orderbook(self, market_id):
+            raise OrderBookNormalizationError(
+                "polymarket_orderbook_normalization_failed",
+                evidence={"token_id": "bad-token", "detail": "crossed"},
+            )
+
+    class KalshiClient:
+        async def get_orderbook_unified(self, ticker):
+            return _book_with_depth(ticker, datetime.now(timezone.utc))
+
+    pair = MarketPair("poly-1", "KX-1", "Alice?", "Alice?", 0.98)
+    with pytest.raises(PairSnapshotError) as captured:
+        await PairSnapshotSource(
+            PolymarketClient(),
+            KalshiClient(),
+            max_age_seconds=5,
+            timeout_seconds=1,
+        ).fetch(pair)
+
+    assert captured.value.reason_code == "polymarket_orderbook_normalization_failed"
+    assert captured.value.evidence["token_id"] == "bad-token"
+
+
+@pytest.mark.asyncio
 async def test_cross_platform_scanner_evaluates_the_pair_snapshot_not_global_cache(
     tmp_path,
 ):
@@ -185,6 +212,30 @@ async def test_cross_platform_scanner_evaluates_the_pair_snapshot_not_global_cac
 
         def estimate_best_net_edge(self, *args):
             return 0.0
+
+        def get_last_direction_evaluations(self, pair_id):
+            assert pair_id == pair.pair_id
+            return (
+                CrossPlatformDirectionEvaluation(
+                    pair_id=pair_id,
+                    token="YES",
+                    buy_platform="polymarket",
+                    sell_platform="kalshi",
+                    buy_price=0.51,
+                    sell_price=0.49,
+                    buy_liquidity=10.0,
+                    sell_liquidity=10.0,
+                    gross_edge=-0.02,
+                    fee_cost=0.0,
+                    net_edge=-0.02,
+                    slippage_reserve=0.02,
+                    executable_net_edge=-0.04,
+                    required_net_edge=0.02,
+                    suggested_size=10.0,
+                    outcome="skipped",
+                    reason_code="edge_below_threshold",
+                ),
+            )
 
     bot = TradingBotWithDashboard(BotConfig())
     bot._running = True

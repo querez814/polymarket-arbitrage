@@ -62,6 +62,12 @@ class PairSnapshotSource:
                 "paired_snapshot_timeout",
                 evidence={"timeout_seconds": self._timeout_seconds},
             ) from exc
+        except Exception as exc:
+            reason_code = getattr(exc, "reason_code", None)
+            evidence = getattr(exc, "evidence", None)
+            if isinstance(reason_code, str) and isinstance(evidence, dict):
+                raise PairSnapshotError(reason_code, evidence=evidence) from exc
+            raise
         observed_at = self._clock()
         self._require_fresh("polymarket", polymarket_book, observed_at)
         self._require_fresh("kalshi", kalshi_book, observed_at)
@@ -90,8 +96,7 @@ class PairSnapshotSource:
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             raise PairSnapshotError(f"naive_{venue}_orderbook_timestamp")
         age_seconds = (
-            observed_at.astimezone(timezone.utc)
-            - timestamp.astimezone(timezone.utc)
+            observed_at.astimezone(timezone.utc) - timestamp.astimezone(timezone.utc)
         ).total_seconds()
         if age_seconds < 0:
             raise PairSnapshotError(

@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MarketPair:
     """A matched pair of markets on Polymarket and Kalshi."""
+
     polymarket_id: str
     kalshi_ticker: str
     polymarket_question: str
@@ -48,10 +49,10 @@ class MarketPair:
     verification_confidence: float = 0.0
     verification_reasons: tuple[str, ...] = ()
     auto_approved: bool = False
-    
+
     # Timestamps
     matched_at: datetime = field(default_factory=datetime.utcnow)
-    
+
     @property
     def pair_id(self) -> str:
         """Unique identifier for this pair."""
@@ -66,34 +67,35 @@ class MarketPair:
 @dataclass
 class CrossPlatformOpportunity:
     """Arbitrage opportunity between Polymarket and Kalshi."""
+
     opportunity_id: str
     market_pair: MarketPair
-    
+
     # Direction: which platform to buy/sell on
     buy_platform: str  # "polymarket" or "kalshi"
     sell_platform: str
     token: str  # "YES" or "NO"
-    
+
     # Prices
     buy_price: float
     sell_price: float
-    
+
     # Edge calculation
     gross_edge: float  # sell_price - buy_price
-    net_edge: float    # After fees
-    edge_pct: float    # As percentage
-    
+    net_edge: float  # After fees
+    edge_pct: float  # As percentage
+
     # Sizing
     suggested_size: float = 0.0
     max_size: float = 0.0  # Limited by liquidity on both sides
-    
+
     # Liquidity available
     buy_liquidity: float = 0.0
     sell_liquidity: float = 0.0
-    
+
     # Metadata
     detected_at: datetime = field(default_factory=datetime.utcnow)
-    
+
     def __str__(self) -> str:
         return (
             f"CrossPlatformArb: Buy {self.token} on {self.buy_platform} @ ${self.buy_price:.3f}, "
@@ -102,28 +104,93 @@ class CrossPlatformOpportunity:
         )
 
 
+@dataclass(frozen=True)
+class CrossPlatformDirectionEvaluation:
+    """Auditable economics for one executable cross-venue direction."""
+
+    pair_id: str
+    token: str
+    buy_platform: str
+    sell_platform: str
+    buy_price: float
+    sell_price: float
+    buy_liquidity: float
+    sell_liquidity: float
+    gross_edge: float
+    fee_cost: float
+    net_edge: float
+    slippage_reserve: float
+    executable_net_edge: float
+    required_net_edge: float
+    suggested_size: float
+    outcome: str
+    reason_code: str
+
+
 class MarketMatcher:
     """
     Matches similar markets between Polymarket and Kalshi.
-    
+
     Uses text similarity, keyword matching, and sports-specific logic
     to find markets that represent the same underlying prediction.
     """
-    
+
     # Keywords to normalize/remove for matching
     NOISE_WORDS = {
-        "will", "the", "a", "an", "be", "to", "in", "on", "by", "at",
-        "what", "who", "which", "when", "is", "are", "was", "were",
-        "market", "prediction", "bet", "odds", "win", "winner"
+        "will",
+        "the",
+        "a",
+        "an",
+        "be",
+        "to",
+        "in",
+        "on",
+        "by",
+        "at",
+        "what",
+        "who",
+        "which",
+        "when",
+        "is",
+        "are",
+        "was",
+        "were",
+        "market",
+        "prediction",
+        "bet",
+        "odds",
+        "win",
+        "winner",
     }
 
     INDEX_NOISE_WORDS = NOISE_WORDS | {
-        "yes", "no", "over", "under", "more", "less", "than", "before",
-        "after", "during", "through", "candidate", "elected", "election",
-        "score", "scored", "points", "runs", "goals", "game", "match",
-        "event", "contract", "price", "target",
+        "yes",
+        "no",
+        "over",
+        "under",
+        "more",
+        "less",
+        "than",
+        "before",
+        "after",
+        "during",
+        "through",
+        "candidate",
+        "elected",
+        "election",
+        "score",
+        "scored",
+        "points",
+        "runs",
+        "goals",
+        "game",
+        "match",
+        "event",
+        "contract",
+        "price",
+        "target",
     }
-    
+
     # NFL team name mappings (full name -> abbreviations and variants)
     NFL_TEAMS = {
         "arizona cardinals": ["cardinals", "arizona", "ari"],
@@ -159,7 +226,7 @@ class MarketMatcher:
         "tennessee titans": ["titans", "tennessee", "ten"],
         "washington commanders": ["commanders", "washington", "was"],
     }
-    
+
     # NBA teams
     NBA_TEAMS = {
         "boston celtics": ["celtics", "boston"],
@@ -193,7 +260,7 @@ class MarketMatcher:
         "new orleans pelicans": ["pelicans", "new orleans"],
         "san antonio spurs": ["spurs", "san antonio"],
     }
-    
+
     def __init__(
         self,
         min_similarity: float = 0.5,
@@ -202,7 +269,7 @@ class MarketMatcher:
     ):
         """
         Initialize matcher.
-        
+
         Args:
             min_similarity: Minimum similarity score (0-1) to consider a match
         """
@@ -213,7 +280,7 @@ class MarketMatcher:
             retrieval_floor=max(0.0, min(0.55, min_similarity))
         )
         self.last_pipeline_metrics: PipelineMetrics | None = None
-        
+
         # Build reverse lookup for team names
         self._team_lookup = {}
         for full_name, variants in {**self.NFL_TEAMS, **self.NBA_TEAMS}.items():
@@ -226,26 +293,26 @@ class MarketMatcher:
                 if full_name.startswith(f"{normalized_variant} "):
                     continue
                 self._team_lookup[normalized_variant] = full_name
-    
+
     def normalize_text(self, text: str) -> str:
         """Normalize text for comparison."""
         text = text.lower()
-        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r"[^\w\s]", " ", text)
         words = text.split()
         words = [w for w in words if w not in self.NOISE_WORDS]
-        return ' '.join(words)
+        return " ".join(words)
 
     @staticmethod
     def kalshi_matching_text(market) -> str:
         """Use parent-event context when the Kalshi model provides it."""
         matching_text = getattr(market, "matching_text", "")
         return matching_text or market.title
-    
+
     def extract_teams(self, text: str) -> list[str]:
         """Extract team names from text."""
         text_lower = text.lower()
         found_teams = []
-        
+
         # Check for team names (longest match first)
         for team_key in sorted(self._team_lookup.keys(), key=len, reverse=True):
             pattern = rf"(?<!\w){re.escape(team_key)}(?!\w)"
@@ -255,140 +322,184 @@ class MarketMatcher:
                     found_teams.append(canonical)
                     # Remove from text to avoid double matches
                     text_lower = re.sub(pattern, " ", text_lower)
-        
+
         return found_teams
-    
+
     def extract_key_entities(self, text: str) -> set[str]:
         """Extract key entities (names, numbers, dates) from text."""
         entities = set()
-        
+
         # Numbers and percentages
-        entities.update(re.findall(r'\d+(?:\.\d+)?%?', text))
-        
+        entities.update(re.findall(r"\d+(?:\.\d+)?%?", text))
+
         # Capitalized words (likely names/entities)
-        entities.update(re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text))
-        
+        entities.update(re.findall(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b", text))
+
         # Political terms
-        political_terms = ["trump", "biden", "republican", "democrat", "gop", "dnc", "harris", "desantis", "election", "president"]
+        political_terms = [
+            "trump",
+            "biden",
+            "republican",
+            "democrat",
+            "gop",
+            "dnc",
+            "harris",
+            "desantis",
+            "election",
+            "president",
+        ]
         for term in political_terms:
             if term in text.lower():
                 entities.add(term)
-        
+
         # Crypto terms
         crypto_terms = ["bitcoin", "btc", "ethereum", "eth", "crypto", "solana", "sol"]
         for term in crypto_terms:
             if term in text.lower():
                 entities.add(term)
-        
+
         return entities
-    
+
     def extract_date(self, text: str) -> Optional[str]:
         """
         Extract date from text for event matching.
-        
+
         Returns normalized date string like "2024-12-08" or None.
         """
         text_lower = text.lower()
-        
+
         # Month names
         months = {
-            'jan': '01', 'january': '01', 'feb': '02', 'february': '02',
-            'mar': '03', 'march': '03', 'apr': '04', 'april': '04',
-            'may': '05', 'jun': '06', 'june': '06', 'jul': '07', 'july': '07',
-            'aug': '08', 'august': '08', 'sep': '09', 'september': '09',
-            'oct': '10', 'october': '10', 'nov': '11', 'november': '11',
-            'dec': '12', 'december': '12'
+            "jan": "01",
+            "january": "01",
+            "feb": "02",
+            "february": "02",
+            "mar": "03",
+            "march": "03",
+            "apr": "04",
+            "april": "04",
+            "may": "05",
+            "jun": "06",
+            "june": "06",
+            "jul": "07",
+            "july": "07",
+            "aug": "08",
+            "august": "08",
+            "sep": "09",
+            "september": "09",
+            "oct": "10",
+            "october": "10",
+            "nov": "11",
+            "november": "11",
+            "dec": "12",
+            "december": "12",
         }
-        
+
         # Pattern: "Sep 8", "September 8", "Sep 8, 2024"
         for month_name, month_num in months.items():
-            pattern = rf'{month_name}\.?\s+(\d{{1,2}})(?:,?\s+(\d{{4}}))?'
+            pattern = rf"{month_name}\.?\s+(\d{{1,2}})(?:,?\s+(\d{{4}}))?"
             match = re.search(pattern, text_lower)
             if match:
                 day = match.group(1).zfill(2)
-                year = match.group(2) or '2024'  # Default to current year
+                year = match.group(2) or "2024"  # Default to current year
                 return f"{year}-{month_num}-{day}"
-        
+
         # Pattern: "12/8/24", "12-8-2024"
-        match = re.search(r'(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})', text)
+        match = re.search(r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})", text)
         if match:
             month = match.group(1).zfill(2)
             day = match.group(2).zfill(2)
             year = match.group(3)
             if len(year) == 2:
-                year = '20' + year
+                year = "20" + year
             return f"{year}-{month}-{day}"
-        
+
         return None
-    
+
     def dates_match(self, date1: Optional[str], date2: Optional[str]) -> bool:
         """Check if two dates are the same or within 1 day."""
         if not date1 or not date2:
             return True  # If no dates, don't penalize
         return date1 == date2
-    
+
     def is_sports_match(self, text1: str, text2: str) -> tuple[bool, float]:
         """
         Check if two texts refer to the same sports matchup.
-        
+
         Returns:
             (is_match, confidence_score)
         """
         teams1 = self.extract_teams(text1)
         teams2 = self.extract_teams(text2)
-        
+
         if len(teams1) >= 2 and len(teams2) >= 2:
             # Check if same two teams
             teams1_set = set(teams1[:2])
             teams2_set = set(teams2[:2])
-            
+
             if teams1_set == teams2_set:
                 # Also check dates match
                 date1 = self.extract_date(text1)
                 date2 = self.extract_date(text2)
-                
+
                 if self.dates_match(date1, date2):
-                    return True, 0.95  # Very high confidence for exact team + date match
+                    return (
+                        True,
+                        0.95,
+                    )  # Very high confidence for exact team + date match
                 else:
-                    return False, 0.3  # Same teams but different dates - likely different games
-            
+                    return (
+                        False,
+                        0.3,
+                    )  # Same teams but different dates - likely different games
+
         return False, 0.0
-    
+
     def is_same_person_event(self, text1: str, text2: str) -> tuple[bool, float]:
         """
         Check if two texts refer to the same person-related prediction.
-        
+
         Examples:
         - "Will Trump win?" / "Trump wins 2024" -> True, 0.85
         - "Trump approval rating" / "Trump job approval" -> True, 0.8
         """
         # Extract key person names
         person_patterns = [
-            r'\b(trump|biden|harris|desantis|obama|pence)\b',
-            r'\b(musk|zuckerberg|bezos|gates)\b',
-            r'\b(powell|yellen)\b',  # Fed chairs
+            r"\b(trump|biden|harris|desantis|obama|pence)\b",
+            r"\b(musk|zuckerberg|bezos|gates)\b",
+            r"\b(powell|yellen)\b",  # Fed chairs
         ]
-        
+
         persons1 = set()
         persons2 = set()
-        
+
         for pattern in person_patterns:
             persons1.update(re.findall(pattern, text1.lower()))
             persons2.update(re.findall(pattern, text2.lower()))
-        
+
         if persons1 and persons2 and persons1 & persons2:
             # Same person mentioned - check context similarity
             # Extract action/event words
-            action_words1 = set(re.findall(r'\b(win|lose|approve|poll|elect|resign|indicted?|convicted?)\w*\b', text1.lower()))
-            action_words2 = set(re.findall(r'\b(win|lose|approve|poll|elect|resign|indicted?|convicted?)\w*\b', text2.lower()))
-            
+            action_words1 = set(
+                re.findall(
+                    r"\b(win|lose|approve|poll|elect|resign|indicted?|convicted?)\w*\b",
+                    text1.lower(),
+                )
+            )
+            action_words2 = set(
+                re.findall(
+                    r"\b(win|lose|approve|poll|elect|resign|indicted?|convicted?)\w*\b",
+                    text2.lower(),
+                )
+            )
+
             if action_words1 & action_words2:
                 return True, 0.85  # Same person + same type of prediction
             else:
                 return True, 0.6  # Same person, different prediction type
-        
+
         return False, 0.0
-    
+
     def calculate_similarity(
         self,
         polymarket_question: str,
@@ -396,26 +507,30 @@ class MarketMatcher:
     ) -> float:
         """
         Calculate similarity score between two market questions.
-        
+
         Uses multiple matching strategies:
         1. Sports team + date matching
         2. Person/politician matching
         3. Fuzzy text similarity
         4. Entity overlap
-        
+
         Returns:
             Float between 0 and 1
         """
         # First check for sports matchup (highest priority)
-        is_sports, sports_score = self.is_sports_match(polymarket_question, kalshi_title)
+        is_sports, sports_score = self.is_sports_match(
+            polymarket_question, kalshi_title
+        )
         if is_sports and sports_score > 0.7:
             return sports_score
-        
+
         # Check for same person/event predictions
-        is_person, person_score = self.is_same_person_event(polymarket_question, kalshi_title)
+        is_person, person_score = self.is_same_person_event(
+            polymarket_question, kalshi_title
+        )
         if is_person and person_score > 0.7:
             return person_score
-        
+
         # Normalize texts
         norm_poly = self.normalize_text(polymarket_question)
         norm_kalshi = self.normalize_text(kalshi_title)
@@ -424,82 +539,183 @@ class MarketMatcher:
         kalshi_tokens = set(norm_kalshi.split())
         token_union = poly_tokens | kalshi_tokens
         text_sim = (
-            len(poly_tokens & kalshi_tokens) / len(token_union)
-            if token_union
-            else 0.0
+            len(poly_tokens & kalshi_tokens) / len(token_union) if token_union else 0.0
         )
-        
+
         # Entity overlap bonus
         poly_entities = self.extract_key_entities(polymarket_question)
         kalshi_entities = self.extract_key_entities(kalshi_title)
-        
+
         if poly_entities and kalshi_entities:
-            entity_overlap = len(poly_entities & kalshi_entities) / max(len(poly_entities), len(kalshi_entities))
+            entity_overlap = len(poly_entities & kalshi_entities) / max(
+                len(poly_entities), len(kalshi_entities)
+            )
             # Weighted combination
             combined_sim = 0.5 * text_sim + 0.5 * entity_overlap
         else:
             combined_sim = text_sim
-        
+
         # Boost if both mention same sport type
-        sport_keywords = ["nfl", "nba", "mlb", "nhl", "football", "basketball", "baseball", "hockey"]
+        sport_keywords = [
+            "nfl",
+            "nba",
+            "mlb",
+            "nhl",
+            "football",
+            "basketball",
+            "baseball",
+            "hockey",
+        ]
         poly_sports = [s for s in sport_keywords if s in polymarket_question.lower()]
         kalshi_sports = [s for s in sport_keywords if s in kalshi_title.lower()]
-        
+
         if poly_sports and kalshi_sports and set(poly_sports) & set(kalshi_sports):
             combined_sim = min(1.0, combined_sim + 0.15)
-        
+
         # Boost for crypto predictions mentioning same coin
         crypto_keywords = ["bitcoin", "btc", "ethereum", "eth", "solana", "sol"]
         poly_crypto = [c for c in crypto_keywords if c in polymarket_question.lower()]
         kalshi_crypto = [c for c in crypto_keywords if c in kalshi_title.lower()]
-        
+
         if poly_crypto and kalshi_crypto and set(poly_crypto) & set(kalshi_crypto):
             combined_sim = min(1.0, combined_sim + 0.2)
-        
+
         return combined_sim
-    
+
     def _categorize_market(self, text: str) -> str:
         """Detect category from market text. Order matters - check politics before sports!"""
         text_lower = text.lower()
-        
+
         # Politics FIRST (to avoid "win the election" matching sports)
-        if any(x in text_lower for x in ['trump', 'biden', 'harris', 'president', 'election', 
-            'democrat', 'republican', 'congress', 'senate', 'governor', 'mayor', 'vote', 
-            'nominee', 'primary', 'presidential', 'prime minister', 'parliament']):
-            return 'politics'
-        
+        if any(
+            x in text_lower
+            for x in [
+                "trump",
+                "biden",
+                "harris",
+                "president",
+                "election",
+                "democrat",
+                "republican",
+                "congress",
+                "senate",
+                "governor",
+                "mayor",
+                "vote",
+                "nominee",
+                "primary",
+                "presidential",
+                "prime minister",
+                "parliament",
+            ]
+        ):
+            return "politics"
+
         # Crypto
-        if any(x in text_lower for x in ['bitcoin', 'btc', 'ethereum', 'eth', 'crypto', 'token',
-            'solana', 'sol', 'blockchain', 'defi', 'nft', 'fdv', 'market cap']):
-            return 'crypto'
-        
-        # Finance/Economics  
-        if any(x in text_lower for x in ['fed', 'interest rate', 'inflation', 'gdp', 'recession',
-            'stock', 'nasdaq', 'dow', 's&p', 'treasury', 'tariff', 'federal reserve']):
-            return 'finance'
-        
+        if any(
+            x in text_lower
+            for x in [
+                "bitcoin",
+                "btc",
+                "ethereum",
+                "eth",
+                "crypto",
+                "token",
+                "solana",
+                "sol",
+                "blockchain",
+                "defi",
+                "nft",
+                "fdv",
+                "market cap",
+            ]
+        ):
+            return "crypto"
+
+        # Finance/Economics
+        if any(
+            x in text_lower
+            for x in [
+                "fed",
+                "interest rate",
+                "inflation",
+                "gdp",
+                "recession",
+                "stock",
+                "nasdaq",
+                "dow",
+                "s&p",
+                "treasury",
+                "tariff",
+                "federal reserve",
+            ]
+        ):
+            return "finance"
+
         # Sports (check AFTER politics)
-        sports_keywords = ['nfl', 'nba', 'mlb', 'nhl', 'premier league', 'champions league', 
-            'super bowl', 'playoff', 'la liga', 'soccer', ' fc', 'basketball team', 
-            'football team', 'hockey', 'world cup', 'stanley cup']
+        sports_keywords = [
+            "nfl",
+            "nba",
+            "mlb",
+            "nhl",
+            "premier league",
+            "champions league",
+            "super bowl",
+            "playoff",
+            "la liga",
+            "soccer",
+            " fc",
+            "basketball team",
+            "football team",
+            "hockey",
+            "world cup",
+            "stanley cup",
+        ]
         if any(x in text_lower for x in sports_keywords):
-            return 'sports'
-        
+            return "sports"
+
         # Check for whole-token team names and abbreviations.
         if self.extract_teams(text):
-            return 'sports'
-        
+            return "sports"
+
         # Entertainment
-        if any(x in text_lower for x in ['oscar', 'grammy', 'emmy', 'movie', 'film', 'album',
-            'artist', 'actor', 'actress', 'netflix', 'spotify', 'best picture']):
-            return 'entertainment'
-        
+        if any(
+            x in text_lower
+            for x in [
+                "oscar",
+                "grammy",
+                "emmy",
+                "movie",
+                "film",
+                "album",
+                "artist",
+                "actor",
+                "actress",
+                "netflix",
+                "spotify",
+                "best picture",
+            ]
+        ):
+            return "entertainment"
+
         # Tech
-        if any(x in text_lower for x in ['ai ', 'openai', 'gpt', 'google', 'apple', 'microsoft',
-            'tesla', 'spacex', 'nvidia']):
-            return 'tech'
-        
-        return 'other'
+        if any(
+            x in text_lower
+            for x in [
+                "ai ",
+                "openai",
+                "gpt",
+                "google",
+                "apple",
+                "microsoft",
+                "tesla",
+                "spacex",
+                "nvidia",
+            ]
+        ):
+            return "tech"
+
+        return "other"
 
     def market_category(self, market, text: str) -> str:
         """Prefer venue category metadata, then classify proposition text."""
@@ -515,7 +731,7 @@ class MarketMatcher:
             for token in re.findall(r"[a-z0-9]+", text.casefold())
             if len(token) >= 3 and token not in self.INDEX_NOISE_WORDS
         }
-    
+
     async def find_matches(
         self,
         polymarket_markets: list[Market],
@@ -524,12 +740,12 @@ class MarketMatcher:
     ) -> list[MarketPair]:
         """
         Find matching markets between platforms using category-based matching.
-        
+
         Args:
             polymarket_markets: List of Polymarket markets
             kalshi_markets: List of Kalshi markets
             on_progress: Optional callback(checked, total, matches_found) for live updates
-            
+
         Returns:
             List of matched market pairs
         """
@@ -596,7 +812,7 @@ class MarketMatcher:
             verification_reasons=verification.reasons,
             auto_approved=verification.auto_approved,
         )
-    
+
     def get_cached_pairs(self) -> list[MarketPair]:
         """Get all cached market pairs."""
         return list(self._matched_pairs.values())
@@ -606,29 +822,31 @@ class MarketMatcher:
         self._matched_pairs.clear()
         self._review_candidates.clear()
 
-    def get_review_candidates(self, limit: int = 100) -> list[MarketPair]:
+    def get_review_candidates(self, limit: int | None = 100) -> list[MarketPair]:
         """Return strongest subthreshold candidates for manual rules review."""
-        return sorted(
+        candidates = sorted(
             self._review_candidates.values(),
             key=lambda pair: pair.similarity_score,
             reverse=True,
-        )[:limit]
+        )
+        return candidates if limit is None else candidates[:limit]
 
 
 class CrossPlatformArbEngine:
     """
     Detects arbitrage opportunities between Polymarket and Kalshi.
-    
+
     Monitors matched market pairs and alerts when prices diverge enough
     to create profitable cross-platform arbitrage.
     """
-    
+
     def __init__(
         self,
         min_edge: float = 0.02,  # 2% minimum edge
         polymarket_taker_fee: float = 0.015,  # 1.5%
         kalshi_taker_fee: float = 0.01,  # ~1% estimate
         gas_cost: float = 0.02,  # Gas cost per order
+        slippage_reserve_per_contract: float = 0.0,
         max_order_size: float = 100.0,
         edge_size_multiplier: float = 4.0,
         max_liquidity_fraction: float = 1.0,
@@ -639,7 +857,7 @@ class CrossPlatformArbEngine:
     ):
         """
         Initialize cross-platform arb engine.
-        
+
         Args:
             min_edge: Minimum edge required (after fees) to signal
             polymarket_taker_fee: Polymarket taker fee rate
@@ -652,6 +870,12 @@ class CrossPlatformArbEngine:
         self.polymarket_taker_fee = polymarket_taker_fee
         self.kalshi_taker_fee = kalshi_taker_fee
         self.gas_cost = gas_cost
+        if (
+            not isinstance(slippage_reserve_per_contract, (int, float))
+            or not 0 <= slippage_reserve_per_contract <= 1
+        ):
+            raise ValueError("slippage reserve must be in [0, 1]")
+        self.slippage_reserve_per_contract = float(slippage_reserve_per_contract)
         self.max_order_size = max_order_size
         self.edge_size_multiplier = edge_size_multiplier
         self.max_liquidity_fraction = max_liquidity_fraction
@@ -665,11 +889,14 @@ class CrossPlatformArbEngine:
             raise ValueError("economics_max_age must be positive")
         self.require_authoritative_economics = require_authoritative_economics
         self.economics_max_age = economics_max_age
-        
+
         self.matcher = MarketMatcher()
         self._opportunities: list[CrossPlatformOpportunity] = []
         self._opportunity_count = 0
-    
+        self._last_direction_evaluations: dict[
+            str, tuple[CrossPlatformDirectionEvaluation, ...]
+        ] = {}
+
     def check_arbitrage(
         self,
         market_pair: MarketPair,
@@ -680,19 +907,21 @@ class CrossPlatformArbEngine:
     ) -> Optional[CrossPlatformOpportunity]:
         """
         Check for arbitrage opportunity between a matched market pair.
-        
+
         Args:
             market_pair: The matched market pair
             polymarket_ob: Polymarket order book
             kalshi_ob: Kalshi order book (in unified format)
-            
+
         Returns:
             CrossPlatformOpportunity if found, None otherwise
         """
         opportunities = self.check_arbitrages(
             market_pair, polymarket_ob, kalshi_ob, economics=economics
         )
-        return max(opportunities, key=lambda opportunity: opportunity.net_edge, default=None)
+        return max(
+            opportunities, key=lambda opportunity: opportunity.net_edge, default=None
+        )
 
     def check_arbitrages(
         self,
@@ -703,6 +932,7 @@ class CrossPlatformArbEngine:
         economics: Optional["PairEconomics"] = None,
     ) -> list[CrossPlatformOpportunity]:
         """Return every qualifying cross-platform opportunity for a matched market pair."""
+        self._last_direction_evaluations[market_pair.pair_id] = ()
         if not self._observations_are_fresh(polymarket_ob, kalshi_ob):
             return []
         if economics is not None:
@@ -716,94 +946,78 @@ class CrossPlatformArbEngine:
         elif self.require_authoritative_economics:
             return []
 
-        # Get best prices from both platforms
-        poly_yes_ask = polymarket_ob.best_ask_yes
-        poly_yes_bid = polymarket_ob.best_bid_yes
-        poly_no_ask = polymarket_ob.best_ask_no
-        poly_no_bid = polymarket_ob.best_bid_no
-        
-        kalshi_yes_ask = kalshi_ob.best_ask_yes
-        kalshi_yes_bid = kalshi_ob.best_bid_yes
-        kalshi_no_ask = kalshi_ob.best_ask_no
-        kalshi_no_bid = kalshi_ob.best_bid_no
-        
-        # Check for valid prices
-        if not all([poly_yes_ask, poly_yes_bid, kalshi_yes_ask, kalshi_yes_bid]):
-            return []
-        
+        directions = (
+            (
+                "YES",
+                "polymarket",
+                "kalshi",
+                polymarket_ob.best_ask_yes,
+                kalshi_ob.best_bid_yes,
+                polymarket_ob.yes.asks.best_size,
+                kalshi_ob.yes.bids.best_size,
+            ),
+            (
+                "YES",
+                "kalshi",
+                "polymarket",
+                kalshi_ob.best_ask_yes,
+                polymarket_ob.best_bid_yes,
+                kalshi_ob.yes.asks.best_size,
+                polymarket_ob.yes.bids.best_size,
+            ),
+            (
+                "NO",
+                "polymarket",
+                "kalshi",
+                polymarket_ob.best_ask_no,
+                kalshi_ob.best_bid_no,
+                polymarket_ob.no.asks.best_size,
+                kalshi_ob.no.bids.best_size,
+            ),
+            (
+                "NO",
+                "kalshi",
+                "polymarket",
+                kalshi_ob.best_ask_no,
+                polymarket_ob.best_bid_no,
+                kalshi_ob.no.asks.best_size,
+                polymarket_ob.no.bids.best_size,
+            ),
+        )
+        evaluations: list[CrossPlatformDirectionEvaluation] = []
         opportunities: list[CrossPlatformOpportunity] = []
-        
-        # Check all possible arbitrage directions:
-        
-        # 1. Buy YES on Polymarket, sell YES on Kalshi
-        if poly_yes_ask and kalshi_yes_bid:
-            opportunity = self._evaluate_candidate(
+        for (
+            token,
+            buy_platform,
+            sell_platform,
+            buy_price,
+            sell_price,
+            buy_liquidity,
+            sell_liquidity,
+        ) in directions:
+            if buy_price is None or sell_price is None:
+                continue
+            evaluation, opportunity = self._evaluate_candidate(
                 market_pair=market_pair,
-                buy_platform="polymarket",
-                sell_platform="kalshi",
-                token="YES",
-                buy_price=poly_yes_ask,
-                sell_price=kalshi_yes_bid,
-                buy_liquidity=polymarket_ob.yes.asks.best_size or 0,
-                sell_liquidity=kalshi_ob.yes.bids.best_size or 0,
+                buy_platform=buy_platform,
+                sell_platform=sell_platform,
+                token=token,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                buy_liquidity=buy_liquidity or 0,
+                sell_liquidity=sell_liquidity or 0,
                 economics=economics,
             )
+            evaluations.append(evaluation)
             if opportunity is not None:
                 opportunities.append(opportunity)
-        
-        # 2. Buy YES on Kalshi, sell YES on Polymarket
-        if kalshi_yes_ask and poly_yes_bid:
-            opportunity = self._evaluate_candidate(
-                market_pair=market_pair,
-                buy_platform="kalshi",
-                sell_platform="polymarket",
-                token="YES",
-                buy_price=kalshi_yes_ask,
-                sell_price=poly_yes_bid,
-                buy_liquidity=kalshi_ob.yes.asks.best_size or 0,
-                sell_liquidity=polymarket_ob.yes.bids.best_size or 0,
-                economics=economics,
-            )
-            if opportunity is not None:
-                opportunities.append(opportunity)
-        
-        # 3. Buy NO on Polymarket, sell NO on Kalshi
-        if poly_no_ask and kalshi_no_bid:
-            opportunity = self._evaluate_candidate(
-                market_pair=market_pair,
-                buy_platform="polymarket",
-                sell_platform="kalshi",
-                token="NO",
-                buy_price=poly_no_ask,
-                sell_price=kalshi_no_bid,
-                buy_liquidity=polymarket_ob.no.asks.best_size or 0,
-                sell_liquidity=kalshi_ob.no.bids.best_size or 0,
-                economics=economics,
-            )
-            if opportunity is not None:
-                opportunities.append(opportunity)
-        
-        # 4. Buy NO on Kalshi, sell NO on Polymarket
-        if kalshi_no_ask and poly_no_bid:
-            opportunity = self._evaluate_candidate(
-                market_pair=market_pair,
-                buy_platform="kalshi",
-                sell_platform="polymarket",
-                token="NO",
-                buy_price=kalshi_no_ask,
-                sell_price=poly_no_bid,
-                buy_liquidity=kalshi_ob.no.asks.best_size or 0,
-                sell_liquidity=polymarket_ob.no.bids.best_size or 0,
-                economics=economics,
-            )
-            if opportunity is not None:
-                opportunities.append(opportunity)
-        
+        self._last_direction_evaluations[market_pair.pair_id] = tuple(evaluations)
+
         if opportunities:
             self._opportunities.extend(opportunities)
             for opportunity in opportunities:
                 logger.info(f"CROSS-PLATFORM ARB: {opportunity}")
-        
+
         return opportunities
 
     def _evaluate_candidate(
@@ -818,7 +1032,7 @@ class CrossPlatformArbEngine:
         buy_liquidity: float,
         sell_liquidity: float,
         economics: Optional["PairEconomics"],
-    ) -> Optional[CrossPlatformOpportunity]:
+    ) -> tuple[CrossPlatformDirectionEvaluation, Optional[CrossPlatformOpportunity]]:
         gross = sell_price - buy_price
         max_size = min(buy_liquidity, sell_liquidity)
         provisional_size = min(
@@ -826,7 +1040,28 @@ class CrossPlatformArbEngine:
             self.max_order_size,
         )
         if provisional_size <= 0 or provisional_size < self.min_executable_size:
-            return None
+            return (
+                CrossPlatformDirectionEvaluation(
+                    pair_id=market_pair.pair_id,
+                    token=token,
+                    buy_platform=buy_platform,
+                    sell_platform=sell_platform,
+                    buy_price=buy_price,
+                    sell_price=sell_price,
+                    buy_liquidity=buy_liquidity,
+                    sell_liquidity=sell_liquidity,
+                    gross_edge=gross,
+                    fee_cost=0.0,
+                    net_edge=gross,
+                    slippage_reserve=self.slippage_reserve_per_contract,
+                    executable_net_edge=(gross - self.slippage_reserve_per_contract),
+                    required_net_edge=self.min_edge,
+                    suggested_size=max(0.0, provisional_size),
+                    outcome="skipped",
+                    reason_code="insufficient_executable_liquidity",
+                ),
+                None,
+            )
         if economics is None:
             fees = (
                 (buy_price if buy_platform == "polymarket" else sell_price)
@@ -844,8 +1079,30 @@ class CrossPlatformArbEngine:
                 sell_price=sell_price,
                 size=provisional_size,
             )
-        if net < self.min_edge:
-            return None
+        executable_net = net - self.slippage_reserve_per_contract
+        if executable_net < self.min_edge:
+            return (
+                CrossPlatformDirectionEvaluation(
+                    pair_id=market_pair.pair_id,
+                    token=token,
+                    buy_platform=buy_platform,
+                    sell_platform=sell_platform,
+                    buy_price=buy_price,
+                    sell_price=sell_price,
+                    buy_liquidity=buy_liquidity,
+                    sell_liquidity=sell_liquidity,
+                    gross_edge=gross,
+                    fee_cost=gross - net,
+                    net_edge=net,
+                    slippage_reserve=self.slippage_reserve_per_contract,
+                    executable_net_edge=executable_net,
+                    required_net_edge=self.min_edge,
+                    suggested_size=provisional_size,
+                    outcome="skipped",
+                    reason_code="edge_below_threshold",
+                ),
+                None,
+            )
         opportunity = self._create_opportunity(
             market_pair=market_pair,
             buy_platform=buy_platform,
@@ -866,11 +1123,60 @@ class CrossPlatformArbEngine:
                 sell_price=sell_price,
                 size=opportunity.suggested_size,
             )
-            if net < self.min_edge:
-                return None
+            executable_net = net - self.slippage_reserve_per_contract
+            if executable_net < self.min_edge:
+                return (
+                    CrossPlatformDirectionEvaluation(
+                        pair_id=market_pair.pair_id,
+                        token=token,
+                        buy_platform=buy_platform,
+                        sell_platform=sell_platform,
+                        buy_price=buy_price,
+                        sell_price=sell_price,
+                        buy_liquidity=buy_liquidity,
+                        sell_liquidity=sell_liquidity,
+                        gross_edge=gross,
+                        fee_cost=gross - net,
+                        net_edge=net,
+                        slippage_reserve=self.slippage_reserve_per_contract,
+                        executable_net_edge=executable_net,
+                        required_net_edge=self.min_edge,
+                        suggested_size=opportunity.suggested_size,
+                        outcome="skipped",
+                        reason_code="edge_below_threshold",
+                    ),
+                    None,
+                )
             opportunity.net_edge = net
             opportunity.edge_pct = net / buy_price if buy_price > 0 else 0
-        return opportunity
+        return (
+            CrossPlatformDirectionEvaluation(
+                pair_id=market_pair.pair_id,
+                token=token,
+                buy_platform=buy_platform,
+                sell_platform=sell_platform,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                buy_liquidity=buy_liquidity,
+                sell_liquidity=sell_liquidity,
+                gross_edge=gross,
+                fee_cost=gross - net,
+                net_edge=net,
+                slippage_reserve=self.slippage_reserve_per_contract,
+                executable_net_edge=executable_net,
+                required_net_edge=self.min_edge,
+                suggested_size=opportunity.suggested_size,
+                outcome="opportunity",
+                reason_code="opportunity_detected",
+            ),
+            opportunity,
+        )
+
+    def get_last_direction_evaluations(
+        self, pair_id: str
+    ) -> tuple[CrossPlatformDirectionEvaluation, ...]:
+        """Return the latest auditable direction results for one pair."""
+        return self._last_direction_evaluations.get(pair_id, ())
 
     def _observations_are_fresh(
         self,
@@ -901,7 +1207,7 @@ class CrossPlatformArbEngine:
                 )
                 return False
         return True
-    
+
     def _create_opportunity(
         self,
         market_pair: MarketPair,
@@ -917,7 +1223,7 @@ class CrossPlatformArbEngine:
     ) -> CrossPlatformOpportunity:
         """Create a cross-platform opportunity object."""
         self._opportunity_count += 1
-        
+
         max_size = min(buy_liquidity, sell_liquidity)
         liquidity_cap = max_size * self.max_liquidity_fraction
         edge_ratio = max(0.0, net_edge / max(self.min_edge, 0.0001))
@@ -926,7 +1232,7 @@ class CrossPlatformArbEngine:
             self.max_order_size,
             max_size * min(1.0, edge_ratio / max(self.edge_size_multiplier, 1.0)),
         )
-        
+
         return CrossPlatformOpportunity(
             opportunity_id=f"xplat_{self._opportunity_count}",
             market_pair=market_pair,
@@ -970,20 +1276,24 @@ class CrossPlatformArbEngine:
         estimates = []
         for gross, buy_price, direction in candidates:
             if direction == "poly_buy":
-                fees = buy_price * self.polymarket_taker_fee + (
-                    buy_price + gross
-                ) * self.kalshi_taker_fee
+                fees = (
+                    buy_price * self.polymarket_taker_fee
+                    + (buy_price + gross) * self.kalshi_taker_fee
+                )
             else:
-                fees = buy_price * self.kalshi_taker_fee + (
-                    buy_price + gross
-                ) * self.polymarket_taker_fee
+                fees = (
+                    buy_price * self.kalshi_taker_fee
+                    + (buy_price + gross) * self.polymarket_taker_fee
+                )
             estimates.append(gross - fees - self.gas_cost * 2)
         return max(estimates, default=0.0)
-    
-    def get_recent_opportunities(self, limit: int = 50) -> list[CrossPlatformOpportunity]:
+
+    def get_recent_opportunities(
+        self, limit: int = 50
+    ) -> list[CrossPlatformOpportunity]:
         """Get most recent cross-platform opportunities."""
         return self._opportunities[-limit:]
-    
+
     def get_stats(self) -> dict:
         """Get cross-platform arbitrage statistics."""
         return {
@@ -991,6 +1301,7 @@ class CrossPlatformArbEngine:
             "matched_pairs": len(self.matcher.get_cached_pairs()),
             "avg_edge": (
                 sum(o.net_edge for o in self._opportunities) / len(self._opportunities)
-                if self._opportunities else 0
+                if self._opportunities
+                else 0
             ),
         }

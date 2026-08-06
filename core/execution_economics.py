@@ -72,7 +72,9 @@ class PairEconomics:
             or self.polymarket_market_id != pair.polymarket_execution_id
             or self.kalshi_ticker != pair.kalshi_ticker
         ):
-            raise EconomicsUnavailableError("economics snapshot does not match market pair")
+            raise EconomicsUnavailableError(
+                "economics snapshot does not match market pair"
+            )
 
     def require_fresh(
         self,
@@ -85,7 +87,9 @@ class PairEconomics:
         checked_at = now or datetime.now(timezone.utc)
         if checked_at.tzinfo is None or checked_at.utcoffset() is None:
             raise ValueError("now must be timezone-aware")
-        age = checked_at.astimezone(timezone.utc) - self.observed_at.astimezone(timezone.utc)
+        age = checked_at.astimezone(timezone.utc) - self.observed_at.astimezone(
+            timezone.utc
+        )
         if age < timedelta(0) or age > max_age:
             raise EconomicsUnavailableError("authoritative economics snapshot is stale")
 
@@ -106,9 +110,13 @@ class PairEconomics:
             ("size", size),
         ):
             if not isinstance(value, Decimal) or not value.is_finite():
-                raise EconomicsUnavailableError(f"{name} is not authoritative decimal data")
+                raise EconomicsUnavailableError(
+                    f"{name} is not authoritative decimal data"
+                )
         if not Decimal("0") < polymarket_price < Decimal("1"):
-            raise EconomicsUnavailableError("Polymarket price is outside contract bounds")
+            raise EconomicsUnavailableError(
+                "Polymarket price is outside contract bounds"
+            )
         if not Decimal("0") < kalshi_price < Decimal("1"):
             raise EconomicsUnavailableError("Kalshi price is outside contract bounds")
         if size <= 0:
@@ -160,7 +168,9 @@ class PairEconomics:
             sell = Decimal(str(sell_price))
             count = Decimal(str(size))
         except InvalidOperation as exc:
-            raise EconomicsUnavailableError("opportunity contains invalid decimal data") from exc
+            raise EconomicsUnavailableError(
+                "opportunity contains invalid decimal data"
+            ) from exc
         poly_price = buy if buy_platform == "polymarket" else sell
         kalshi_price = buy if buy_platform == "kalshi" else sell
         fees = self.total_taker_cost(
@@ -187,40 +197,65 @@ class AuthoritativeEconomicsProvider:
         self,
         polymarket: PolymarketEconomicsClient,
         kalshi: KalshiEconomicsClient,
+        *,
+        cache_ttl: timedelta = timedelta(seconds=20),
     ) -> None:
+        if cache_ttl <= timedelta(0):
+            raise ValueError("economics cache_ttl must be positive")
         self._polymarket = polymarket
         self._kalshi = kalshi
+        self._cache_ttl = cache_ttl
+        self._cache: dict[tuple[str, str, str], PairEconomics] = {}
+        self._cache_lock = asyncio.Lock()
 
     async def quote_pair(self, pair: MarketPair) -> PairEconomics:
-        try:
-            market_info, kalshi_schedule = await asyncio.gather(
-                self._polymarket.get_clob_market_info(pair.polymarket_execution_id),
-                self._kalshi.get_fee_schedule(pair.kalshi_ticker),
+        key = (pair.pair_id, pair.polymarket_execution_id, pair.kalshi_ticker)
+        now = datetime.now(timezone.utc)
+        cached = self._cache.get(key)
+        if (
+            cached is not None
+            and timedelta(0) <= now - cached.observed_at <= self._cache_ttl
+        ):
+            return cached
+        async with self._cache_lock:
+            now = datetime.now(timezone.utc)
+            cached = self._cache.get(key)
+            if (
+                cached is not None
+                and timedelta(0) <= now - cached.observed_at <= self._cache_ttl
+            ):
+                return cached
+            try:
+                market_info, kalshi_schedule = await asyncio.gather(
+                    self._polymarket.get_clob_market_info(pair.polymarket_execution_id),
+                    self._kalshi.get_fee_schedule(pair.kalshi_ticker),
+                )
+                fee_rate, fee_exponent, taker_only = self._parse_polymarket_fee(
+                    market_info
+                )
+                fee_type = kalshi_schedule.fee_type
+                multiplier = Decimal(str(kalshi_schedule.fee_multiplier))
+            except Exception as exc:
+                raise EconomicsUnavailableError(
+                    "authoritative venue fee metadata is unavailable or invalid"
+                ) from exc
+            if not math.isfinite(float(multiplier)):
+                raise EconomicsUnavailableError("Kalshi fee multiplier is invalid")
+            snapshot = PairEconomics(
+                pair_id=pair.pair_id,
+                polymarket_market_id=pair.polymarket_execution_id,
+                kalshi_ticker=pair.kalshi_ticker,
+                polymarket_fee_rate=fee_rate,
+                polymarket_fee_exponent=fee_exponent,
+                polymarket_taker_only=taker_only,
+                polymarket_order_gas_cost=Decimal("0"),
+                polymarket_gas_source="offchain_clob_order",
+                kalshi_fee_type=fee_type,
+                kalshi_fee_multiplier=multiplier,
+                observed_at=datetime.now(timezone.utc),
             )
-            fee_rate, fee_exponent, taker_only = self._parse_polymarket_fee(
-                market_info
-            )
-            fee_type = kalshi_schedule.fee_type
-            multiplier = Decimal(str(kalshi_schedule.fee_multiplier))
-        except (AttributeError, InvalidOperation, TypeError, ValueError) as exc:
-            raise EconomicsUnavailableError(
-                "authoritative venue fee metadata is invalid"
-            ) from exc
-        if not math.isfinite(float(multiplier)):
-            raise EconomicsUnavailableError("Kalshi fee multiplier is invalid")
-        return PairEconomics(
-            pair_id=pair.pair_id,
-            polymarket_market_id=pair.polymarket_execution_id,
-            kalshi_ticker=pair.kalshi_ticker,
-            polymarket_fee_rate=fee_rate,
-            polymarket_fee_exponent=fee_exponent,
-            polymarket_taker_only=taker_only,
-            polymarket_order_gas_cost=Decimal("0"),
-            polymarket_gas_source="offchain_clob_order",
-            kalshi_fee_type=fee_type,
-            kalshi_fee_multiplier=multiplier,
-            observed_at=datetime.now(timezone.utc),
-        )
+            self._cache[key] = snapshot
+            return snapshot
 
     @staticmethod
     def _parse_polymarket_fee(
@@ -247,13 +282,21 @@ class AuthoritativeEconomicsProvider:
             rate = Decimal(str(rate_value))
             exponent = Decimal(str(exponent_value))
         except (InvalidOperation, TypeError, ValueError) as exc:
-            raise EconomicsUnavailableError("Polymarket fee details are invalid") from exc
+            raise EconomicsUnavailableError(
+                "Polymarket fee details are invalid"
+            ) from exc
         if isinstance(base_fee, bool) or not isinstance(base_fee, (int, float, str)):
             raise EconomicsUnavailableError("Polymarket base fee is invalid")
         try:
-            basis_rate = Decimal(str(base_fee)) / Decimal("10000")
+            base_fee_value = Decimal(str(base_fee))
         except (InvalidOperation, TypeError, ValueError) as exc:
             raise EconomicsUnavailableError("Polymarket base fee is invalid") from exc
-        if basis_rate != rate:
-            raise EconomicsUnavailableError("Polymarket fee metadata is inconsistent")
+        if (
+            not base_fee_value.is_finite()
+            or base_fee_value < 0
+            or base_fee_value > Decimal("10000")
+        ):
+            raise EconomicsUnavailableError("Polymarket base fee is invalid")
+        # `fd` is the authoritative dynamic platform-fee curve. `tbf` is a
+        # separate CLOB base-fee field and is not numerically equal to `fd.r`.
         return rate, exponent, taker_only

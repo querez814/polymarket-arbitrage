@@ -143,6 +143,7 @@ def test_embedded_dashboard_shows_current_run_timer_pnl_and_transactions():
     assert 'id="recentRuns"' in html
     assert "state.run_session || {}" in html
     assert "state.run_sessions || []" in html
+    assert "PnL source:" in html
 
 
 def test_embedded_dashboard_distinguishes_no_matches_from_active_price_scanning():

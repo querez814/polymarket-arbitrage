@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Callable
 
 from core.cross_platform_arb import CrossPlatformArbEngine, MarketPair
+from core.execution_economics import AuthoritativeEconomicsProvider
 from core.pair_snapshot import PairSnapshotSource
 
 
@@ -28,7 +30,11 @@ def canonical_live_pair(
     approved_pair_hash: str | None,
 ) -> tuple[MarketPair, dict[str, Any], str]:
     """Bind operator approval to current authoritative venue metadata."""
-    if not polymarket_market.active or polymarket_market.closed or polymarket_market.resolved:
+    if (
+        not polymarket_market.active
+        or polymarket_market.closed
+        or polymarket_market.resolved
+    ):
         raise ValueError("Polymarket market is not active and unresolved")
     if not polymarket_market.yes_token_id or not polymarket_market.no_token_id:
         raise ValueError("Polymarket market is missing executable token identities")
@@ -77,29 +83,26 @@ async def evaluate_live_pair_readonly(
     *,
     max_age_seconds: float = 5.0,
     timeout_seconds: float = 5.0,
-    polymarket_taker_fee: float = 0.015,
-    kalshi_taker_fee: float = 0.01,
-    gas_cost: float = 0.0,
     min_edge: float = 0.02,
+    slippage_reserve_per_contract: float = 0.02,
+    economics_provider: Any | None = None,
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Evaluate fresh books without constructing or submitting any order."""
-    economics = (
-        polymarket_taker_fee,
-        kalshi_taker_fee,
-        gas_cost,
-        min_edge,
-    )
-    if not all(math.isfinite(value) for value in economics):
+    assumptions = (min_edge, slippage_reserve_per_contract)
+    if not all(math.isfinite(value) for value in assumptions):
         raise ValueError("economic assumptions must be finite")
-    if not 0 <= polymarket_taker_fee <= 1:
-        raise ValueError("polymarket taker fee must be in [0, 1]")
-    if not 0 <= kalshi_taker_fee <= 1:
-        raise ValueError("kalshi taker fee must be in [0, 1]")
-    if gas_cost < 0:
-        raise ValueError("gas cost must be non-negative")
     if not 0 <= min_edge <= 1:
         raise ValueError("minimum edge must be in [0, 1]")
+    if not 0 <= slippage_reserve_per_contract <= 1:
+        raise ValueError("slippage reserve must be in [0, 1]")
+    provider = economics_provider or AuthoritativeEconomicsProvider(
+        polymarket_client,
+        kalshi_client,
+    )
+    # Fetch fee metadata before the paired books. This avoids overlapping
+    # multiple Cloudflare-fronted CLOB reads on one short-lived canary client.
+    pair_economics = await provider.quote_pair(pair)
     snapshot = await PairSnapshotSource(
         polymarket_client,
         kalshi_client,
@@ -109,16 +112,20 @@ async def evaluate_live_pair_readonly(
     ).fetch(pair)
     detector = CrossPlatformArbEngine(
         min_edge=min_edge,
-        polymarket_taker_fee=polymarket_taker_fee,
-        kalshi_taker_fee=kalshi_taker_fee,
-        gas_cost=gas_cost,
+        slippage_reserve_per_contract=slippage_reserve_per_contract,
         max_observation_age=None,
+        require_authoritative_economics=True,
     )
     opportunity = detector.check_arbitrage(
         pair,
         snapshot.polymarket_book,
         snapshot.kalshi_book,
+        economics=pair_economics,
     )
+    direction_evaluations = [
+        asdict(evaluation)
+        for evaluation in detector.get_last_direction_evaluations(pair.pair_id)
+    ]
     result: dict[str, Any] = {
         "status": "after_cost_edge" if opportunity else "no_after_cost_edge",
         "proof_mode": "live_public_books_read_only",
@@ -141,12 +148,19 @@ async def evaluate_live_pair_readonly(
                 "no_ask": snapshot.kalshi_book.best_ask_no,
             },
         },
-        "fee_assumptions": {
-            "polymarket_taker_fee": polymarket_taker_fee,
-            "kalshi_taker_fee": kalshi_taker_fee,
-            "gas_cost": gas_cost,
+        "economics": {
+            "source": "authoritative_venue_metadata",
+            "observed_at": pair_economics.observed_at.isoformat(),
+            "polymarket_fee_rate": str(pair_economics.polymarket_fee_rate),
+            "polymarket_fee_exponent": str(pair_economics.polymarket_fee_exponent),
+            "polymarket_gas_cost": str(pair_economics.polymarket_order_gas_cost),
+            "polymarket_gas_source": pair_economics.polymarket_gas_source,
+            "kalshi_fee_type": pair_economics.kalshi_fee_type,
+            "kalshi_fee_multiplier": str(pair_economics.kalshi_fee_multiplier),
             "minimum_net_edge": min_edge,
+            "slippage_reserve_per_contract": slippage_reserve_per_contract,
         },
+        "direction_evaluations": direction_evaluations,
         "opportunity": None,
     }
     if opportunity:
