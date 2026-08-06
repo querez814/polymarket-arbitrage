@@ -3,7 +3,9 @@
 trading:
   risk_profile: conservative
   min_edge: 0.02
-  bundle_arb_enabled: true
+  # Detection-only bundle signals do not produce paired paper fills and would
+  # obscure the cross-venue execution/PnL evidence this profile is proving.
+  bundle_arb_enabled: false
   mm_enabled: false
   cross_platform_max_order_size: 50
   cross_platform_edge_size_multiplier: 4
