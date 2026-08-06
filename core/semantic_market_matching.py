@@ -740,14 +740,22 @@ class OpenAIResolutionVerifier:
         model: str = "gpt-5.6-sol",
         batch_size: int = 12,
         timeout_seconds: float = 90.0,
+        max_consecutive_http_failures: int = 4,
         transport: httpx.AsyncBaseTransport | None = None,
     ):
         if not api_key.strip():
             raise ValueError("OpenAI API key is required")
+        if (
+            isinstance(max_consecutive_http_failures, bool)
+            or not isinstance(max_consecutive_http_failures, int)
+            or max_consecutive_http_failures < 1
+        ):
+            raise ValueError("max_consecutive_http_failures must be a positive integer")
         self._api_key = api_key
         self.model = model
         self.batch_size = batch_size
         self.timeout_seconds = timeout_seconds
+        self.max_consecutive_http_failures = max_consecutive_http_failures
         self._transport = transport
 
     async def verify_many(
@@ -759,6 +767,8 @@ class OpenAIResolutionVerifier:
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
         }
+        consecutive_http_failures = 0
+        provider_failure_budget_exhausted = False
         async with httpx.AsyncClient(
             timeout=self.timeout_seconds,
             headers=headers,
@@ -826,35 +836,38 @@ class OpenAIResolutionVerifier:
                     "additionalProperties": False,
                 }
                 batch_results = None
-                for format_attempt in range(2):
-                    response = await client.post(
-                        "https://api.openai.com/v1/responses",
-                        json={
-                            "model": self.model,
-                            "store": False,
-                            "reasoning": {"effort": "medium"},
-                            "instructions": (
-                                "Classify prediction-market payoff relations. Return exactly one "
-                                "row for every input id. First reject clearly incompatible "
-                                "propositions. Then compare exact YES regions using title, "
-                                "resolution text, cutoff, oracle/source, dispute rules, and scope. "
-                                "Equivalent means identical payout in every state. Subset means the "
-                                "Polymarket YES region strictly implies Kalshi YES; superset is reverse. "
-                                "If metadata is missing or ambiguity remains, return independent."
-                            ),
-                            "input": json.dumps(records, separators=(",", ":")),
-                            "text": {
-                                "format": {
-                                    "type": "json_schema",
-                                    "name": "market_resolution_relations",
-                                    "strict": True,
-                                    "schema": schema,
-                                }
-                            },
-                        },
-                    )
-                    response.raise_for_status()
+                for format_attempt in range(
+                    0 if provider_failure_budget_exhausted else 2
+                ):
                     try:
+                        response = await client.post(
+                            "https://api.openai.com/v1/responses",
+                            json={
+                                "model": self.model,
+                                "store": False,
+                                "reasoning": {"effort": "medium"},
+                                "instructions": (
+                                    "Classify prediction-market payoff relations. Return exactly one "
+                                    "row for every input id. First reject clearly incompatible "
+                                    "propositions. Then compare exact YES regions using title, "
+                                    "resolution text, cutoff, oracle/source, dispute rules, and scope. "
+                                    "Equivalent means identical payout in every state. Subset means the "
+                                    "Polymarket YES region strictly implies Kalshi YES; superset is reverse. "
+                                    "If metadata is missing or ambiguity remains, return independent."
+                                ),
+                                "input": json.dumps(records, separators=(",", ":")),
+                                "text": {
+                                    "format": {
+                                        "type": "json_schema",
+                                        "name": "market_resolution_relations",
+                                        "strict": True,
+                                        "schema": schema,
+                                    }
+                                },
+                            },
+                        )
+                        response.raise_for_status()
+                        consecutive_http_failures = 0
                         payload = response.json()
                         output_text = payload.get("output_text")
                         if not isinstance(output_text, str):
@@ -904,6 +917,27 @@ class OpenAIResolutionVerifier:
                             parsed_results.append((relation, confidence, reasons))
                         batch_results = parsed_results
                         break
+                    except httpx.HTTPError as exc:
+                        consecutive_http_failures += 1
+                        logger.warning(
+                            "OpenAI verifier request failed "
+                            "(attempt=%s/2 size=%s error=%s)",
+                            format_attempt + 1,
+                            len(batch),
+                            type(exc).__name__,
+                        )
+                        if (
+                            consecutive_http_failures
+                            >= self.max_consecutive_http_failures
+                        ):
+                            provider_failure_budget_exhausted = True
+                            logger.error(
+                                "OpenAI verifier HTTP failure budget exhausted; "
+                                "remaining batches will fail closed "
+                                "(consecutive_failures=%s)",
+                                consecutive_http_failures,
+                            )
+                            break
                     except (KeyError, TypeError, ValueError) as exc:
                         logger.warning(
                             "OpenAI verifier returned an unusable batch "

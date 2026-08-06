@@ -604,3 +604,171 @@ def test_openai_verifier_fails_closed_after_repeated_cardinality_mismatch():
             ("provider response incomplete; manual review required",),
         )
     ]
+
+
+def test_openai_verifier_retries_a_timed_out_batch_without_losing_prior_results():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise httpx.ReadTimeout("semantic verification timed out", request=request)
+        output = json.dumps(
+            {
+                "pairs": [
+                    {
+                        "id": 0,
+                        "plausible": True,
+                        "relation": "equivalent",
+                        "confidence": 0.97,
+                        "reasons": ["same resolution"],
+                    }
+                ]
+            }
+        )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output}],
+                    }
+                ]
+            },
+        )
+
+    verifier = OpenAIResolutionVerifier(
+        api_key="test-key",
+        batch_size=1,
+        transport=httpx.MockTransport(handler),
+    )
+    candidates = [
+        (
+            polymarket_document(
+                _poly("Will Alice Smith win the 2026 mayoral election?")
+            ),
+            kalshi_document(_kalshi("Alice Smith elected mayor in 2026?")),
+            0.9,
+        ),
+        (
+            polymarket_document(_poly("Will Bob Jones win the 2026 mayoral election?")),
+            kalshi_document(_kalshi("Bob Jones elected mayor in 2026?")),
+            0.9,
+        ),
+    ]
+
+    result = asyncio.run(verifier.verify_many(candidates))
+
+    assert calls == 3
+    assert result == [
+        (SemanticRelation.EQUIVALENT, 0.97, ("same resolution",)),
+        (
+            SemanticRelation.INDEPENDENT,
+            0.0,
+            ("provider response incomplete; manual review required",),
+        ),
+    ]
+
+
+def test_openai_verifier_retries_a_timeout_for_the_same_batch():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("semantic verification timed out", request=request)
+        output = json.dumps(
+            {
+                "pairs": [
+                    {
+                        "id": 0,
+                        "plausible": True,
+                        "relation": "equivalent",
+                        "confidence": 0.98,
+                        "reasons": ["same resolution after retry"],
+                    }
+                ]
+            }
+        )
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": output}],
+                    }
+                ]
+            },
+        )
+
+    verifier = OpenAIResolutionVerifier(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    )
+
+    result = asyncio.run(
+        verifier.verify_many(
+            [
+                (
+                    polymarket_document(
+                        _poly("Will Alice Smith win the 2026 mayoral election?")
+                    ),
+                    kalshi_document(_kalshi("Alice Smith elected mayor in 2026?")),
+                    0.9,
+                )
+            ]
+        )
+    )
+
+    assert calls == 2
+    assert result == [
+        (
+            SemanticRelation.EQUIVALENT,
+            0.98,
+            ("same resolution after retry",),
+        )
+    ]
+
+
+def test_openai_verifier_stops_calling_provider_after_http_failure_budget():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("provider unavailable", request=request)
+
+    verifier = OpenAIResolutionVerifier(
+        api_key="test-key",
+        batch_size=1,
+        max_consecutive_http_failures=3,
+        transport=httpx.MockTransport(handler),
+    )
+    candidates = [
+        (
+            polymarket_document(_poly(f"Will candidate {index} win?")),
+            kalshi_document(_kalshi(f"Will candidate {index} win?")),
+            0.9,
+        )
+        for index in range(5)
+    ]
+
+    result = asyncio.run(verifier.verify_many(candidates))
+
+    assert calls == 3
+    assert (
+        result
+        == [
+            (
+                SemanticRelation.INDEPENDENT,
+                0.0,
+                ("provider response incomplete; manual review required",),
+            )
+        ]
+        * 5
+    )
