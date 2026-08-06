@@ -99,6 +99,48 @@ mode:
         load_config(str(config_path))
 
 
+@pytest.mark.parametrize("strategy_limit", [".nan", ".inf", "-1"])
+def test_rejects_invalid_strategy_exposure_limit(tmp_path, strategy_limit):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+risk:
+  strategy_exposure_limits:
+    cross_platform_arb: {strategy_limit}
+mode:
+  trading_mode: dry_run
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must be finite and non-negative"):
+        load_config(str(config_path))
+
+
+@pytest.mark.parametrize("observations", [".nan", "1.5", "true"])
+def test_paper_confirmation_observations_must_be_an_integer(tmp_path, observations):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+trading:
+  mm_enabled: false
+mode:
+  trading_mode: dry_run
+  data_mode: real
+  cross_platform_enabled: true
+  kalshi_enabled: true
+  paper_locked_arb_enabled: true
+  paper_confirmation_observations: {observations}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ConfigError, match="paper_confirmation_observations must be an integer"
+    ):
+        load_config(str(config_path))
+
+
 @pytest.mark.parametrize("max_open_orders", ["0", "-1", "1.5", "true"])
 def test_rejects_invalid_open_order_cap(tmp_path, max_open_orders):
     config_path = tmp_path / "config.yaml"
@@ -755,6 +797,11 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.mode.semantic_min_kalshi_volume == 1
     assert config.mode.semantic_min_kalshi_open_interest == 1
     assert config.trading.cross_platform_min_executable_size == pytest.approx(1.0)
+    assert config.trading.cross_platform_max_order_size == pytest.approx(100.0)
+    assert config.mode.paper_liquidity_fraction == pytest.approx(0.20)
+    assert config.risk.max_order_notional == pytest.approx(100.0)
+    assert config.risk.max_position_per_market == pytest.approx(250.0)
+    assert config.risk.max_global_exposure == pytest.approx(1_000.0)
     assert config.news_catalyst.enabled is True
     assert config.news_catalyst.apply_priority_boost is False
     assert config.news_catalyst.scan_interval_seconds == pytest.approx(1800)
@@ -778,4 +825,32 @@ def test_paper_locked_arb_rejects_random_fill_mode():
     config.trading.mm_enabled = False
 
     with pytest.raises(ConfigError, match="cannot use random simulated fills"):
+        validate_config(config)
+
+
+def test_paper_locked_arb_requires_positive_cross_platform_strategy_limit():
+    config = BotConfig()
+    config.mode.paper_locked_arb_enabled = True
+    config.trading.bundle_arb_enabled = False
+    config.trading.mm_enabled = False
+    config.risk.strategy_exposure_limits["cross_platform_arb"] = 0
+
+    with pytest.raises(
+        ConfigError,
+        match="requires a positive cross_platform_arb strategy exposure limit",
+    ):
+        validate_config(config)
+
+
+def test_paper_locked_arb_requires_explicit_cross_platform_strategy_limit():
+    config = BotConfig()
+    config.mode.paper_locked_arb_enabled = True
+    config.trading.bundle_arb_enabled = False
+    config.trading.mm_enabled = False
+    config.risk.strategy_exposure_limits = {}
+
+    with pytest.raises(
+        ConfigError,
+        match="requires a positive cross_platform_arb strategy exposure limit",
+    ):
         validate_config(config)

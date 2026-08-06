@@ -57,6 +57,16 @@ def test_shadow_trade_requires_confirmation_and_never_recycles_capital():
     }
 
 
+@pytest.mark.parametrize("required_observations", [float("nan"), 1.5, True])
+def test_shadow_ledger_requires_an_integer_confirmation_count(required_observations):
+    with pytest.raises(ValueError, match="required_observations"):
+        PaperLockedArbitrageLedger(
+            initial_balance=1_000.0,
+            max_plan_capital=100.0,
+            required_observations=required_observations,
+        )
+
+
 def test_shadow_ledger_cannot_commit_more_than_fixed_bankroll():
     ledger = PaperLockedArbitrageLedger(
         initial_balance=1_000.0,
@@ -72,6 +82,227 @@ def test_shadow_ledger_cannot_commit_more_than_fixed_bankroll():
 
     assert ledger.committed_capital <= 1_000.0
     assert ledger.available_capital >= 0.0
+
+
+def test_shadow_ledger_caps_cumulative_capital_for_one_pair():
+    now = datetime(2026, 8, 6, tzinfo=timezone.utc)
+
+    def clock():
+        return now
+
+    opportunity = _opportunity()
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        max_pair_capital=15.0,
+        max_total_capital=1_000.0,
+        required_observations=1,
+        slippage_buffer_per_contract=0.0,
+        liquidity_fraction=1.0,
+        min_effective_edge=0.01,
+        pair_cooldown_seconds=60,
+        clock=clock,
+    )
+
+    first = ledger.observe(opportunity)
+    now += timedelta(seconds=61)
+    second = ledger.observe(opportunity)
+    summary = ledger.summary()
+
+    assert first is not None
+    assert first.committed_capital == pytest.approx(15.0)
+    assert second is None
+    assert summary["committed_capital_by_pair"] == {
+        opportunity.market_pair.pair_id: pytest.approx(15.0)
+    }
+    assert summary["decision_counts"]["insufficient_paper_capital_or_liquidity"] == 1
+
+
+def test_shadow_ledger_caps_total_capital_across_pairs():
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        max_pair_capital=100.0,
+        max_total_capital=20.0,
+        required_observations=1,
+        slippage_buffer_per_contract=0.0,
+        liquidity_fraction=1.0,
+        min_effective_edge=0.01,
+    )
+
+    first = ledger.observe(_opportunity(pair_id="poly-1"))
+    second = ledger.observe(_opportunity(pair_id="poly-2"))
+
+    assert first is not None
+    assert first.committed_capital == pytest.approx(20.0)
+    assert second is None
+    assert ledger.committed_capital == pytest.approx(20.0)
+    assert ledger.summary()["max_total_capital"] == pytest.approx(20.0)
+    assert ledger.summary()["cash_balance"] == pytest.approx(980.0)
+    assert ledger.summary()["remaining_deployable_capital"] == pytest.approx(0.0)
+
+
+def test_larger_paper_profile_reaches_trade_cap_only_when_depth_supports_it():
+    def ledger():
+        return PaperLockedArbitrageLedger(
+            initial_balance=5_000.0,
+            max_plan_capital=100.0,
+            max_pair_capital=250.0,
+            max_total_capital=1_000.0,
+            required_observations=1,
+            slippage_buffer_per_contract=0.02,
+            liquidity_fraction=0.20,
+            min_effective_edge=0.01,
+        )
+
+    deep = _opportunity(pair_id="deep")
+    deep.buy_liquidity = deep.sell_liquidity = 1_000.0
+    deep.max_size = 1_000.0
+    deep.suggested_size = 100.0
+    thin = _opportunity(pair_id="thin")
+    thin.buy_liquidity = thin.sell_liquidity = 40.0
+    thin.max_size = 40.0
+    thin.suggested_size = 100.0
+
+    deep_trade = ledger().observe(deep)
+    thin_trade = ledger().observe(thin)
+
+    assert deep_trade is not None
+    assert deep_trade.contracts == pytest.approx(100.0)
+    assert deep_trade.committed_capital == pytest.approx(97.0)
+    assert thin_trade is not None
+    assert thin_trade.contracts == pytest.approx(8.0)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("suggested_size", float("nan")),
+        ("max_size", float("inf")),
+        ("buy_liquidity", float("nan")),
+        ("sell_liquidity", float("inf")),
+    ],
+)
+def test_shadow_ledger_rejects_invalid_sizing_evidence(field_name, value):
+    opportunity = _opportunity()
+    setattr(opportunity, field_name, value)
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        required_observations=1,
+        liquidity_fraction=1.0,
+    )
+
+    assert ledger.observe(opportunity) is None
+    assert ledger.summary()["decision_counts"] == {"invalid_opportunity_sizing": 1}
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("buy_price", float("nan")),
+        ("sell_price", float("inf")),
+        ("gross_edge", float("nan")),
+        ("net_edge", float("inf")),
+    ],
+)
+def test_shadow_ledger_rejects_invalid_economic_evidence(field_name, value):
+    opportunity = _opportunity()
+    setattr(opportunity, field_name, value)
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        required_observations=1,
+    )
+
+    assert ledger.observe(opportunity) is None
+    assert ledger.summary()["decision_counts"] == {"invalid_opportunity_economics": 1}
+
+
+def test_shadow_ledger_enforces_final_contract_cap():
+    opportunity = _opportunity()
+    opportunity.buy_liquidity = opportunity.sell_liquidity = 1_000.0
+    opportunity.max_size = opportunity.suggested_size = 1_000.0
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=5_000.0,
+        max_plan_capital=1_000.0,
+        max_contracts_per_trade=100.0,
+        required_observations=1,
+        liquidity_fraction=1.0,
+    )
+
+    trade = ledger.observe(opportunity)
+
+    assert trade is not None
+    assert trade.contracts == pytest.approx(100.0)
+
+
+def test_shadow_ledger_rejects_blacklisted_pair_even_when_verified():
+    opportunity = _opportunity()
+    opportunity.market_pair.auto_approved = True
+    opportunity.market_pair.semantic_relation = "equivalent"
+    opportunity.market_pair.verification_confidence = 0.99
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        required_observations=1,
+        approved_market_ids=frozenset(),
+        blacklisted_market_ids={"KX-1"},
+        allow_verified_auto_approval=True,
+        auto_approval_confidence=0.90,
+    )
+
+    assert ledger.observe(opportunity) is None
+    assert ledger.summary()["decision_counts"] == {"pair_blacklisted": 1}
+
+
+def test_shadow_ledger_limits_number_of_open_pairs():
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=1_000.0,
+        max_plan_capital=100.0,
+        max_open_pairs=1,
+        required_observations=1,
+    )
+
+    assert ledger.observe(_opportunity(pair_id="poly-1")) is not None
+    assert ledger.observe(_opportunity(pair_id="poly-2")) is None
+    assert ledger.summary()["decision_counts"]["max_open_pairs_reached"] == 1
+
+
+def test_shadow_ledger_consumes_quote_depth_until_visible_capacity_increases():
+    now = datetime(2026, 8, 6, tzinfo=timezone.utc)
+
+    def clock():
+        return now
+
+    opportunity = _opportunity()
+    opportunity.buy_liquidity = opportunity.sell_liquidity = 100.0
+    ledger = PaperLockedArbitrageLedger(
+        initial_balance=5_000.0,
+        max_plan_capital=1_000.0,
+        max_pair_capital=1_000.0,
+        max_total_capital=1_000.0,
+        required_observations=1,
+        liquidity_fraction=0.20,
+        pair_cooldown_seconds=60,
+        clock=clock,
+    )
+
+    first = ledger.observe(opportunity)
+    now += timedelta(seconds=61)
+    unchanged = ledger.observe(opportunity)
+    opportunity.buy_liquidity = opportunity.sell_liquidity = 150.0
+    increased = ledger.observe(opportunity)
+    now += timedelta(seconds=61)
+    unchanged_again = ledger.observe(opportunity)
+
+    assert first is not None
+    assert first.contracts == pytest.approx(20.0)
+    assert unchanged is None
+    assert increased is not None
+    assert increased.contracts == pytest.approx(10.0)
+    assert unchanged_again is None
+    assert ledger.summary()["decision_counts"]["displayed_depth_already_consumed"] == 2
 
 
 def test_shadow_ledger_rejects_pairs_until_both_market_ids_are_approved():
@@ -130,7 +361,7 @@ def test_embedding_similarity_alone_never_authorizes_paper_trade():
     assert ledger.summary()["unapproved_opportunity_count"] == 1
 
 
-def test_pair_can_trade_again_only_after_configured_cooldown():
+def test_pair_can_trade_again_after_cooldown_when_visible_capacity_increases():
     now = datetime(2026, 7, 22, tzinfo=timezone.utc)
 
     def clock():
@@ -148,6 +379,8 @@ def test_pair_can_trade_again_only_after_configured_cooldown():
     assert ledger.observe(opportunity) is not None
     assert ledger.observe(opportunity) is None
     now += timedelta(seconds=61)
+    assert ledger.observe(opportunity) is None
+    opportunity.sell_liquidity = 100.0
     assert ledger.observe(opportunity) is not None
 
 

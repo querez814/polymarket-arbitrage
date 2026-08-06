@@ -688,9 +688,14 @@ def validate_config(config: BotConfig) -> None:
         errors.append("risk.max_drawdown_pct must be between 0 and 1")
 
     for strategy, limit in config.risk.strategy_exposure_limits.items():
-        if limit < 0:
+        if (
+            not isinstance(limit, (int, float))
+            or isinstance(limit, bool)
+            or not math.isfinite(limit)
+            or limit < 0
+        ):
             errors.append(
-                f"risk.strategy_exposure_limits.{strategy} must be non-negative"
+                f"risk.strategy_exposure_limits.{strategy} must be finite and non-negative"
             )
 
     # Mode validation
@@ -727,8 +732,25 @@ def validate_config(config: BotConfig) -> None:
             errors.append("paper locked arbitrage cannot use random simulated fills")
         if config.trading.mm_enabled:
             errors.append("paper locked arbitrage requires market making disabled")
-        if config.mode.paper_confirmation_observations < 2:
+        if not isinstance(
+            config.mode.paper_confirmation_observations, int
+        ) or isinstance(config.mode.paper_confirmation_observations, bool):
+            errors.append("paper_confirmation_observations must be an integer")
+        elif config.mode.paper_confirmation_observations < 2:
             errors.append("paper_confirmation_observations must be at least 2")
+        cross_platform_limit = config.risk.strategy_exposure_limits.get(
+            "cross_platform_arb"
+        )
+        if cross_platform_limit is None or (
+            isinstance(cross_platform_limit, (int, float))
+            and not isinstance(cross_platform_limit, bool)
+            and math.isfinite(cross_platform_limit)
+            and cross_platform_limit <= 0
+        ):
+            errors.append(
+                "paper locked arbitrage requires a positive cross_platform_arb "
+                "strategy exposure limit"
+            )
         if (
             not math.isfinite(config.mode.paper_slippage_buffer_per_contract)
             or config.mode.paper_slippage_buffer_per_contract < 0

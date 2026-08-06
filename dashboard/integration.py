@@ -35,6 +35,7 @@ class DashboardIntegration:
         decision_journal=None,
         paper_trade_store=None,
         paper_performance_provider=None,
+        paper_strategy_summary_provider=None,
     ):
         self.data_feed = data_feed
         self.arb_engine = arb_engine
@@ -45,6 +46,7 @@ class DashboardIntegration:
         self.decision_journal = decision_journal
         self.paper_trade_store = paper_trade_store
         self.paper_performance_provider = paper_performance_provider
+        self.paper_strategy_summary_provider = paper_strategy_summary_provider
 
         dashboard_state.mode = mode
         dashboard_state.is_running = False
@@ -195,6 +197,8 @@ class DashboardIntegration:
             - risk_summary.get("global_exposure", 0.0),
             "markets_with_exposure": risk_summary.get("markets_with_exposure", 0),
         }
+        if self.mode == "dry_run" and self.paper_strategy_summary_provider:
+            self._apply_locked_paper_summary(self.paper_strategy_summary_provider())
 
         # Update arb stats and timing
         if self.arb_engine:
@@ -268,6 +272,67 @@ class DashboardIntegration:
             dashboard_state.paper_history = []
 
         dashboard_state.last_update = utc_now()
+
+    @staticmethod
+    def _apply_locked_paper_summary(summary: dict) -> None:
+        """Make the primary dashboard agree with the locked paper ledger."""
+        committed = float(summary.get("committed_capital", 0.0))
+        max_total = float(summary.get("max_total_capital", 0.0))
+        deployable = float(
+            summary.get(
+                "remaining_deployable_capital",
+                max(0.0, max_total - committed),
+            )
+        )
+        projected_pnl = float(summary.get("projected_locked_pnl", 0.0))
+        realized_pnl = float(summary.get("realized_settlement_pnl", 0.0))
+
+        portfolio = dict(dashboard_state.portfolio)
+        pnl = dict(portfolio.get("pnl", {}))
+        pnl.update(
+            {
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": 0.0,
+                "total_pnl": projected_pnl,
+                "net_pnl": projected_pnl,
+            }
+        )
+        portfolio.update(
+            {
+                "initial_balance": float(summary.get("initial_balance", 0.0)),
+                "cash_balance": float(summary.get("cash_balance", 0.0)),
+                "total_exposure": committed,
+                "total_trades": int(summary.get("trade_count", 0)),
+                "pnl": pnl,
+                "is_paper": True,
+                "pnl_source": summary.get("pnl_source", "projected_locked_paper"),
+            }
+        )
+        dashboard_state.portfolio = portfolio
+
+        risk = dict(dashboard_state.risk)
+        risk.update(
+            {
+                "global_exposure": committed,
+                "max_global_exposure": max_total,
+                "daily_pnl": projected_pnl,
+                "pnl_source": summary.get("pnl_source", "projected_locked_paper"),
+            }
+        )
+        dashboard_state.risk = risk
+        dashboard_state.exposure_breakdown.update(
+            {
+                "filled_exposure": committed,
+                "total_active_exposure": committed,
+                "global_exposure": committed,
+                "max_global_exposure": max_total,
+                "global_available": deployable,
+                "strategy_reserved_exposure": {"cross_platform_arb": committed},
+                "markets_with_exposure": len(
+                    summary.get("committed_capital_by_pair", {})
+                ),
+            }
+        )
 
     async def _broadcast_update(self) -> None:
         """Broadcast update to connected clients."""

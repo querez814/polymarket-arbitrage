@@ -225,6 +225,18 @@ class TradingBotWithDashboard:
                 self.paper_locked_arb = PaperLockedArbitrageLedger(
                     initial_balance=self.config.mode.dry_run_initial_balance,
                     max_plan_capital=self.config.risk.max_order_notional,
+                    max_contracts_per_trade=(
+                        self.config.trading.cross_platform_max_order_size
+                    ),
+                    max_pair_capital=self.config.risk.max_position_per_market,
+                    max_total_capital=min(
+                        self.config.risk.max_global_exposure,
+                        self.config.risk.strategy_exposure_limits.get(
+                            "cross_platform_arb",
+                            self.config.risk.max_global_exposure,
+                        ),
+                    ),
+                    max_open_pairs=self.config.risk.max_open_positions,
                     required_observations=(
                         self.config.mode.paper_confirmation_observations
                     ),
@@ -234,6 +246,7 @@ class TradingBotWithDashboard:
                     liquidity_fraction=self.config.mode.paper_liquidity_fraction,
                     min_effective_edge=self.config.trading.min_edge,
                     approved_market_ids=set(self.config.risk.whitelist),
+                    blacklisted_market_ids=set(self.config.risk.blacklist),
                     allow_verified_auto_approval=(
                         self.config.mode.semantic_matching_enabled
                     ),
@@ -482,6 +495,9 @@ class TradingBotWithDashboard:
             decision_journal=self.decision_journal,
             paper_trade_store=self.paper_trade_store,
             paper_performance_provider=self._paper_run_performance,
+            paper_strategy_summary_provider=(
+                self.paper_locked_arb.summary if self.paper_locked_arb else None
+            ),
         )
         await self.dashboard_integration.start()
 

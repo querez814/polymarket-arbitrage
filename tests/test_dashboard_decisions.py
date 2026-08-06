@@ -131,6 +131,40 @@ async def test_dashboard_integration_updates_paper_mode_fields():
 
 
 @pytest.mark.asyncio
+async def test_locked_paper_summary_drives_headline_pnl_and_exposure():
+    paper_summary = {
+        "initial_balance": 5_000.0,
+        "cash_balance": 4_900.0,
+        "available_capital": 4_900.0,
+        "committed_capital": 100.0,
+        "remaining_deployable_capital": 900.0,
+        "max_total_capital": 1_000.0,
+        "projected_locked_pnl": 2.5,
+        "realized_settlement_pnl": 0.0,
+        "trade_count": 2,
+        "pnl_source": "projected_locked_paper",
+    }
+    integration = DashboardIntegration(
+        portfolio=Portfolio(initial_balance=5_000.0),
+        mode="dry_run",
+        paper_strategy_summary_provider=lambda: paper_summary,
+    )
+    dashboard_state.portfolio = {}
+    dashboard_state.risk = {}
+
+    await integration._update_state()
+
+    assert dashboard_state.portfolio["pnl"]["total_pnl"] == pytest.approx(2.5)
+    assert dashboard_state.portfolio["total_exposure"] == pytest.approx(100.0)
+    assert dashboard_state.portfolio["cash_balance"] == pytest.approx(4_900.0)
+    assert dashboard_state.risk["global_exposure"] == pytest.approx(100.0)
+    assert dashboard_state.risk["max_global_exposure"] == pytest.approx(1_000.0)
+    assert dashboard_state.exposure_breakdown["global_available"] == pytest.approx(
+        900.0
+    )
+
+
+@pytest.mark.asyncio
 async def test_dashboard_exposes_durable_paper_evidence_ledgers(tmp_path):
     from utils.paper_trade_store import PaperTradeStore
 

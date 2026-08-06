@@ -2867,7 +2867,8 @@ def get_embedded_html() -> str:
                     <div><span style="color: var(--text-muted);">Pair trades</span><br><strong>${Number(paper.trade_count || receipts.length || 0).toLocaleString()}</strong></div>
                     <div><span style="color: var(--text-muted);">Projected locked PnL</span><br><strong>${formatCurrency(Number(paper.projected_locked_pnl || 0))}</strong></div>
                     <div><span style="color: var(--text-muted);">Realized settlement PnL</span><br><strong>${formatCurrency(Number(paper.realized_settlement_pnl || 0))}</strong></div>
-                    <div><span style="color: var(--text-muted);">Cash available</span><br><strong>${formatCurrency(Number(paper.cash_balance || paper.available_capital || 0))}</strong></div>
+                    <div><span style="color: var(--text-muted);">Bank cash</span><br><strong>${formatCurrency(Number(paper.cash_balance || paper.available_capital || 0))}</strong></div>
+                    <div><span style="color: var(--text-muted);">Deployable capacity</span><br><strong>${formatCurrency(Number(paper.remaining_deployable_capital || 0))}</strong></div>
                 </div>
                 <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.65rem;">${strongest
                     ? `Strongest near miss: ${escapeHtml(strongest.token)} ${escapeHtml(strongest.buy_platform)} → ${escapeHtml(strongest.sell_platform)} · executable edge ${(Number(strongest.executable_net_edge || 0) * 100).toFixed(2)}% · ${escapeHtml(strongest.reason_code)}`

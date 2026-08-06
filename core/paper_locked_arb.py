@@ -41,20 +41,33 @@ class PaperLockedArbitrageLedger:
         *,
         initial_balance: float,
         max_plan_capital: float,
+        max_contracts_per_trade: float | None = None,
+        max_pair_capital: float | None = None,
+        max_total_capital: float | None = None,
         required_observations: int = 2,
         slippage_buffer_per_contract: float = 0.02,
         liquidity_fraction: float = 0.10,
         min_effective_edge: float = 0.01,
         approved_market_ids: set[str] | frozenset[str] | None = None,
+        blacklisted_market_ids: set[str] | frozenset[str] | None = None,
+        max_open_pairs: int | None = None,
         allow_verified_auto_approval: bool = False,
         auto_approval_confidence: float = 0.94,
         pair_cooldown_seconds: float = 300.0,
         clock: Callable[[], datetime] | None = None,
         store: PaperTradeStore | None = None,
     ):
+        normalized_max_pair_capital = (
+            initial_balance if max_pair_capital is None else max_pair_capital
+        )
+        normalized_max_total_capital = (
+            initial_balance if max_total_capital is None else max_total_capital
+        )
         values = (
             initial_balance,
             max_plan_capital,
+            normalized_max_pair_capital,
+            normalized_max_total_capital,
             slippage_buffer_per_contract,
             liquidity_fraction,
             min_effective_edge,
@@ -63,10 +76,32 @@ class PaperLockedArbitrageLedger:
         )
         if not all(math.isfinite(value) for value in values):
             raise ValueError("paper ledger limits must be finite")
-        if initial_balance <= 0 or max_plan_capital <= 0:
+        if max_contracts_per_trade is not None and (
+            not isinstance(max_contracts_per_trade, (int, float))
+            or isinstance(max_contracts_per_trade, bool)
+            or not math.isfinite(max_contracts_per_trade)
+            or max_contracts_per_trade <= 0
+        ):
+            raise ValueError("max_contracts_per_trade must be finite and positive")
+        if (
+            initial_balance <= 0
+            or max_plan_capital <= 0
+            or normalized_max_pair_capital <= 0
+            or normalized_max_total_capital <= 0
+        ):
             raise ValueError("paper balances must be positive")
-        if required_observations < 1:
-            raise ValueError("required_observations must be positive")
+        if (
+            not isinstance(required_observations, int)
+            or isinstance(required_observations, bool)
+            or required_observations < 1
+        ):
+            raise ValueError("required_observations must be a positive integer")
+        if max_open_pairs is not None and (
+            not isinstance(max_open_pairs, int)
+            or isinstance(max_open_pairs, bool)
+            or max_open_pairs < 1
+        ):
+            raise ValueError("max_open_pairs must be a positive integer")
         if not 0 < liquidity_fraction <= 1:
             raise ValueError("liquidity_fraction must be in (0, 1]")
         if slippage_buffer_per_contract < 0 or min_effective_edge < 0:
@@ -77,6 +112,9 @@ class PaperLockedArbitrageLedger:
             raise ValueError("pair_cooldown_seconds must be positive")
         self.initial_balance = initial_balance
         self.max_plan_capital = max_plan_capital
+        self.max_contracts_per_trade = max_contracts_per_trade
+        self.max_pair_capital = normalized_max_pair_capital
+        self.max_total_capital = normalized_max_total_capital
         self.required_observations = required_observations
         self.slippage_buffer_per_contract = slippage_buffer_per_contract
         self.liquidity_fraction = liquidity_fraction
@@ -84,6 +122,8 @@ class PaperLockedArbitrageLedger:
         self.approved_market_ids = (
             None if approved_market_ids is None else frozenset(approved_market_ids)
         )
+        self.blacklisted_market_ids = frozenset(blacklisted_market_ids or ())
+        self.max_open_pairs = max_open_pairs
         self.allow_verified_auto_approval = allow_verified_auto_approval
         self.auto_approval_confidence = auto_approval_confidence
         self.pair_cooldown_seconds = pair_cooldown_seconds
@@ -91,6 +131,7 @@ class PaperLockedArbitrageLedger:
         self._store = store
         self._confirmations: dict[str, int] = {}
         self._last_traded_at: dict[str, datetime] = {}
+        self._consumed_contracts_by_quote: dict[tuple[object, ...], float] = {}
         self._trades: list[PaperLockedTrade] = []
         self._unapproved_opportunity_count = 0
         self._auto_approved_trade_count = 0
@@ -101,13 +142,45 @@ class PaperLockedArbitrageLedger:
         self._decision_counts[reason_code] += 1
         self._last_decision = reason_code
 
+    @staticmethod
+    def _quote_capacity_key(
+        opportunity: CrossPlatformOpportunity,
+    ) -> tuple[object, ...]:
+        return (
+            opportunity.market_pair.pair_id,
+            opportunity.token,
+            opportunity.buy_platform,
+            opportunity.sell_platform,
+            round(opportunity.buy_price, 10),
+            round(opportunity.sell_price, 10),
+        )
+
     @property
     def committed_capital(self) -> float:
         return sum(trade.committed_capital for trade in self._trades)
 
     @property
+    def committed_capital_by_pair(self) -> dict[str, float]:
+        committed: dict[str, float] = {}
+        for trade in self._trades:
+            committed[trade.pair_id] = (
+                committed.get(trade.pair_id, 0.0) + trade.committed_capital
+            )
+        return committed
+
+    @property
     def available_capital(self) -> float:
         return max(0.0, self.initial_balance - self.committed_capital)
+
+    @property
+    def remaining_deployable_capital(self) -> float:
+        return max(
+            0.0,
+            min(
+                self.available_capital,
+                self.max_total_capital - self.committed_capital,
+            ),
+        )
 
     @property
     def projected_locked_pnl(self) -> float:
@@ -120,11 +193,47 @@ class PaperLockedArbitrageLedger:
     def observe(self, opportunity: CrossPlatformOpportunity) -> PaperLockedTrade | None:
         """Record a trade only after repeated executable observations."""
         pair_id = opportunity.market_pair.pair_id
+        sizing_values = (
+            opportunity.suggested_size,
+            opportunity.max_size,
+            opportunity.buy_liquidity,
+            opportunity.sell_liquidity,
+        )
+        if not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+            for value in sizing_values
+        ):
+            self._decide("invalid_opportunity_sizing")
+            return None
+        economic_values = (
+            opportunity.buy_price,
+            opportunity.sell_price,
+            opportunity.gross_edge,
+            opportunity.net_edge,
+        )
+        if (
+            not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in economic_values
+            )
+            or not 0 < opportunity.buy_price < 1
+            or not 0 < opportunity.sell_price < 1
+        ):
+            self._decide("invalid_opportunity_economics")
+            return None
+        pair_market_ids = {
+            opportunity.market_pair.polymarket_execution_id,
+            opportunity.market_pair.kalshi_ticker,
+        }
+        if pair_market_ids & self.blacklisted_market_ids:
+            self._decide("pair_blacklisted")
+            return None
         if self.approved_market_ids is not None:
-            pair_market_ids = {
-                opportunity.market_pair.polymarket_execution_id,
-                opportunity.market_pair.kalshi_ticker,
-            }
             manually_approved = pair_market_ids == self.approved_market_ids
             auto_approved = (
                 self.allow_verified_auto_approval
@@ -139,6 +248,14 @@ class PaperLockedArbitrageLedger:
                 return None
         else:
             auto_approved = False
+        pair_is_open = pair_id in self.committed_capital_by_pair
+        if (
+            not pair_is_open
+            and self.max_open_pairs is not None
+            and len(self.committed_capital_by_pair) >= self.max_open_pairs
+        ):
+            self._decide("max_open_pairs_reached")
+            return None
         now = self._clock()
         if now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
@@ -161,19 +278,51 @@ class PaperLockedArbitrageLedger:
             self._confirmations.pop(pair_id, None)
             self._decide("invalid_capital_per_contract")
             return None
+        visible_contracts = min(
+            opportunity.suggested_size,
+            opportunity.max_size,
+            opportunity.buy_liquidity * self.liquidity_fraction,
+            opportunity.sell_liquidity * self.liquidity_fraction,
+            (
+                self.max_contracts_per_trade
+                if self.max_contracts_per_trade is not None
+                else opportunity.suggested_size
+            ),
+        )
+        quote_capacity_key = self._quote_capacity_key(opportunity)
+        unconsumed_visible_contracts = max(
+            0.0,
+            visible_contracts
+            - self._consumed_contracts_by_quote.get(quote_capacity_key, 0.0),
+        )
+        if unconsumed_visible_contracts <= 0:
+            self._confirmations.pop(pair_id, None)
+            self._decide("displayed_depth_already_consumed")
+            return None
         confirmations = self._confirmations.get(pair_id, 0) + 1
         self._confirmations[pair_id] = confirmations
         if confirmations < self.required_observations:
             self._decide("awaiting_confirmation")
             return None
 
-        visible_contracts = min(
-            opportunity.suggested_size,
-            opportunity.buy_liquidity * self.liquidity_fraction,
-            opportunity.sell_liquidity * self.liquidity_fraction,
+        remaining_pair_capital = max(
+            0.0,
+            self.max_pair_capital - self.committed_capital_by_pair.get(pair_id, 0.0),
         )
-        capital_limit = min(self.available_capital, self.max_plan_capital)
-        contracts = min(visible_contracts, capital_limit / capital_per_contract)
+        remaining_total_capital = max(
+            0.0,
+            self.max_total_capital - self.committed_capital,
+        )
+        capital_limit = min(
+            self.available_capital,
+            self.max_plan_capital,
+            remaining_pair_capital,
+            remaining_total_capital,
+        )
+        contracts = min(
+            unconsumed_visible_contracts,
+            capital_limit / capital_per_contract,
+        )
         if not math.isfinite(contracts) or contracts <= 0:
             self._decide("insufficient_paper_capital_or_liquidity")
             return None
@@ -259,6 +408,10 @@ class PaperLockedArbitrageLedger:
                 run_pnl=projected_pnl_after_trade,
             )
         self._trades.append(trade)
+        self._consumed_contracts_by_quote[quote_capacity_key] = (
+            self._consumed_contracts_by_quote.get(quote_capacity_key, 0.0)
+            + trade.contracts
+        )
         self._last_traded_at[pair_id] = now
         self._confirmations.pop(pair_id, None)
         if auto_approved:
@@ -270,8 +423,14 @@ class PaperLockedArbitrageLedger:
         return {
             "initial_balance": self.initial_balance,
             "committed_capital": self.committed_capital,
+            "committed_capital_by_pair": self.committed_capital_by_pair,
+            "max_pair_capital": self.max_pair_capital,
+            "max_total_capital": self.max_total_capital,
+            "max_contracts_per_trade": self.max_contracts_per_trade,
+            "max_open_pairs": self.max_open_pairs,
             "available_capital": self.available_capital,
             "cash_balance": self.available_capital,
+            "remaining_deployable_capital": self.remaining_deployable_capital,
             "reserved_cost_basis": self.committed_capital,
             "unrealized_mark_to_market_pnl": 0.0,
             "realized_settlement_pnl": 0.0,

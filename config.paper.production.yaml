@@ -7,7 +7,9 @@ trading:
   # obscure the cross-venue execution/PnL evidence this profile is proving.
   bundle_arb_enabled: false
   mm_enabled: false
-  cross_platform_max_order_size: 50
+  # Paper sizing may reach 100 contracts only when executable top-book depth,
+  # the per-trade capital cap, and the cumulative exposure caps all permit it.
+  cross_platform_max_order_size: 100
   cross_platform_edge_size_multiplier: 4
   cross_platform_max_liquidity_fraction: 0.25
   cross_platform_min_executable_size: 1
@@ -18,7 +20,8 @@ risk:
   max_open_positions: 10
   max_order_attempts_per_minute: 10
   max_daily_order_attempts: 100
-  max_position_per_market: 100
+  # Cumulative paper capital limits, enforced by the locked-arbitrage ledger.
+  max_position_per_market: 250
   max_global_exposure: 1000
   max_daily_loss: 50
   max_drawdown_pct: 0.10
@@ -47,7 +50,8 @@ mode:
   paper_locked_arb_enabled: true
   paper_confirmation_observations: 2
   paper_slippage_buffer_per_contract: 0.02
-  paper_liquidity_fraction: 0.10
+  # Never model more than 20% of the scarce visible top level as fillable.
+  paper_liquidity_fraction: 0.20
   paper_pair_cooldown_seconds: 300
   semantic_matching_enabled: true
   semantic_embedding_model: text-embedding-3-large
