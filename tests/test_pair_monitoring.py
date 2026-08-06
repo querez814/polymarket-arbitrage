@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from core.pair_monitoring import PairTierMonitor
+from core.pair_monitoring import PairTierMonitor, discovery_priority_score
 
 
 def _pair(pair_id: str, confidence: float):
@@ -9,6 +9,7 @@ def _pair(pair_id: str, confidence: float):
         pair_id=pair_id,
         verification_confidence=confidence,
         auto_approved=confidence >= 0.94,
+        discovery_priority=0.0,
     )
 
 
@@ -49,3 +50,44 @@ def test_recent_near_threshold_edge_promotes_pair_to_hot_tier():
 
     assert due[0].pair.pair_id == "promoted"
     assert due[0].tier == "hot"
+
+
+def test_cold_exploration_priority_uses_preflight_evidence_not_reported_volume():
+    now = datetime(2026, 7, 22, tzinfo=timezone.utc)
+    monitor = PairTierMonitor(
+        hot_limit=1,
+        hot_interval=2,
+        cold_interval=30,
+        clock=lambda: now,
+    )
+    lower = _pair("lower", 0.95)
+    higher = _pair("higher", 0.95)
+    lower.discovery_priority = 0.2
+    higher.discovery_priority = 0.9
+    lower.volume = 1_000_000
+    higher.volume = 0
+
+    due = monitor.due_pairs([lower, higher])
+
+    assert due[0].pair.pair_id == "higher"
+
+
+def test_discovery_priority_rewards_family_rarity_near_expiry_and_capacity():
+    now = datetime(2026, 8, 5, tzinfo=timezone.utc)
+
+    near = discovery_priority_score(
+        family_size=1,
+        event_date_key="2026-09",
+        executable_capacity=20,
+        max_capacity=100,
+        now=now,
+    )
+    distant = discovery_priority_score(
+        family_size=4,
+        event_date_key="2028",
+        executable_capacity=5,
+        max_capacity=100,
+        now=now,
+    )
+
+    assert near > distant

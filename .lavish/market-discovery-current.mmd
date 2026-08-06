@@ -1,0 +1,12 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#0a0a0f","primaryTextColor":"#e0e0e0","secondaryTextColor":"#e0e0e0","lineColor":"#727286","fontFamily":"JetBrains Mono, Fira Code, SFMono-Regular, monospace","edgeLabelBackground":"#12121a"},"flowchart":{"nodeSpacing":38,"rankSpacing":45}}}%%
+flowchart LR
+  L[Eligible venue<br/>inventories] --> I[180,083 structural<br/>candidates]
+  I --> R[8,558 above<br/>retrieval floor]
+  R --> G[Per-market top 20<br/>+ global top 500]
+  G --> V[29 verified<br/>equivalent]
+  V --> P[29 / 29 are 2028<br/>presidential nominees]
+
+  classDef blue fill:#14213a,stroke:#4488ff,color:#e0e0e0,stroke-width:2px;
+  classDef red fill:#321520,stroke:#ff4466,color:#e0e0e0,stroke-width:2px;
+  class L,I,R,G blue;
+  class V,P red;

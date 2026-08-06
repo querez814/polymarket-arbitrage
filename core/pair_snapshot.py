@@ -111,3 +111,23 @@ class PairSnapshotSource:
                     "max_age_seconds": self._max_age_seconds,
                 },
             )
+
+
+def executable_top_capacity(snapshot: PairSnapshot) -> float:
+    """Return the best complete buy/sell direction's top-level capacity."""
+    polymarket = snapshot.polymarket_book
+    kalshi = snapshot.kalshi_book
+    directions = (
+        (polymarket.yes.asks.best_size, kalshi.yes.bids.best_size),
+        (kalshi.yes.asks.best_size, polymarket.yes.bids.best_size),
+        (polymarket.no.asks.best_size, kalshi.no.bids.best_size),
+        (kalshi.no.asks.best_size, polymarket.no.bids.best_size),
+    )
+    return max(
+        (
+            min(float(buy_size), float(sell_size))
+            for buy_size, sell_size in directions
+            if buy_size is not None and sell_size is not None
+        ),
+        default=0.0,
+    )

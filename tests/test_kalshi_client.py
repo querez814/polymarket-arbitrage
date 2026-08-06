@@ -1,7 +1,26 @@
 import pytest
 from unittest.mock import AsyncMock
+from datetime import datetime, timezone
 
 from kalshi_client import KalshiClient
+
+
+def test_market_parser_preserves_expected_expiration_separately_from_legal_close():
+    client = KalshiClient(dry_run=True)
+
+    market = client._parse_market(
+        {
+            "ticker": "KXSB-27-BUF",
+            "title": "Buffalo wins the 2027 Super Bowl?",
+            "status": "open",
+            "close_time": "2029-02-13T00:00:00Z",
+            "expiration_time": "2027-02-15T00:00:00Z",
+        }
+    )
+
+    assert market is not None
+    assert market.close_time == datetime(2029, 2, 13, tzinfo=timezone.utc)
+    assert market.expiration_time == datetime(2027, 2, 15, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio

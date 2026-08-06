@@ -155,3 +155,13 @@ def test_embedded_dashboard_distinguishes_no_matches_from_active_price_scanning(
     assert "semantic_metrics" in html
     assert "filtered_polymarket_markets" in html
     assert "filtered_kalshi_markets" in html
+
+
+def test_embedded_dashboard_exposes_discovery_ab_and_book_preflight_evidence():
+    html = get_embedded_html()
+
+    assert "Discovery A/B evidence" in html
+    assert "Baseline top-score mix" in html
+    assert "Stratified mix" in html
+    assert "Rules equivalent" in html
+    assert "Usable books" in html

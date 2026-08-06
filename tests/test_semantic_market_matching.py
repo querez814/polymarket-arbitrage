@@ -19,6 +19,46 @@ from core.semantic_market_matching import (
 )
 
 
+def test_cpi_is_classified_as_finance_even_when_venue_metadata_is_missing():
+    document = polymarket_document(
+        _poly(
+            "Will core CPI inflation for July 2026 be above 0.3%?",
+            category="",
+        )
+    )
+
+    assert document.category == "finance"
+    assert document.event_family == "finance:core-cpi:2026-07"
+
+
+def test_semantic_event_date_can_align_same_event_with_distant_legal_closes():
+    poly = polymarket_document(
+        _poly(
+            "Will the Buffalo Bills win the 2027 Super Bowl?",
+            end_date=datetime(2027, 3, 31, tzinfo=timezone.utc),
+            category="sports",
+        )
+    )
+    kalshi = kalshi_document(
+        _kalshi(
+            "Buffalo Bills win the 2027 Super Bowl?",
+            close_time=datetime(2029, 2, 13, tzinfo=timezone.utc),
+            category="sports",
+        )
+    )
+
+    assert poly.legal_closes_at == datetime(2027, 3, 31, tzinfo=timezone.utc)
+    assert kalshi.legal_closes_at == datetime(2029, 2, 13, tzinfo=timezone.utc)
+    assert poly.event_date_key == kalshi.event_date_key == "2027"
+
+    result = asyncio.run(
+        SemanticMarketPipeline(retrieval_floor=0.0).match(
+            [poly.source], [kalshi.source]
+        )
+    )
+    assert result.metrics.structural_candidates == 1
+
+
 def test_sqlite_embedding_cache_closes_short_lived_lookup_connections(tmp_path):
     closed: list[bool] = []
 
@@ -28,9 +68,7 @@ def test_sqlite_embedding_cache_closes_short_lived_lookup_connections(tmp_path):
             super().close()
 
     cache = SQLiteEmbeddingCache(tmp_path / "semantic.db")
-    cache._connect = lambda: sqlite3.connect(
-        cache.path, factory=TrackingConnection
-    )
+    cache._connect = lambda: sqlite3.connect(cache.path, factory=TrackingConnection)
 
     assert cache.get("missing", "test-model", 4) is None
     assert closed == [True]
@@ -126,8 +164,13 @@ def test_embedding_documents_include_resolution_cutoff_and_oracle_metadata():
     assert "Oracle/Source: City election board" in poly.semantic_text
     assert "Resolution criteria: Resolves Yes if Alice Smith" in poly.semantic_text
     assert "Cutoff: 2026-11-04T00:00:00+00:00" in kalshi.semantic_text
-    assert "Primary resolution rules: Resolves Yes if Alice Smith" in kalshi.semantic_text
-    assert "Secondary resolution rules: Certification must be final" in kalshi.semantic_text
+    assert (
+        "Primary resolution rules: Resolves Yes if Alice Smith" in kalshi.semantic_text
+    )
+    assert (
+        "Secondary resolution rules: Certification must be final"
+        in kalshi.semantic_text
+    )
     assert "Oracle/Source: City election board" in kalshi.semantic_text
 
 
@@ -196,6 +239,37 @@ def test_pipeline_structurally_excludes_non_overlapping_markets():
 
     assert result.verified == []
     assert result.metrics.structural_candidates == 0
+    assert result.discovery_candidates[0]["rejection_reason"] == "temporal_mismatch"
+    assert result.discovery_candidates[0]["polymarket_present"] is True
+    assert result.discovery_candidates[0]["kalshi_present"] is True
+
+
+def test_pipeline_records_high_scoring_category_exclusion_by_pair():
+    pipeline = SemanticMarketPipeline(retrieval_floor=0.0)
+
+    result = asyncio.run(
+        pipeline.match(
+            [
+                _poly(
+                    "Will Acme outcome happen in 2026?",
+                    category="Technology",
+                    description="Official Acme result",
+                )
+            ],
+            [
+                _kalshi(
+                    "Will Acme outcome happen in 2026?",
+                    category="Economics",
+                    subtitle="Official Acme result",
+                )
+            ],
+        )
+    )
+
+    assert result.metrics.structural_candidates == 0
+    assert result.metrics.stage_rejection_counts["category_mismatch"] == 1
+    assert result.discovery_candidates[0]["category_decision"] == "mismatch"
+    assert result.discovery_candidates[0]["global_rank"] == 0
 
 
 def test_pipeline_filters_obviously_inactive_markets_before_embedding():
@@ -391,15 +465,19 @@ def test_openai_verifier_retries_a_cardinality_mismatch():
     def handler(request: httpx.Request):
         nonlocal calls
         calls += 1
-        pairs = [] if calls == 1 else [
-            {
-                "id": 0,
-                "plausible": True,
-                "relation": "equivalent",
-                "confidence": 0.97,
-                "reasons": ["same resolution"],
-            }
-        ]
+        pairs = (
+            []
+            if calls == 1
+            else [
+                {
+                    "id": 0,
+                    "plausible": True,
+                    "relation": "equivalent",
+                    "confidence": 0.97,
+                    "reasons": ["same resolution"],
+                }
+            ]
+        )
         output = json.dumps({"pairs": pairs})
         return httpx.Response(
             200,

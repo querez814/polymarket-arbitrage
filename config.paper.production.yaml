@@ -58,6 +58,11 @@ mode:
   # Paper-only exploration threshold. Live execution still requires whitelist.
   semantic_auto_approve_confidence: 0.90
   semantic_max_verification_candidates: 500
+  # Fixed verifier budget, diversified by category/event family.
+  semantic_category_cap_share: 0.60
+  semantic_family_cap_share: 0.40
+  semantic_exploration_share: 0.10
+  semantic_book_preflight_enabled: true
   semantic_cache_path: data/semantic_cache.db
   hot_pair_limit: 25
   hot_pair_scan_seconds: 2

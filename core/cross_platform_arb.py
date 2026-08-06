@@ -49,6 +49,10 @@ class MarketPair:
     verification_confidence: float = 0.0
     verification_reasons: tuple[str, ...] = ()
     auto_approved: bool = False
+    event_family: str = ""
+    event_date_key: str = ""
+    executable_capacity: float = 0.0
+    discovery_priority: float = 0.0
 
     # Timestamps
     matched_at: datetime = field(default_factory=datetime.utcnow)
@@ -280,6 +284,7 @@ class MarketMatcher:
             retrieval_floor=max(0.0, min(0.55, min_similarity))
         )
         self.last_pipeline_metrics: PipelineMetrics | None = None
+        self.last_discovery_candidates: list[dict] = []
 
         # Build reverse lookup for team names
         self._team_lookup = {}
@@ -759,6 +764,7 @@ class MarketMatcher:
             return []
         result = await self.semantic_pipeline.match(active_poly, active_kalshi)
         self.last_pipeline_metrics = result.metrics
+        self.last_discovery_candidates = result.discovery_candidates
         for verification in result.verified:
             pair = self._pair_from_verification(verification)
             matches.append(pair)
@@ -811,6 +817,8 @@ class MarketMatcher:
             verification_confidence=verification.confidence,
             verification_reasons=verification.reasons,
             auto_approved=verification.auto_approved,
+            event_family=verification.polymarket.event_family,
+            event_date_key=verification.polymarket.event_date_key,
         )
 
     def get_cached_pairs(self) -> list[MarketPair]:

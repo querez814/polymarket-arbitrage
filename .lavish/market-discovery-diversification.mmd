@@ -1,0 +1,51 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#0a0a0f","primaryTextColor":"#e0e0e0","secondaryTextColor":"#e0e0e0","tertiaryTextColor":"#e0e0e0","lineColor":"#727286","fontFamily":"JetBrains Mono, Fira Code, SFMono-Regular, monospace","clusterBkg":"#12121a","clusterBorder":"#2a2a3a","edgeLabelBackground":"#12121a"}}}%%
+flowchart LR
+  subgraph C[CURRENT PRE-VERIFIER PATH]
+    direction TB
+    L[Loaded eligible inventories] --> CAT[Category normalization]
+    CAT --> TMP[Temporal gate: ±7 days]
+    TMP --> I[180,083 structural candidates]
+    I --> R[8,558 above retrieval floor]
+    R --> K[Per-Polymarket top 20]
+    K --> G[Global similarity top 500]
+    G --> V[29 verified equivalent]
+    V --> P[29 / 29<br/>2028 presidential nominees]
+  end
+
+  subgraph X[CONFIRMED EXCLUSIONS]
+    direction TB
+    CPI[5 Core CPI buckets<br/>category mismatch]
+    NFL[32 NFL teams<br/>fallback close-time mismatch]
+    OSC[2+ Oscar titles<br/>fallback close-time mismatch]
+    FED[5 Fed decisions<br/>pre-verifier loss;<br/>exact substage not persisted]
+  end
+
+  CAT -. category mismatch .-> CPI
+  TMP -. temporal mismatch .-> NFL
+  TMP -. temporal mismatch .-> OSC
+  FED -. could be inventory, retrieval,<br/>top 20, or global 500 .- G
+
+  subgraph T[SAFE TARGET ALLOCATION]
+    direction TB
+    S[Persist every funnel stage] --> Q[Category + family quotas]
+    Q --> E[Rules-source equivalence verifier]
+    E --> B[Executable-book preflight]
+    B --> N[Unchanged 2 cent net-edge gate]
+  end
+
+  CPI --> Q
+  NFL --> Q
+  OSC --> Q
+  FED --> Q
+
+  classDef blue fill:#14213a,stroke:#4488ff,color:#e0e0e0,stroke-width:2px;
+  classDef red fill:#321520,stroke:#ff4466,color:#e0e0e0,stroke-width:2px;
+  classDef yellow fill:#2d2410,stroke:#ffaa00,color:#e0e0e0,stroke-width:2px;
+  classDef green fill:#10251e,stroke:#00ff88,color:#e0e0e0,stroke-width:2px;
+  class L,CAT,TMP,I,R,K,G blue;
+  class V,P red;
+  class CPI,NFL,OSC,FED yellow;
+  class S,Q,E,B,N green;
+  style C fill:#12121a,stroke:#2a2a3a,color:#e0e0e0
+  style X fill:#12121a,stroke:#2a2a3a,color:#e0e0e0
+  style T fill:#12121a,stroke:#2a2a3a,color:#e0e0e0

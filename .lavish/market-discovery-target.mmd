@@ -1,0 +1,9 @@
+%%{init: {"theme":"base","themeVariables":{"background":"#0a0a0f","primaryTextColor":"#e0e0e0","secondaryTextColor":"#e0e0e0","lineColor":"#727286","fontFamily":"JetBrains Mono, Fira Code, SFMono-Regular, monospace","edgeLabelBackground":"#12121a"},"flowchart":{"nodeSpacing":40,"rankSpacing":45}}}%%
+flowchart LR
+  S[Persist every<br/>funnel stage] --> Q[Category + family<br/>allocation]
+  Q --> E[Rules-source<br/>equivalence verifier]
+  E --> B[Executable-book<br/>preflight]
+  B --> N[Unchanged 2 cent<br/>net-edge gate]
+
+  classDef green fill:#10251e,stroke:#00ff88,color:#e0e0e0,stroke-width:2px;
+  class S,Q,E,B,N green;

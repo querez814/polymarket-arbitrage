@@ -14,7 +14,6 @@ from typing import Any, Optional
 
 import yaml
 
-
 POLYMARKET_GLOBAL_PRODUCTION_URLS = {
     "api.polymarket_rest_url": "https://clob.polymarket.com",
     "api.polymarket_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
@@ -41,12 +40,14 @@ LIVE_PRODUCTION_SECRET_CONFIG_FIELDS = frozenset(
 
 class ConfigError(Exception):
     """Configuration error."""
+
     pass
 
 
 @dataclass
 class ApiConfig:
     """API configuration."""
+
     polymarket_rest_url: str = "https://clob.polymarket.com"
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     gamma_api_url: str = "https://gamma-api.polymarket.com"
@@ -72,6 +73,7 @@ class ApiConfig:
 @dataclass
 class TradingConfig:
     """Trading configuration."""
+
     risk_profile: str = "conservative"
     markets: list[str] = field(default_factory=list)
     min_edge: float = 0.01
@@ -103,6 +105,7 @@ class TradingConfig:
 @dataclass
 class RiskConfig:
     """Risk configuration."""
+
     max_order_notional: float = 15.0
     max_open_orders: int = 4
     max_open_positions: int = 4
@@ -124,12 +127,17 @@ class RiskConfig:
 @dataclass
 class ModeConfig:
     """Trading mode configuration."""
+
     trading_mode: str = "dry_run"  # "live" or "dry_run"
     data_mode: str = "real"  # "real" or "simulation" - use simulation for demos
-    cross_platform_enabled: bool = True  # Enable cross-platform arbitrage (Polymarket + Kalshi)
+    cross_platform_enabled: bool = (
+        True  # Enable cross-platform arbitrage (Polymarket + Kalshi)
+    )
     cross_platform_execution_enabled: bool = False
     kalshi_enabled: bool = True  # Enable Kalshi market monitoring
-    min_match_similarity: float = 0.6  # Minimum similarity score for market matching (0-1)
+    min_match_similarity: float = (
+        0.6  # Minimum similarity score for market matching (0-1)
+    )
     cross_platform_refresh_seconds: float = 300.0
     dry_run_initial_balance: float = 10000.0
     simulate_fills: bool = False
@@ -146,6 +154,10 @@ class ModeConfig:
     semantic_retrieval_floor: float = 0.55
     semantic_auto_approve_confidence: float = 0.94
     semantic_max_verification_candidates: int = 500
+    semantic_category_cap_share: float = 0.60
+    semantic_family_cap_share: float = 0.40
+    semantic_exploration_share: float = 0.10
+    semantic_book_preflight_enabled: bool = True
     semantic_cache_path: str = "data/semantic_cache.db"
     paper_pair_cooldown_seconds: float = 300.0
     hot_pair_limit: int = 25
@@ -162,6 +174,7 @@ class ModeConfig:
 @dataclass
 class LoggingConfig:
     """Logging configuration."""
+
     console_level: str = "INFO"
     file_level: str = "DEBUG"
     log_dir: str = "logs"
@@ -175,6 +188,7 @@ class LoggingConfig:
 @dataclass
 class MonitoringConfig:
     """Monitoring configuration."""
+
     snapshot_interval: float = 60.0
     heartbeat_interval: float = 30.0
     track_latency: bool = True
@@ -215,6 +229,7 @@ class NewsCatalystConfig:
 @dataclass
 class BotConfig:
     """Complete bot configuration."""
+
     api: ApiConfig = field(default_factory=ApiConfig)
     trading: TradingConfig = field(default_factory=TradingConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -223,7 +238,7 @@ class BotConfig:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     production: ProductionConfig = field(default_factory=ProductionConfig)
     news_catalyst: NewsCatalystConfig = field(default_factory=NewsCatalystConfig)
-    
+
     @property
     def is_polymarket_us(self) -> bool:
         return self.api.polymarket_platform.lower() == "us"
@@ -231,11 +246,11 @@ class BotConfig:
     @property
     def is_dry_run(self) -> bool:
         return self.mode.trading_mode.lower() == "dry_run"
-    
+
     @property
     def is_live(self) -> bool:
         return self.mode.trading_mode.lower() == "live"
-    
+
     @property
     def use_simulation(self) -> bool:
         """Use simulated data (for demos/screenshots)."""
@@ -245,30 +260,30 @@ class BotConfig:
 def load_config(config_path: str = "config.yaml") -> BotConfig:
     """
     Load configuration from a YAML file.
-    
+
     Args:
         config_path: Path to the configuration file
-        
+
     Returns:
         BotConfig instance with loaded values
-        
+
     Raises:
         ConfigError: If the config file cannot be loaded or is invalid
     """
     path = Path(config_path)
-    
+
     if not path.exists():
         raise ConfigError(f"Configuration file not found: {config_path}")
-    
+
     try:
         with open(path, "r") as f:
             raw_config = yaml.safe_load(f)
     except yaml.YAMLError as e:
         raise ConfigError(f"Invalid YAML in config file: {e}")
-    
+
     if raw_config is None:
         raw_config = {}
-    
+
     # Parse sections
     api_data = raw_config.get("api", {})
     trading_data = raw_config.get("trading", {})
@@ -278,30 +293,36 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     monitoring_data = raw_config.get("monitoring", {})
     production_data = raw_config.get("production", {})
     news_catalyst_data = raw_config.get("news_catalyst", {})
-    
+
     # Handle environment variable overrides
-    api_data = _apply_env_overrides(api_data, {
-        "api_key": "POLYMARKET_API_KEY",
-        "api_secret": "POLYMARKET_API_SECRET",
-        "passphrase": "POLYMARKET_PASSPHRASE",
-        "private_key": "POLYMARKET_PRIVATE_KEY",
-        "polymarket_private_key_keychain_label": "POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL",
-        "chain_id": "POLYMARKET_CHAIN_ID",
-        "polymarket_platform": "POLYMARKET_PLATFORM",
-        "polymarket_us_key_id": "POLYMARKET_US_KEY_ID",
-        "polymarket_us_secret_key": "POLYMARKET_US_SECRET_KEY",
-        "polymarket_us_api_url": "POLYMARKET_US_API_URL",
-        "polymarket_us_gateway_url": "POLYMARKET_US_GATEWAY_URL",
-        "kalshi_api_url": "KALSHI_API_URL",
-        "kalshi_api_key_id": "KALSHI_API_KEY_ID",
-        "kalshi_private_key_path": "KALSHI_PRIVATE_KEY_PATH",
-    })
-    production_data = _apply_env_overrides(production_data, {
-        "operator_token": "NIGHTWATCH_OPERATOR_TOKEN",
-        "alert_webhook_url": "NIGHTWATCH_ALERT_WEBHOOK_URL",
-        "alert_webhook_token": "NIGHTWATCH_ALERT_WEBHOOK_TOKEN",
-    })
-    
+    api_data = _apply_env_overrides(
+        api_data,
+        {
+            "api_key": "POLYMARKET_API_KEY",
+            "api_secret": "POLYMARKET_API_SECRET",
+            "passphrase": "POLYMARKET_PASSPHRASE",
+            "private_key": "POLYMARKET_PRIVATE_KEY",
+            "polymarket_private_key_keychain_label": "POLYMARKET_PRIVATE_KEY_KEYCHAIN_LABEL",
+            "chain_id": "POLYMARKET_CHAIN_ID",
+            "polymarket_platform": "POLYMARKET_PLATFORM",
+            "polymarket_us_key_id": "POLYMARKET_US_KEY_ID",
+            "polymarket_us_secret_key": "POLYMARKET_US_SECRET_KEY",
+            "polymarket_us_api_url": "POLYMARKET_US_API_URL",
+            "polymarket_us_gateway_url": "POLYMARKET_US_GATEWAY_URL",
+            "kalshi_api_url": "KALSHI_API_URL",
+            "kalshi_api_key_id": "KALSHI_API_KEY_ID",
+            "kalshi_private_key_path": "KALSHI_PRIVATE_KEY_PATH",
+        },
+    )
+    production_data = _apply_env_overrides(
+        production_data,
+        {
+            "operator_token": "NIGHTWATCH_OPERATOR_TOKEN",
+            "alert_webhook_url": "NIGHTWATCH_ALERT_WEBHOOK_URL",
+            "alert_webhook_token": "NIGHTWATCH_ALERT_WEBHOOK_TOKEN",
+        },
+    )
+
     _apply_risk_profile_defaults(trading_data, risk_data)
 
     # Build config objects
@@ -315,7 +336,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         production=_build_dataclass(ProductionConfig, production_data),
         news_catalyst=_build_dataclass(NewsCatalystConfig, news_catalyst_data),
     )
-    
+
     # Validate
     _reject_tracked_live_secrets(
         path,
@@ -325,7 +346,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     )
     resolve_runtime_secrets(config)
     validate_config(config)
-    
+
     return config
 
 
@@ -474,7 +495,7 @@ def resolve_runtime_secrets(config: BotConfig) -> None:
 def _build_dataclass(cls, data: dict):
     """Build a dataclass from a dictionary, ignoring unknown keys."""
     import dataclasses
-    
+
     field_names = {f.name for f in dataclasses.fields(cls)}
     filtered_data = {k: v for k, v in data.items() if k in field_names}
     return cls(**filtered_data)
@@ -565,20 +586,26 @@ def _apply_risk_profile_defaults(trading_data: dict, risk_data: dict) -> None:
 def validate_config(config: BotConfig) -> None:
     """Validate a configuration, including mutations applied after loading."""
     errors = []
-    
+
     # Trading validation
-    if config.trading.risk_profile.lower() not in ("conservative", "balanced", "aggressive"):
-        errors.append("trading.risk_profile must be 'conservative', 'balanced', or 'aggressive'")
+    if config.trading.risk_profile.lower() not in (
+        "conservative",
+        "balanced",
+        "aggressive",
+    ):
+        errors.append(
+            "trading.risk_profile must be 'conservative', 'balanced', or 'aggressive'"
+        )
 
     if config.trading.min_edge < 0 or config.trading.min_edge > 1:
         errors.append("trading.min_edge must be between 0 and 1")
-    
+
     if config.trading.min_spread < 0 or config.trading.min_spread > 1:
         errors.append("trading.min_spread must be between 0 and 1")
-    
+
     if config.trading.tick_size <= 0:
         errors.append("trading.tick_size must be positive")
-    
+
     if config.trading.default_order_size <= 0:
         errors.append("trading.default_order_size must be positive")
 
@@ -594,19 +621,32 @@ def validate_config(config: BotConfig) -> None:
     if config.trading.mm_cooldown_seconds < 0:
         errors.append("trading.mm_cooldown_seconds must be non-negative")
 
-    if config.trading.max_liquidity_fraction <= 0 or config.trading.max_liquidity_fraction > 1:
+    if (
+        config.trading.max_liquidity_fraction <= 0
+        or config.trading.max_liquidity_fraction > 1
+    ):
         errors.append("trading.max_liquidity_fraction must be between 0 and 1")
 
-    if config.trading.cross_platform_max_liquidity_fraction <= 0 or config.trading.cross_platform_max_liquidity_fraction > 1:
-        errors.append("trading.cross_platform_max_liquidity_fraction must be between 0 and 1")
+    if (
+        config.trading.cross_platform_max_liquidity_fraction <= 0
+        or config.trading.cross_platform_max_liquidity_fraction > 1
+    ):
+        errors.append(
+            "trading.cross_platform_max_liquidity_fraction must be between 0 and 1"
+        )
     if (
         not math.isfinite(config.trading.cross_platform_min_executable_size)
         or config.trading.cross_platform_min_executable_size < 0
     ):
-        errors.append("trading.cross_platform_min_executable_size must be finite and non-negative")
-    
+        errors.append(
+            "trading.cross_platform_min_executable_size must be finite and non-negative"
+        )
+
     # Risk validation
-    if not math.isfinite(config.risk.max_order_notional) or config.risk.max_order_notional <= 0:
+    if (
+        not math.isfinite(config.risk.max_order_notional)
+        or config.risk.max_order_notional <= 0
+    ):
         errors.append("risk.max_order_notional must be finite and positive")
 
     if config.risk.max_order_notional > config.risk.max_global_exposure:
@@ -633,20 +673,22 @@ def validate_config(config: BotConfig) -> None:
 
     if config.risk.max_position_per_market <= 0:
         errors.append("risk.max_position_per_market must be positive")
-    
+
     if config.risk.max_global_exposure <= 0:
         errors.append("risk.max_global_exposure must be positive")
-    
+
     if config.risk.max_daily_loss < 0:
         errors.append("risk.max_daily_loss must be non-negative")
-    
+
     if config.risk.max_drawdown_pct < 0 or config.risk.max_drawdown_pct > 1:
         errors.append("risk.max_drawdown_pct must be between 0 and 1")
 
     for strategy, limit in config.risk.strategy_exposure_limits.items():
         if limit < 0:
-            errors.append(f"risk.strategy_exposure_limits.{strategy} must be non-negative")
-    
+            errors.append(
+                f"risk.strategy_exposure_limits.{strategy} must be non-negative"
+            )
+
     # Mode validation
     if config.mode.trading_mode.lower() not in ("live", "dry_run"):
         errors.append("mode.trading_mode must be 'live' or 'dry_run'")
@@ -658,7 +700,10 @@ def validate_config(config: BotConfig) -> None:
         errors.append(
             "mode.kalshi_enabled must be true when mode.cross_platform_enabled is true"
         )
-    if config.mode.cross_platform_execution_enabled and not config.mode.cross_platform_enabled:
+    if (
+        config.mode.cross_platform_execution_enabled
+        and not config.mode.cross_platform_enabled
+    ):
         errors.append(
             "mode.cross_platform_enabled must be true when cross-platform execution is enabled"
         )
@@ -705,6 +750,21 @@ def validate_config(config: BotConfig) -> None:
             value = getattr(config.mode, name)
             if not math.isfinite(value) or not 0 <= value <= 1:
                 errors.append(f"{name} must be between 0 and 1")
+        if (
+            not math.isfinite(config.mode.semantic_category_cap_share)
+            or not 0 < config.mode.semantic_category_cap_share <= 1
+        ):
+            errors.append("semantic_category_cap_share must be in (0, 1]")
+        if (
+            not math.isfinite(config.mode.semantic_family_cap_share)
+            or not 0 < config.mode.semantic_family_cap_share <= 1
+        ):
+            errors.append("semantic_family_cap_share must be in (0, 1]")
+        if (
+            not math.isfinite(config.mode.semantic_exploration_share)
+            or not 0 <= config.mode.semantic_exploration_share < 1
+        ):
+            errors.append("semantic_exploration_share must be in [0, 1)")
         for name in (
             "semantic_min_polymarket_liquidity",
             "semantic_min_polymarket_volume_24h",
@@ -741,10 +801,7 @@ def validate_config(config: BotConfig) -> None:
         value = getattr(news, name)
         if not math.isfinite(value) or not 0 <= value <= 1:
             errors.append(f"news_catalyst.{name} must be between 0 and 1")
-    if (
-        not math.isfinite(news.catalyst_boost_weight)
-        or news.catalyst_boost_weight < 0
-    ):
+    if not math.isfinite(news.catalyst_boost_weight) or news.catalyst_boost_weight < 0:
         errors.append(
             "news_catalyst.catalyst_boost_weight must be finite and non-negative"
         )
@@ -782,7 +839,9 @@ def validate_config(config: BotConfig) -> None:
         not math.isfinite(config.production.economics_max_age_seconds)
         or config.production.economics_max_age_seconds <= 0
     ):
-        errors.append("production.economics_max_age_seconds must be finite and positive")
+        errors.append(
+            "production.economics_max_age_seconds must be finite and positive"
+        )
     if (
         not math.isfinite(config.production.alert_timeout_seconds)
         or config.production.alert_timeout_seconds <= 0
@@ -795,11 +854,14 @@ def validate_config(config: BotConfig) -> None:
         errors.append(
             "api.kalshi_api_key_id and api.kalshi_private_key_path must be configured together"
         )
-    elif kalshi_private_key_path and not Path(kalshi_private_key_path).expanduser().is_file():
+    elif (
+        kalshi_private_key_path
+        and not Path(kalshi_private_key_path).expanduser().is_file()
+    ):
         errors.append(
             "api.kalshi_private_key_path must reference an existing regular file"
         )
-    
+
     # Live mode checks
     if config.is_live:
         if config.use_simulation:
@@ -849,9 +911,13 @@ def validate_config(config: BotConfig) -> None:
         if config.is_polymarket_us:
             _validate_production_urls(config, POLYMARKET_US_PRODUCTION_URLS, errors)
             if not config.api.polymarket_us_key_id:
-                errors.append("api.polymarket_us_key_id is required for live Polymarket US trading")
+                errors.append(
+                    "api.polymarket_us_key_id is required for live Polymarket US trading"
+                )
             if not config.api.polymarket_us_secret_key:
-                errors.append("api.polymarket_us_secret_key is required for live Polymarket US trading")
+                errors.append(
+                    "api.polymarket_us_secret_key is required for live Polymarket US trading"
+                )
         else:
             _validate_production_urls(config, POLYMARKET_GLOBAL_PRODUCTION_URLS, errors)
             if config.api.chain_id != 137:
@@ -859,13 +925,30 @@ def validate_config(config: BotConfig) -> None:
                     "api.chain_id must be 137 for live Polymarket Global trading"
                 )
             if not config.api.api_key or config.api.api_key == "YOUR_API_KEY_HERE":
-                errors.append("api.api_key is required for live Polymarket Global trading")
-            if not config.api.api_secret or config.api.api_secret == "YOUR_API_SECRET_HERE":
-                errors.append("api.api_secret is required for live Polymarket Global trading")
-            if not config.api.passphrase or config.api.passphrase == "YOUR_PASSPHRASE_HERE":
-                errors.append("api.passphrase is required for live Polymarket Global trading")
-            if not config.api.private_key or config.api.private_key == "YOUR_PRIVATE_KEY_HERE":
-                errors.append("api.private_key is required for live Polymarket Global trading")
+                errors.append(
+                    "api.api_key is required for live Polymarket Global trading"
+                )
+            if (
+                not config.api.api_secret
+                or config.api.api_secret == "YOUR_API_SECRET_HERE"
+            ):
+                errors.append(
+                    "api.api_secret is required for live Polymarket Global trading"
+                )
+            if (
+                not config.api.passphrase
+                or config.api.passphrase == "YOUR_PASSPHRASE_HERE"
+            ):
+                errors.append(
+                    "api.passphrase is required for live Polymarket Global trading"
+                )
+            if (
+                not config.api.private_key
+                or config.api.private_key == "YOUR_PRIVATE_KEY_HERE"
+            ):
+                errors.append(
+                    "api.private_key is required for live Polymarket Global trading"
+                )
 
         if config.mode.kalshi_enabled:
             actual_kalshi_url = config.api.kalshi_api_url.rstrip("/")
@@ -877,9 +960,11 @@ def validate_config(config: BotConfig) -> None:
 
     if config.api.polymarket_platform.lower() not in ("global", "us"):
         errors.append("api.polymarket_platform must be 'global' or 'us'")
-    
+
     if errors:
-        raise ConfigError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+        raise ConfigError(
+            "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+        )
 
 
 def _validate_production_urls(
@@ -890,22 +975,20 @@ def _validate_production_urls(
         attribute = field_name.removeprefix("api.")
         actual_url = str(getattr(config.api, attribute)).rstrip("/")
         if actual_url != expected_url:
-            errors.append(
-                f"{field_name} must be {expected_url!r} in live mode"
-            )
+            errors.append(f"{field_name} must be {expected_url!r} in live mode")
 
 
 def save_config(config: BotConfig, config_path: str = "config.yaml") -> None:
     """Save configuration to a YAML file."""
     import dataclasses
-    
+
     def to_dict(obj):
         if dataclasses.is_dataclass(obj):
             return {k: to_dict(v) for k, v in dataclasses.asdict(obj).items()}
         return obj
-    
+
     data = to_dict(config)
-    
+
     with open(config_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 

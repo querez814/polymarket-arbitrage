@@ -5,7 +5,12 @@ import pytest
 
 from core.cross_platform_arb import CrossPlatformDirectionEvaluation, MarketPair
 from core.pair_monitoring import DuePair
-from core.pair_snapshot import PairSnapshot, PairSnapshotError, PairSnapshotSource
+from core.pair_snapshot import (
+    PairSnapshot,
+    PairSnapshotError,
+    PairSnapshotSource,
+    executable_top_capacity,
+)
 from polymarket_client.models import (
     OrderBook,
     OrderBookSide,
@@ -29,6 +34,19 @@ def _book_with_depth(market_id: str, observed_at: datetime) -> OrderBook:
         ),
         timestamp=observed_at,
     )
+
+
+def test_preflight_capacity_requires_one_complete_executable_direction():
+    now = datetime.now(timezone.utc)
+    poly = _book_with_depth("poly", now)
+    kalshi = _book_with_depth("kalshi", now)
+    snapshot = PairSnapshot("pair", poly, kalshi, 5)
+
+    assert executable_top_capacity(snapshot) == pytest.approx(10)
+
+    kalshi.yes.bids.levels.clear()
+    poly.yes.bids.levels.clear()
+    assert executable_top_capacity(snapshot) == pytest.approx(0)
 
 
 @pytest.mark.asyncio
@@ -176,6 +194,120 @@ async def test_pair_snapshot_preserves_reason_coded_ingestion_failure():
 
     assert captured.value.reason_code == "polymarket_orderbook_normalization_failed"
     assert captured.value.evidence["token_id"] == "bad-token"
+
+
+@pytest.mark.asyncio
+async def test_discovery_preflight_keeps_only_fresh_pairs_with_executable_capacity():
+    now = datetime.now(timezone.utc)
+    usable = MarketPair(
+        "poly-usable",
+        "KX-USABLE",
+        "Usable?",
+        "Usable?",
+        0.98,
+        event_family="finance:cpi:2026-07",
+    )
+    thin = MarketPair(
+        "poly-thin",
+        "KX-THIN",
+        "Thin?",
+        "Thin?",
+        0.98,
+        event_family="politics:nominee:2028",
+    )
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            poly = _book_with_depth(pair.polymarket_id, now)
+            kalshi = _book_with_depth(pair.kalshi_ticker, now)
+            if pair is thin:
+                kalshi.yes.bids.levels[0].size = 0.5
+                poly.yes.bids.levels[0].size = 0.5
+            return PairSnapshot(pair.pair_id, poly, kalshi, 5)
+
+    config = BotConfig()
+    config.trading.cross_platform_min_executable_size = 1
+    bot = TradingBotWithDashboard(config)
+    bot.pair_snapshot_source = SnapshotSource()
+
+    passed, evidence = await bot._preflight_verified_pairs([thin, usable])
+
+    assert passed == [usable]
+    assert evidence[usable.pair_id]["result"] == "usable"
+    assert evidence[thin.pair_id]["result"] == "insufficient_executable_liquidity"
+    assert bot._preflight_snapshots[usable.pair_id].pair_id == usable.pair_id
+    assert usable.discovery_priority > thin.discovery_priority
+
+
+@pytest.mark.asyncio
+async def test_discovery_preflight_isolates_one_unexpected_pair_failure():
+    now = datetime.now(timezone.utc)
+    broken = MarketPair("poly-broken", "KX-BROKEN", "Broken?", "Broken?", 0.98)
+    usable = MarketPair("poly-good", "KX-GOOD", "Good?", "Good?", 0.98)
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            if pair is broken:
+                raise ValueError("malformed remote payload")
+            return PairSnapshot(
+                pair.pair_id,
+                _book_with_depth(pair.polymarket_id, now),
+                _book_with_depth(pair.kalshi_ticker, now),
+                5,
+            )
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.config.trading.cross_platform_min_executable_size = 1
+    bot.pair_snapshot_source = SnapshotSource()
+
+    passed, evidence = await bot._preflight_verified_pairs([broken, usable])
+
+    assert passed == [usable]
+    assert evidence[broken.pair_id]["result"] == "preflight_unexpected_error"
+
+
+@pytest.mark.asyncio
+async def test_transient_preflight_failure_stays_on_scanner_retry_cadence():
+    pair = MarketPair("poly-timeout", "KX-TIMEOUT", "Timeout?", "Timeout?", 0.98)
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            raise PairSnapshotError("paired_snapshot_timeout")
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.pair_snapshot_source = SnapshotSource()
+
+    passed, evidence = await bot._preflight_verified_pairs([pair])
+
+    assert passed == [pair]
+    assert evidence[pair.pair_id]["result"] == "retry_pending"
+    assert pair.pair_id not in bot._preflight_snapshots
+
+
+@pytest.mark.asyncio
+async def test_preflight_applies_same_liquidity_fraction_as_execution():
+    now = datetime.now(timezone.utc)
+    pair = MarketPair("poly-thin", "KX-THIN", "Thin?", "Thin?", 0.98)
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            poly = _book_with_depth(requested.polymarket_id, now)
+            kalshi = _book_with_depth(requested.kalshi_ticker, now)
+            for book in (poly, kalshi):
+                book.yes.bids.levels[0].size = 2
+                book.yes.asks.levels[0].size = 2
+            return PairSnapshot(requested.pair_id, poly, kalshi, 5)
+
+    config = BotConfig()
+    config.trading.cross_platform_min_executable_size = 1
+    config.trading.cross_platform_max_liquidity_fraction = 0.25
+    bot = TradingBotWithDashboard(config)
+    bot.pair_snapshot_source = SnapshotSource()
+
+    passed, evidence = await bot._preflight_verified_pairs([pair])
+
+    assert passed == []
+    assert evidence[pair.pair_id]["executable_capacity"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio

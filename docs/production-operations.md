@@ -39,6 +39,49 @@ lock. `evaluated_no_trade` means current pairs were fully evaluated but did not
 clear costs and controls. `legacy_run_not_auditable` means the selected run
 predates direction-level evidence and must not be used to infer missed profit.
 
+## Diversified discovery proof
+
+The paper matcher keeps the verifier ceiling at 500 candidates. It reserves a
+10% deterministic exploration lane, caps one event family at 40% while other
+families are available, caps one category at 60% while alternatives are
+available, and flows unused slots back to global retrieval rank. The actual
+verification batch is a bounded baseline/stratified shadow union, so both
+cohorts have measured verifier and usable-book outcomes without exceeding the
+500-candidate ceiling.
+This changes verifier allocation only. Rules equivalence, fresh order books,
+minimum executable size, authoritative costs, slippage, and the 2-cent
+after-cost edge gate remain independent requirements.
+
+Each discovery cycle persists candidate-level evidence in
+`semantic_discovery_candidates`: event family, category/temporal decision,
+retrieval and allocation rank, baseline-versus-stratified selection, verifier
+result, book-preflight result, and executable capacity after the configured
+liquidity fraction. Bounded exemplars also preserve category, temporal,
+retrieval-floor, and per-market-top-k exclusions. The
+dashboard's **Discovery A/B evidence** panel must show a nonzero verifier
+budget, rules-equivalent count, and usable-book count before the scanner is
+described as active. `observed_false_equivalence_rate` intentionally remains
+null until human rules adjudication; verifier rejection rate is not mislabeled
+as a false-equivalence rate.
+Candidate text and cycle size are bounded, and only the latest 48 discovery
+cycles per run are retained; foreign-key cascade removes their candidate rows.
+
+For a controlled paper cutover, send SIGTERM to the existing process, wait for
+its run session to finalize and release `data/paper_performance.db.run.lock`,
+then start exactly one replacement process. Do not overlap writers. Confirm:
+
+```bash
+curl -sS http://127.0.0.1:8888/health/live
+curl -sS http://127.0.0.1:8888/api/state
+python scripts/report_paper_run.py --db data/paper_performance.db
+```
+
+Rollback is configuration-only: set `semantic_family_cap_share: 1.0`,
+`semantic_category_cap_share: 1.0`,
+`semantic_exploration_share: 0.0`, and
+`semantic_book_preflight_enabled: false`, then perform the same controlled
+paper restart. Never change these discovery controls in a live-money process.
+
 ## Safety invariants
 
 - Each process start persists a halted state. Trading cannot resume until the

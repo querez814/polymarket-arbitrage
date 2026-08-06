@@ -51,8 +51,13 @@ from core.two_leg_execution import ExecutionPhase
 from core.operations import PersistentOperatorControls, WebhookAlertSink
 from core.production_runtime import ProductionArbitrageRuntime, RuntimeNotReadyError
 from core.paper_locked_arb import PaperLockedArbitrageLedger
-from core.pair_monitoring import PairTierMonitor
-from core.pair_snapshot import PairSnapshotError, PairSnapshotSource
+from core.pair_monitoring import PairTierMonitor, discovery_priority_score
+from core.pair_snapshot import (
+    PairSnapshot,
+    PairSnapshotError,
+    PairSnapshotSource,
+    executable_top_capacity,
+)
 from core.semantic_market_matching import (
     OpenAIEmbeddingClient,
     OpenAIResolutionVerifier,
@@ -123,6 +128,7 @@ class TradingBotWithDashboard:
         self._matched_pairs = []
         self._polymarket_orderbooks: dict[str, OrderBook] = {}
         self._kalshi_orderbooks: dict[str, OrderBook] = {}
+        self._preflight_snapshots: dict[str, PairSnapshot] = {}
         self._xplat_scan_task = None
         self._kalshi_monitor_task = None
         self._critical_failure_task = None
@@ -308,6 +314,9 @@ class TradingBotWithDashboard:
                     max_verification_candidates=(
                         self.config.mode.semantic_max_verification_candidates
                     ),
+                    category_cap_share=(self.config.mode.semantic_category_cap_share),
+                    family_cap_share=(self.config.mode.semantic_family_cap_share),
+                    exploration_share=(self.config.mode.semantic_exploration_share),
                     min_polymarket_liquidity=(
                         self.config.mode.semantic_min_polymarket_liquidity
                     ),
@@ -1076,14 +1085,34 @@ class TradingBotWithDashboard:
                         for pair in cached_pairs[-50:]
                     ]
 
-            self._matched_pairs = await self.market_matcher.find_matches(
+            rules_verified_pairs = await self.market_matcher.find_matches(
                 polymarket_markets,
                 self._kalshi_markets,
                 on_progress=on_progress,
             )
+            self._matched_pairs, preflight_evidence = (
+                await self._preflight_verified_pairs(rules_verified_pairs)
+            )
 
             dashboard_state.cross_platform["matching_progress"] = 100
             dashboard_state.cross_platform["matched_pairs"] = len(self._matched_pairs)
+            dashboard_state.cross_platform["rules_equivalent_pairs"] = len(
+                rules_verified_pairs
+            )
+            dashboard_state.cross_platform["preflight_usable_pairs"] = len(
+                [
+                    item
+                    for item in preflight_evidence.values()
+                    if item["result"] == "usable"
+                ]
+            )
+            dashboard_state.cross_platform["preflight_rejections"] = dict(
+                Counter(
+                    item["result"]
+                    for item in preflight_evidence.values()
+                    if item["result"] != "usable"
+                )
+            )
             pipeline_metrics = getattr(
                 self.market_matcher, "last_pipeline_metrics", None
             )
@@ -1107,8 +1136,40 @@ class TradingBotWithDashboard:
             if self.paper_trade_store:
                 complete_pairs = {
                     pair.pair_id: pair
-                    for pair in [*self._matched_pairs, *all_review_candidates]
+                    for pair in [*rules_verified_pairs, *all_review_candidates]
                 }
+                discovery_candidates = [
+                    dict(candidate)
+                    for candidate in getattr(
+                        self.market_matcher, "last_discovery_candidates", []
+                    )
+                ]
+                for candidate in discovery_candidates:
+                    preflight = preflight_evidence.get(candidate["pair_id"])
+                    if preflight:
+                        candidate["preflight_result"] = preflight["result"]
+                        candidate["executable_capacity"] = preflight[
+                            "executable_capacity"
+                        ]
+                shadow_preflight = {}
+                for cohort, flag in (
+                    ("baseline", "selected_by_baseline"),
+                    ("stratified", "selected_by_stratified"),
+                ):
+                    cohort_rows = [
+                        candidate
+                        for candidate in discovery_candidates
+                        if candidate["selected_for_verification"] and candidate[flag]
+                    ]
+                    shadow_preflight[cohort] = {
+                        "verified_sample": len(cohort_rows),
+                        "usable_books": sum(
+                            candidate["preflight_result"] == "usable"
+                            for candidate in cohort_rows
+                        ),
+                    }
+                if pipeline_metrics is not None:
+                    pipeline_metrics.allocation["shadow_preflight"] = shadow_preflight
                 cycle_id = self.paper_trade_store.record_semantic_discovery_cycle(
                     pairs=[
                         {
@@ -1130,13 +1191,21 @@ class TradingBotWithDashboard:
                         for pair in complete_pairs.values()
                     ],
                     metrics=(
-                        vars(pipeline_metrics)
+                        {
+                            **vars(pipeline_metrics),
+                            "rules_equivalent_pairs": len(rules_verified_pairs),
+                            "preflight_usable_pairs": len(self._matched_pairs),
+                            "preflight_rejections": dashboard_state.cross_platform[
+                                "preflight_rejections"
+                            ],
+                        }
                         if pipeline_metrics is not None
                         else {
                             "verified_candidates": len(self._matched_pairs),
                             "review_candidates": len(all_review_candidates),
                         }
                     ),
+                    candidates=discovery_candidates,
                 )
                 dashboard_state.cross_platform["discovery_cycle_id"] = cycle_id
                 dashboard_state.cross_platform["durable_review_count"] = len(
@@ -1201,6 +1270,91 @@ class TradingBotWithDashboard:
             logger.exception("Matching error: %s", e)
             dashboard_state.cross_platform["matching_status"] = "error"
             raise
+
+    async def _preflight_verified_pairs(self, pairs: list) -> tuple[list, dict]:
+        """Fetch one fresh paired book and admit only executable verified pairs."""
+        if not pairs:
+            return [], {}
+        if not self.config.mode.semantic_book_preflight_enabled:
+            return list(pairs), {
+                pair.pair_id: {"result": "disabled", "executable_capacity": 0.0}
+                for pair in pairs
+            }
+        if not self.pair_snapshot_source:
+            raise RuntimeError(
+                "semantic book preflight requires a pair snapshot source"
+            )
+
+        self._preflight_snapshots = {}
+        semaphore = asyncio.Semaphore(8)
+
+        async def inspect(pair):
+            async with semaphore:
+                try:
+                    snapshot = await self.pair_snapshot_source.fetch(pair)
+                except PairSnapshotError as exc:
+                    transient = exc.reason_code == "paired_snapshot_timeout" or any(
+                        exc.reason_code.startswith(prefix)
+                        for prefix in ("stale_", "missing_")
+                    )
+                    return (
+                        pair,
+                        None,
+                        0.0,
+                        "retry_pending" if transient else exc.reason_code,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Pair preflight rejected unexpected %s for %s",
+                        type(exc).__name__,
+                        pair.pair_id,
+                    )
+                    return pair, None, 0.0, "preflight_unexpected_error"
+                raw_capacity = executable_top_capacity(snapshot)
+                capacity = min(
+                    raw_capacity
+                    * self.config.trading.cross_platform_max_liquidity_fraction,
+                    self.config.trading.cross_platform_max_order_size,
+                )
+                minimum = self.config.trading.cross_platform_min_executable_size
+                result = (
+                    "usable"
+                    if capacity >= minimum and capacity > 0
+                    else "insufficient_executable_liquidity"
+                )
+                return pair, snapshot, capacity, result
+
+        observations = await asyncio.gather(*(inspect(pair) for pair in pairs))
+        family_totals = Counter(pair.event_family or "unclassified" for pair in pairs)
+        passed: list = []
+        evidence: dict[str, dict] = {}
+        for pair, snapshot, capacity, result in observations:
+            pair.executable_capacity = capacity
+            pair.discovery_priority = discovery_priority_score(
+                family_size=family_totals[pair.event_family or "unclassified"],
+                event_date_key=pair.event_date_key,
+                executable_capacity=capacity,
+                max_capacity=max(
+                    1.0, self.config.trading.cross_platform_max_order_size
+                ),
+            )
+            evidence[pair.pair_id] = {
+                "result": result,
+                "executable_capacity": capacity,
+                "event_family": pair.event_family,
+            }
+            if result in {"usable", "retry_pending"}:
+                passed.append(pair)
+            if result == "usable" and snapshot is not None:
+                self._preflight_snapshots[pair.pair_id] = snapshot
+        passed.sort(
+            key=lambda pair: (
+                -pair.discovery_priority,
+                -pair.similarity_score,
+                pair.pair_id,
+            )
+        )
+        return passed, evidence
 
     def _matched_pair_dashboard_row(self, pair) -> dict:
         """Build a monitoring row from the latest live venue books.
@@ -1412,6 +1566,11 @@ class TradingBotWithDashboard:
                 snapshot_limit = asyncio.Semaphore(8)
 
                 async def fetch_due_snapshot(due_pair):
+                    preflight = self._preflight_snapshots.pop(
+                        due_pair.pair.pair_id, None
+                    )
+                    if preflight is not None:
+                        return preflight
                     async with snapshot_limit:
                         try:
                             return await self.pair_snapshot_source.fetch(due_pair.pair)

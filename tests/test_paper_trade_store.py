@@ -287,6 +287,94 @@ def test_semantic_discovery_cycle_persists_every_reviewed_pair_atomically(tmp_pa
         store.close()
 
 
+def test_semantic_discovery_cycle_persists_candidate_stage_telemetry(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(starting_equity=5000, pnl_source="paper")
+        candidate = {
+            "pair_id": "poly:1|kalshi:KX-1",
+            "polymarket_present": True,
+            "kalshi_present": True,
+            "polymarket_id": "condition-1",
+            "kalshi_ticker": "KX-1",
+            "category": "finance",
+            "event_family": "finance:core-cpi:2026-07",
+            "category_decision": "matched",
+            "temporal_decision": "semantic_event_aligned",
+            "retrieval_score": 0.91,
+            "per_market_rank": 2,
+            "global_rank": 12,
+            "selected_by_baseline": True,
+            "selected_by_stratified": True,
+            "selected_for_verification": True,
+            "allocation_lane": "stratified",
+            "verifier_result": "equivalent",
+            "rejection_reason": "",
+            "preflight_result": "usable",
+            "executable_capacity": 15.0,
+        }
+
+        cycle_id = store.record_semantic_discovery_cycle(
+            pairs=[], metrics={"verified_candidates": 1}, candidates=[candidate]
+        )
+        cycle = store.latest_semantic_discovery_cycle(run_id=run.run_id)
+
+        assert cycle_id > 0
+        assert cycle is not None
+        assert cycle["candidates"] == [candidate]
+    finally:
+        store.close()
+
+
+def test_discovery_candidate_text_and_cycle_history_are_bounded(tmp_path):
+    store = PaperTradeStore(str(tmp_path / "paper.db"))
+    try:
+        run = store.start_run(starting_equity=5000, pnl_source="paper")
+        candidate = {
+            "pair_id": "poly:1|kalshi:KX-1",
+            "polymarket_present": True,
+            "kalshi_present": True,
+            "polymarket_id": "condition-1",
+            "kalshi_ticker": "KX-1",
+            "category": "finance",
+            "event_family": "finance:cpi:2026-07",
+            "category_decision": "matched",
+            "temporal_decision": "semantic_event_aligned",
+            "retrieval_score": 0.91,
+            "per_market_rank": 1,
+            "global_rank": 1,
+            "selected_by_baseline": True,
+            "selected_by_stratified": True,
+            "selected_for_verification": True,
+            "allocation_lane": "stratified",
+            "verifier_result": "equivalent",
+            "rejection_reason": "",
+            "preflight_result": "usable",
+            "executable_capacity": 5.0,
+        }
+        for cycle in range(50):
+            store.record_semantic_discovery_cycle(
+                pairs=[], metrics={"cycle": cycle}, candidates=[candidate]
+            )
+
+        cycle_count = store._conn.execute(
+            "SELECT COUNT(*) FROM semantic_discovery_cycles WHERE run_id = ?",
+            (run.run_id,),
+        ).fetchone()[0]
+        candidate_count = store._conn.execute(
+            "SELECT COUNT(*) FROM semantic_discovery_candidates"
+        ).fetchone()[0]
+        assert cycle_count == candidate_count == 48
+
+        oversized = {**candidate, "event_family": "x" * 513}
+        with pytest.raises(ValueError, match="event_family"):
+            store.record_semantic_discovery_cycle(
+                pairs=[], metrics={}, candidates=[oversized]
+            )
+    finally:
+        store.close()
+
+
 def test_cross_platform_evaluation_funnel_persists_compact_reason_counts(tmp_path):
     store = PaperTradeStore(str(tmp_path / "paper.db"))
     try:

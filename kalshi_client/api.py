@@ -923,6 +923,18 @@ class KalshiClient:
                         data.get("close_time"),
                         exc,
                     )
+            expiration_time = None
+            if data.get("expiration_time"):
+                try:
+                    expiration_time = datetime.fromisoformat(
+                        data["expiration_time"].replace("Z", "+00:00")
+                    )
+                except (TypeError, ValueError) as exc:
+                    logger.debug(
+                        "Failed to parse Kalshi expiration_time %r: %s",
+                        data.get("expiration_time"),
+                        exc,
+                    )
 
             volume = data.get("volume", data.get("volume_fp", 0))
             open_interest = data.get("open_interest", data.get("open_interest_fp", 0))
@@ -941,6 +953,7 @@ class KalshiClient:
                 volume=int(float(volume or 0)),
                 open_interest=int(float(open_interest or 0)),
                 close_time=close_time,
+                expiration_time=expiration_time,
                 category=data.get("category", "") or event_category,
                 rules_primary=str(data.get("rules_primary") or ""),
                 rules_secondary=str(data.get("rules_secondary") or ""),

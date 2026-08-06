@@ -27,6 +27,11 @@ from typing import Any, Protocol, Sequence
 
 import httpx
 
+from core.discovery_allocation import (
+    DiscoveryCandidate,
+    StratifiedVerifierAllocator,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,8 +50,11 @@ class MarketDocument:
     title: str
     semantic_text: str
     category: str
+    event_family: str
+    event_date_key: str
     opens_at: datetime | None
     closes_at: datetime | None
+    legal_closes_at: datetime | None
     source: Any
 
 
@@ -76,6 +84,10 @@ class PipelineMetrics:
     embedding_cache_misses: int
     polymarket_categories: dict[str, int]
     kalshi_categories: dict[str, int]
+    retrieved_categories: dict[str, int]
+    retrieved_event_families: dict[str, int]
+    allocation: dict[str, Any]
+    stage_rejection_counts: dict[str, int]
 
 
 @dataclass(frozen=True)
@@ -83,6 +95,7 @@ class PipelineResult:
     verified: list[Verification]
     review: list[Verification]
     metrics: PipelineMetrics
+    discovery_candidates: list[dict[str, Any]]
 
 
 class Embedder(Protocol):
@@ -109,6 +122,10 @@ def _utc(value: Any) -> datetime | None:
 
 def _inferred_category(text: str) -> str:
     lowered = text.casefold()
+    if any(
+        term in f" {lowered}" for term in ("consumer price index", "core cpi", " cpi")
+    ):
+        return "finance"
     groups = {
         "politics": (
             "election",
@@ -129,6 +146,9 @@ def _inferred_category(text: str) -> str:
         "finance": (
             "interest rate",
             "inflation",
+            "consumer price index",
+            "core cpi",
+            " cpi",
             "gdp",
             "recession",
             "stock",
@@ -185,17 +205,79 @@ def classify_market_category(value: Any, text: str) -> str:
     return aliases.get(raw, "other")
 
 
+_MONTHS = {
+    "jan": 1,
+    "january": 1,
+    "feb": 2,
+    "february": 2,
+    "mar": 3,
+    "march": 3,
+    "apr": 4,
+    "april": 4,
+    "may": 5,
+    "jun": 6,
+    "june": 6,
+    "jul": 7,
+    "july": 7,
+    "aug": 8,
+    "august": 8,
+    "sep": 9,
+    "sept": 9,
+    "september": 9,
+    "oct": 10,
+    "october": 10,
+    "nov": 11,
+    "november": 11,
+    "dec": 12,
+    "december": 12,
+}
+
+
+def _event_date_key(text: str) -> str:
+    lowered = text.casefold()
+    month_pattern = "|".join(sorted(_MONTHS, key=len, reverse=True))
+    match = re.search(
+        rf"\b({month_pattern})\.?\s+(?:\d{{1,2}},?\s+)?(20\d{{2}})\b",
+        lowered,
+    )
+    if match:
+        return f"{match.group(2)}-{_MONTHS[match.group(1)]:02d}"
+    match = re.search(r"\b(20\d{2})\b", lowered)
+    return match.group(1) if match else ""
+
+
+def _event_family(category: str, text: str, event_date_key: str) -> str:
+    lowered = text.casefold()
+    suffix = event_date_key or "undated"
+    if "cpi" in lowered or "consumer price index" in lowered:
+        kind = "core-cpi" if "core" in lowered else "cpi"
+    elif "federal reserve" in lowered or re.search(r"\bfed\b", lowered):
+        kind = "fed-decision"
+    elif "super bowl" in lowered or "nfl champion" in lowered:
+        kind = "nfl-champion"
+    elif "oscar" in lowered and "best picture" in lowered:
+        kind = "oscar-best-picture"
+    elif "president" in lowered and ("nomination" in lowered or "nominee" in lowered):
+        kind = "presidential-nomination"
+    else:
+        tokens = [
+            token
+            for token in _retrieval_tokens(lowered)
+            if not re.fullmatch(r"20\d{2}", token)
+        ]
+        kind = "-".join(tokens[:8]) or "unclassified"
+    return f"{category}:{kind}:{suffix}"
+
+
 def polymarket_document(market: Any) -> MarketDocument:
     question = str(getattr(market, "question", "") or "").strip()
     description = str(getattr(market, "description", "") or "").strip()
     resolution = str(getattr(market, "resolution", "") or "").strip()
     resolution_source = str(
-        getattr(market, "resolution_source", "")
-        or getattr(market, "oracle", "")
-        or ""
+        getattr(market, "resolution_source", "") or getattr(market, "oracle", "") or ""
     ).strip()
     tags = " ".join(str(tag) for tag in (getattr(market, "tags", None) or []))
-    closes_at = _utc(getattr(market, "end_date", None))
+    legal_closes_at = _utc(getattr(market, "end_date", None))
     context = " ".join(
         part
         for part in (
@@ -206,6 +288,8 @@ def polymarket_document(market: Any) -> MarketDocument:
         )
         if part
     )
+    event_date_key = _event_date_key(context)
+    category = classify_market_category(getattr(market, "category", ""), context)
     semantic_text = "\n".join(
         part
         for part in (
@@ -216,7 +300,8 @@ def polymarket_document(market: Any) -> MarketDocument:
                 else ""
             ),
             f"Resolution criteria: {description}" if description else "",
-            f"Cutoff: {closes_at.isoformat()}" if closes_at else "",
+            f"Cutoff: {legal_closes_at.isoformat()}" if legal_closes_at else "",
+            f"Semantic event date: {event_date_key}" if event_date_key else "",
             f"Oracle/Source: {resolution_source}" if resolution_source else "",
             "Outcomes: YES | NO",
             f"Reported resolution: {resolution}" if resolution else "",
@@ -232,33 +317,33 @@ def polymarket_document(market: Any) -> MarketDocument:
         execution_id=execution_id,
         title=question,
         semantic_text=semantic_text,
-        category=classify_market_category(getattr(market, "category", ""), context),
+        category=category,
+        event_family=_event_family(category, context, event_date_key),
+        event_date_key=event_date_key,
         opens_at=_utc(getattr(market, "created_at", None)),
-        closes_at=closes_at,
+        closes_at=legal_closes_at,
+        legal_closes_at=legal_closes_at,
         source=market,
     )
 
 
 def kalshi_document(market: Any) -> MarketDocument:
     title = str(
-        getattr(market, "matching_text", "")
-        or getattr(market, "title", "")
-        or ""
+        getattr(market, "matching_text", "") or getattr(market, "title", "") or ""
     ).strip()
     subtitle = str(getattr(market, "subtitle", "") or "").strip()
     event_title = str(getattr(market, "event_title", "") or "").strip()
     rules_primary = str(getattr(market, "rules_primary", "") or "").strip()
     rules_secondary = str(getattr(market, "rules_secondary", "") or "").strip()
     settlement_source = str(
-        getattr(market, "settlement_source", "")
-        or getattr(market, "oracle", "")
-        or ""
+        getattr(market, "settlement_source", "") or getattr(market, "oracle", "") or ""
     ).strip()
-    closes_at = _utc(
-        getattr(market, "close_time", None)
-        or getattr(market, "expiration_time", None)
-    )
+    legal_closes_at = _utc(getattr(market, "close_time", None))
+    expected_expiration = _utc(getattr(market, "expiration_time", None))
     context = " ".join(part for part in (title, event_title) if part)
+    event_date_key = _event_date_key(context)
+    category = classify_market_category(getattr(market, "category", ""), context)
+    semantic_closes_at = expected_expiration or legal_closes_at
     semantic_text = "\n".join(
         part
         for part in (
@@ -267,7 +352,13 @@ def kalshi_document(market: Any) -> MarketDocument:
             f"Description: {subtitle}" if subtitle else "",
             f"Primary resolution rules: {rules_primary}" if rules_primary else "",
             f"Secondary resolution rules: {rules_secondary}" if rules_secondary else "",
-            f"Cutoff: {closes_at.isoformat()}" if closes_at else "",
+            f"Cutoff: {legal_closes_at.isoformat()}" if legal_closes_at else "",
+            (
+                f"Expected expiration: {expected_expiration.isoformat()}"
+                if expected_expiration and expected_expiration != legal_closes_at
+                else ""
+            ),
+            f"Semantic event date: {event_date_key}" if event_date_key else "",
             f"Oracle/Source: {settlement_source}" if settlement_source else "",
             "Outcomes: YES | NO",
         )
@@ -280,9 +371,12 @@ def kalshi_document(market: Any) -> MarketDocument:
         execution_id=ticker,
         title=title,
         semantic_text=semantic_text,
-        category=classify_market_category(getattr(market, "category", ""), context),
+        category=category,
+        event_family=_event_family(category, context, event_date_key),
+        event_date_key=event_date_key,
         opens_at=None,
-        closes_at=closes_at,
+        closes_at=semantic_closes_at,
+        legal_closes_at=legal_closes_at,
         source=market,
     )
 
@@ -350,8 +444,7 @@ class SQLiteEmbeddingCache:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
-            connection.execute(
-                """
+            connection.execute("""
                 CREATE TABLE IF NOT EXISTS semantic_embeddings (
                     content_hash TEXT NOT NULL,
                     model TEXT NOT NULL,
@@ -360,8 +453,7 @@ class SQLiteEmbeddingCache:
                     created_at_utc TEXT NOT NULL,
                     PRIMARY KEY (content_hash, model, dimensions)
                 )
-                """
-            )
+                """)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
@@ -626,8 +718,16 @@ def deterministic_verification(
     lexical = len(shared) / len(union) if union else 0.0
     confidence = min(0.97, 0.65 * retrieval_score + 0.35 * lexical + 0.36)
     if confidence >= 0.80:
-        return SemanticRelation.EQUIVALENT, confidence, ("deterministic_semantic_agreement",)
-    return SemanticRelation.INDEPENDENT, confidence, ("insufficient_resolution_evidence",)
+        return (
+            SemanticRelation.EQUIVALENT,
+            confidence,
+            ("deterministic_semantic_agreement",),
+        )
+    return (
+        SemanticRelation.INDEPENDENT,
+        confidence,
+        ("insufficient_resolution_evidence",),
+    )
 
 
 class OpenAIResolutionVerifier:
@@ -670,9 +770,13 @@ class OpenAIResolutionVerifier:
                     {
                         "id": index,
                         "polymarket": left.semantic_text,
-                        "polymarket_close": left.closes_at.isoformat() if left.closes_at else None,
+                        "polymarket_close": (
+                            left.closes_at.isoformat() if left.closes_at else None
+                        ),
                         "kalshi": right.semantic_text,
-                        "kalshi_close": right.closes_at.isoformat() if right.closes_at else None,
+                        "kalshi_close": (
+                            right.closes_at.isoformat() if right.closes_at else None
+                        ),
                     }
                     for index, (left, right, _score) in enumerate(batch)
                 ]
@@ -690,12 +794,30 @@ class OpenAIResolutionVerifier:
                                     "plausible": {"type": "boolean"},
                                     "relation": {
                                         "type": "string",
-                                        "enum": ["equivalent", "subset", "superset", "independent"],
+                                        "enum": [
+                                            "equivalent",
+                                            "subset",
+                                            "superset",
+                                            "independent",
+                                        ],
                                     },
-                                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                                    "reasons": {"type": "array", "items": {"type": "string"}},
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 1,
+                                    },
+                                    "reasons": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
                                 },
-                                "required": ["id", "plausible", "relation", "confidence", "reasons"],
+                                "required": [
+                                    "id",
+                                    "plausible",
+                                    "relation",
+                                    "confidence",
+                                    "reasons",
+                                ],
                                 "additionalProperties": False,
                             },
                         }
@@ -740,7 +862,9 @@ class OpenAIResolutionVerifier:
                         parsed = json.loads(output_text)
                         rows = parsed.get("pairs") if isinstance(parsed, dict) else None
                         if not isinstance(rows, list) or len(rows) != len(batch):
-                            raise ValueError("verification response cardinality mismatch")
+                            raise ValueError(
+                                "verification response cardinality mismatch"
+                            )
                         indexed: dict[int, dict[str, Any]] = {}
                         for row in rows:
                             if not isinstance(row, dict):
@@ -751,7 +875,9 @@ class OpenAIResolutionVerifier:
                                 or not isinstance(row_id, int)
                                 or row_id in indexed
                             ):
-                                raise ValueError("verification response has invalid ids")
+                                raise ValueError(
+                                    "verification response has invalid ids"
+                                )
                             indexed[row_id] = row
                         if set(indexed) != set(range(len(batch))):
                             raise ValueError("verification response ids are incomplete")
@@ -762,11 +888,16 @@ class OpenAIResolutionVerifier:
                             if row["plausible"] is not True:
                                 relation = SemanticRelation.INDEPENDENT
                             confidence = float(row["confidence"])
-                            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                            if (
+                                not math.isfinite(confidence)
+                                or not 0 <= confidence <= 1
+                            ):
                                 raise ValueError("verification confidence is invalid")
                             reasons_value = row["reasons"]
                             if not isinstance(reasons_value, list):
-                                raise ValueError("verification reasons must be an array")
+                                raise ValueError(
+                                    "verification reasons must be an array"
+                                )
                             reasons = tuple(
                                 str(reason)[:120] for reason in reasons_value[:8]
                             )
@@ -832,6 +963,9 @@ class SemanticMarketPipeline:
         min_polymarket_volume_24h: float = 0.0,
         min_kalshi_volume: int = 0,
         min_kalshi_open_interest: int = 0,
+        category_cap_share: float = 0.60,
+        family_cap_share: float = 0.40,
+        exploration_share: float = 0.10,
     ):
         if top_k <= 0 or max_verification_candidates <= 0:
             raise ValueError("semantic pipeline limits must be positive")
@@ -851,60 +985,159 @@ class SemanticMarketPipeline:
         self.min_polymarket_volume_24h = min_polymarket_volume_24h
         self.min_kalshi_volume = min_kalshi_volume
         self.min_kalshi_open_interest = min_kalshi_open_interest
+        self.allocator = StratifiedVerifierAllocator(
+            category_cap_share=category_cap_share,
+            family_cap_share=family_cap_share,
+            exploration_share=exploration_share,
+        )
 
-    async def match(self, polymarket: Sequence[Any], kalshi: Sequence[Any]) -> PipelineResult:
-        eligible_poly = [market for market in polymarket if self._polymarket_is_liquid(market)]
-        eligible_kalshi = [market for market in kalshi if self._kalshi_is_liquid(market)]
+    async def match(
+        self, polymarket: Sequence[Any], kalshi: Sequence[Any]
+    ) -> PipelineResult:
+        eligible_poly = [
+            market for market in polymarket if self._polymarket_is_liquid(market)
+        ]
+        eligible_kalshi = [
+            market for market in kalshi if self._kalshi_is_liquid(market)
+        ]
         poly_docs = [polymarket_document(market) for market in eligible_poly]
         kalshi_docs = [kalshi_document(market) for market in eligible_kalshi]
         all_docs = poly_docs + kalshi_docs
-        vectors = await self.embedder.embed_many([doc.semantic_text for doc in all_docs])
+        vectors = await self.embedder.embed_many(
+            [doc.semantic_text for doc in all_docs]
+        )
         poly_vectors = vectors[: len(poly_docs)]
         kalshi_vectors = vectors[len(poly_docs) :]
 
-        kalshi_by_category: dict[str, list[int]] = {}
-        token_indexes: dict[str, dict[str, set[int]]] = {}
+        global_token_index: dict[str, set[int]] = {}
         for index, document in enumerate(kalshi_docs):
-            kalshi_by_category.setdefault(document.category, []).append(index)
-            category_index = token_indexes.setdefault(document.category, {})
             for token in _retrieval_tokens(document.semantic_text):
-                category_index.setdefault(token, set()).add(index)
+                global_token_index.setdefault(token, set()).add(index)
 
         structural = 0
-        retrieved: list[tuple[MarketDocument, MarketDocument, float]] = []
+        retrieved: list[DiscoveryCandidate] = []
+        stage_rejections: list[tuple[DiscoveryCandidate, str, str, str]] = []
+        stage_rejection_counts: Counter[str] = Counter()
+        comparisons = 0
         for poly_doc, poly_vector in zip(poly_docs, poly_vectors):
             scores: list[tuple[float, MarketDocument]] = []
-            category_members = kalshi_by_category.get(poly_doc.category, [])
-            category_index = token_indexes.get(poly_doc.category, {})
             candidate_indexes: set[int] = set()
-            max_posting = max(20, int(len(category_members) * 0.20))
+            max_posting = max(20, int(len(kalshi_docs) * 0.20))
             for token in _retrieval_tokens(poly_doc.semantic_text):
-                posting = category_index.get(token, set())
+                posting = global_token_index.get(token, set())
                 if len(posting) <= max_posting:
                     candidate_indexes.update(posting)
+            rejected_for_market: dict[
+                str, list[tuple[float, MarketDocument, str, str]]
+            ] = {}
             for kalshi_index in candidate_indexes:
+                comparisons += 1
+                if comparisons % 5_000 == 0:
+                    await asyncio.sleep(0)
                 kalshi_doc = kalshi_docs[kalshi_index]
+                score = cosine_similarity(poly_vector, kalshi_vectors[kalshi_index])
+                if poly_doc.category != kalshi_doc.category:
+                    rejected_for_market.setdefault("category_mismatch", []).append(
+                        (score, kalshi_doc, "mismatch", "not_evaluated")
+                    )
+                    continue
+                temporal_decision = _temporal_alignment_reason(poly_doc, kalshi_doc)
                 if not _temporal_overlap(poly_doc, kalshi_doc):
+                    rejected_for_market.setdefault("temporal_mismatch", []).append(
+                        (score, kalshi_doc, "matched", temporal_decision)
+                    )
                     continue
                 structural += 1
-                score = cosine_similarity(poly_vector, kalshi_vectors[kalshi_index])
                 if score >= self.retrieval_floor:
                     scores.append((score, kalshi_doc))
-                if structural % 5_000 == 0:
-                    await asyncio.sleep(0)
+                else:
+                    rejected_for_market.setdefault("retrieval_below_floor", []).append(
+                        (score, kalshi_doc, "matched", temporal_decision)
+                    )
             scores.sort(key=lambda item: item[0], reverse=True)
+            for rank, (score, kalshi_doc) in enumerate(
+                scores[self.top_k : self.top_k + 3], start=self.top_k + 1
+            ):
+                stage_rejections.append(
+                    (
+                        DiscoveryCandidate(
+                            polymarket=poly_doc,
+                            kalshi=kalshi_doc,
+                            retrieval_score=score,
+                            per_market_rank=rank,
+                            global_rank=0,
+                        ),
+                        "per_market_top_k",
+                        "matched",
+                        _temporal_alignment_reason(poly_doc, kalshi_doc),
+                    )
+                )
+                stage_rejection_counts["per_market_top_k"] += 1
+            for reason, rejected in rejected_for_market.items():
+                rejected.sort(key=lambda item: item[0], reverse=True)
+                for rank, (
+                    score,
+                    kalshi_doc,
+                    category_decision,
+                    temporal_decision,
+                ) in enumerate(rejected[:3], start=1):
+                    stage_rejections.append(
+                        (
+                            DiscoveryCandidate(
+                                polymarket=poly_doc,
+                                kalshi=kalshi_doc,
+                                retrieval_score=max(0.0, score),
+                                per_market_rank=rank,
+                                global_rank=0,
+                            ),
+                            reason,
+                            category_decision,
+                            temporal_decision,
+                        )
+                    )
+                    stage_rejection_counts[reason] += 1
             retrieved.extend(
-                (poly_doc, kalshi_doc, score)
-                for score, kalshi_doc in scores[: self.top_k]
+                DiscoveryCandidate(
+                    polymarket=poly_doc,
+                    kalshi=kalshi_doc,
+                    retrieval_score=score,
+                    per_market_rank=rank,
+                    global_rank=0,
+                )
+                for rank, (score, kalshi_doc) in enumerate(
+                    scores[: self.top_k], start=1
+                )
             )
 
-        retrieved.sort(key=lambda item: item[2], reverse=True)
-        to_verify = retrieved[: self.max_verification_candidates]
-        verifications = await self.verifier.verify_many(to_verify)
+        retrieved.sort(key=lambda item: (-item.retrieval_score, item.pair_id))
+        retrieved = [
+            DiscoveryCandidate(
+                polymarket=item.polymarket,
+                kalshi=item.kalshi,
+                retrieval_score=item.retrieval_score,
+                per_market_rank=item.per_market_rank,
+                global_rank=rank,
+            )
+            for rank, item in enumerate(retrieved, start=1)
+        ]
+        allocation = self.allocator.allocate(
+            retrieved,
+            limit=self.max_verification_candidates,
+        )
+        to_verify = list(allocation.verification_sample)
+        verifications = await self.verifier.verify_many(
+            [(item.polymarket, item.kalshi, item.retrieval_score) for item in to_verify]
+        )
         verified: list[Verification] = []
         review: list[Verification] = []
+        verifier_results: dict[str, tuple[SemanticRelation, float, tuple[str, ...]]] = (
+            {}
+        )
         for candidate, (relation, confidence, reasons) in zip(to_verify, verifications):
-            left, right, score = candidate
+            left = candidate.polymarket
+            right = candidate.kalshi
+            score = candidate.retrieval_score
+            verifier_results[candidate.pair_id] = (relation, confidence, reasons)
             auto_approved = (
                 relation is SemanticRelation.EQUIVALENT
                 and confidence >= self.auto_approve_confidence
@@ -922,6 +1155,132 @@ class SemanticMarketPipeline:
                 verified.append(result)
             else:
                 review.append(result)
+
+        verifier_relation_counts = Counter(
+            relation.value
+            for relation, _confidence, _reasons in verifier_results.values()
+        )
+        verifier_count = sum(verifier_relation_counts.values())
+        allocation_metrics = {
+            **allocation.metrics,
+            "verifier_relation_counts": dict(sorted(verifier_relation_counts.items())),
+            "verifier_candidates": verifier_count,
+            "verifier_non_equivalent_rate": (
+                (verifier_count - verifier_relation_counts["equivalent"])
+                / verifier_count
+                if verifier_count
+                else 0.0
+            ),
+            # A verifier rejection is not proof that an approved pair was a
+            # false equivalence. This remains null until human adjudication.
+            "observed_false_equivalence_rate": None,
+            "promotion_ready": False,
+            "promotion_blocker": "manual_false_equivalence_adjudication_required",
+        }
+
+        baseline_ids = {
+            candidate.pair_id
+            for candidate in retrieved[: self.max_verification_candidates]
+        }
+        stratified_ids = {candidate.pair_id for candidate in allocation.selected}
+        verification_sample_ids = {
+            candidate.pair_id for candidate in allocation.verification_sample
+        }
+        candidate_by_id = {candidate.pair_id: candidate for candidate in retrieved}
+        shadow_outcomes: dict[str, Any] = {}
+        for cohort, cohort_ids in (
+            ("baseline", baseline_ids),
+            ("stratified", stratified_ids),
+        ):
+            relations = Counter(
+                result[0].value
+                for pair_id, result in verifier_results.items()
+                if pair_id in cohort_ids
+            )
+            equivalent_families = {
+                candidate_by_id[pair_id].event_family
+                for pair_id, result in verifier_results.items()
+                if pair_id in cohort_ids and result[0] is SemanticRelation.EQUIVALENT
+            }
+            shadow_outcomes[cohort] = {
+                "verified_sample": sum(relations.values()),
+                "relation_counts": dict(sorted(relations.items())),
+                "equivalent_unique_families": len(equivalent_families),
+            }
+        allocation_metrics["shadow_outcomes"] = shadow_outcomes
+        decision_by_id = {
+            decision.candidate.pair_id: decision for decision in allocation.decisions
+        }
+        discovery_candidates: list[dict[str, Any]] = []
+        for candidate in retrieved:
+            decision = decision_by_id[candidate.pair_id]
+            verifier_result = verifier_results.get(candidate.pair_id)
+            relation_value = (
+                verifier_result[0].value if verifier_result else "not_verified"
+            )
+            rejection_reason = decision.rejection_reason
+            if (
+                verifier_result
+                and verifier_result[0] is not SemanticRelation.EQUIVALENT
+            ):
+                rejection_reason = f"verifier_{verifier_result[0].value}"
+            discovery_candidates.append(
+                {
+                    "pair_id": candidate.pair_id,
+                    "polymarket_present": True,
+                    "kalshi_present": True,
+                    "polymarket_id": candidate.polymarket.execution_id,
+                    "kalshi_ticker": candidate.kalshi.execution_id,
+                    "category": candidate.category,
+                    "event_family": candidate.event_family,
+                    "category_decision": "matched",
+                    "temporal_decision": _temporal_alignment_reason(
+                        candidate.polymarket, candidate.kalshi
+                    ),
+                    "retrieval_score": candidate.retrieval_score,
+                    "per_market_rank": candidate.per_market_rank,
+                    "global_rank": candidate.global_rank,
+                    "selected_by_baseline": candidate.pair_id in baseline_ids,
+                    "selected_by_stratified": decision.selected,
+                    "selected_for_verification": (
+                        candidate.pair_id in verification_sample_ids
+                    ),
+                    "allocation_lane": decision.lane,
+                    "verifier_result": relation_value,
+                    "rejection_reason": rejection_reason,
+                    "preflight_result": (
+                        "pending"
+                        if relation_value == "equivalent"
+                        else "not_applicable"
+                    ),
+                    "executable_capacity": 0.0,
+                }
+            )
+        for candidate, reason, category_decision, temporal_decision in stage_rejections:
+            discovery_candidates.append(
+                {
+                    "pair_id": candidate.pair_id,
+                    "polymarket_present": True,
+                    "kalshi_present": True,
+                    "polymarket_id": candidate.polymarket.execution_id,
+                    "kalshi_ticker": candidate.kalshi.execution_id,
+                    "category": candidate.category,
+                    "event_family": candidate.event_family,
+                    "category_decision": category_decision,
+                    "temporal_decision": temporal_decision,
+                    "retrieval_score": candidate.retrieval_score,
+                    "per_market_rank": candidate.per_market_rank,
+                    "global_rank": 0,
+                    "selected_by_baseline": False,
+                    "selected_by_stratified": False,
+                    "selected_for_verification": False,
+                    "allocation_lane": "stage_rejected",
+                    "verifier_result": "not_applicable",
+                    "rejection_reason": reason,
+                    "preflight_result": "not_applicable",
+                    "executable_capacity": 0.0,
+                }
+            )
 
         return PipelineResult(
             verified=verified,
@@ -944,7 +1303,16 @@ class SemanticMarketPipeline:
                 kalshi_categories=dict(
                     sorted(Counter(doc.category for doc in kalshi_docs).items())
                 ),
+                retrieved_categories=dict(
+                    sorted(Counter(item.category for item in retrieved).items())
+                ),
+                retrieved_event_families=dict(
+                    sorted(Counter(item.event_family for item in retrieved).items())
+                ),
+                allocation=allocation_metrics,
+                stage_rejection_counts=dict(sorted(stage_rejection_counts.items())),
             ),
+            discovery_candidates=discovery_candidates,
         )
 
     def _polymarket_is_liquid(self, market: Any) -> bool:
@@ -962,7 +1330,10 @@ class SemanticMarketPipeline:
             return True
         volume = _finite_nonnegative(getattr(market, "volume", 0))
         open_interest = _finite_nonnegative(getattr(market, "open_interest", 0))
-        return volume >= self.min_kalshi_volume or open_interest >= self.min_kalshi_open_interest
+        return (
+            volume >= self.min_kalshi_volume
+            or open_interest >= self.min_kalshi_open_interest
+        )
 
 
 def _finite_nonnegative(value: Any) -> float:
@@ -974,6 +1345,8 @@ def _finite_nonnegative(value: Any) -> float:
 
 
 def _temporal_overlap(left: MarketDocument, right: MarketDocument) -> bool:
+    if left.event_date_key and right.event_date_key:
+        return left.event_date_key == right.event_date_key
     if left.closes_at and right.closes_at:
         # Equivalent prediction markets should have materially aligned cutoffs.
         return abs((left.closes_at - right.closes_at).total_seconds()) <= 7 * 86400
@@ -982,6 +1355,18 @@ def _temporal_overlap(left: MarketDocument, right: MarketDocument) -> bool:
     if right.opens_at and left.closes_at and right.opens_at > left.closes_at:
         return False
     return True
+
+
+def _temporal_alignment_reason(left: MarketDocument, right: MarketDocument) -> str:
+    if left.event_date_key and right.event_date_key:
+        return (
+            "semantic_event_aligned"
+            if left.event_date_key == right.event_date_key
+            else "semantic_event_mismatch"
+        )
+    if left.closes_at and right.closes_at:
+        return "legal_close_aligned"
+    return "insufficient_date_metadata"
 
 
 _RETRIEVAL_NOISE = frozenset(

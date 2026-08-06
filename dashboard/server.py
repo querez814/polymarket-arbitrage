@@ -147,6 +147,9 @@ class DashboardState:
             "matched_pairs_data": [],  # Detailed data for display
             "review_candidate_count": 0,
             "review_candidates": [],
+            "rules_equivalent_pairs": 0,
+            "preflight_usable_pairs": 0,
+            "preflight_rejections": {},
             "evaluation_funnel": {},
             "evaluation_ledger_count": 0,
             "near_misses": [],
@@ -2847,6 +2850,14 @@ def get_embedded_html() -> str:
             const nearMisses = Array.isArray(cp.near_misses) ? cp.near_misses : [];
             const receipts = Array.isArray(cp.paper_trade_receipts) ? cp.paper_trade_receipts : [];
             const funnel = cp.evaluation_funnel || {};
+            const allocation = semanticMetrics.allocation || {};
+            const shadowOutcomes = allocation.shadow_outcomes || {};
+            const shadowPreflight = allocation.shadow_preflight || {};
+            const mixText = (counts) => Object.entries(counts || {})
+                .sort((left, right) => Number(right[1]) - Number(left[1]))
+                .slice(0, 4)
+                .map(([name, count]) => `${escapeHtml(name)} ${Number(count).toLocaleString()}`)
+                .join(' · ') || 'No candidates';
             const strongest = nearMisses[0];
             evidencePanel.innerHTML = `<div style="border: 1px solid var(--border-color); border-radius: 8px; padding: 0.85rem; background: var(--bg-secondary);">
                 <div style="font-weight: 700; margin-bottom: 0.55rem;">Paper evidence</div>
@@ -2862,6 +2873,18 @@ def get_embedded_html() -> str:
                     ? `Strongest near miss: ${escapeHtml(strongest.token)} ${escapeHtml(strongest.buy_platform)} → ${escapeHtml(strongest.sell_platform)} · executable edge ${(Number(strongest.executable_net_edge || 0) * 100).toFixed(2)}% · ${escapeHtml(strongest.reason_code)}`
                     : 'No direction-level near misses have been recorded in this run yet.'}</div>
                 <div style="font-size: 0.68rem; color: var(--text-muted); margin-top: 0.35rem;">PnL source: ${escapeHtml(paper.pnl_source || 'unavailable')}</div>
+                <div style="border-top: 1px solid var(--border-color); margin-top: 0.8rem; padding-top: 0.7rem;">
+                    <div style="font-weight: 700; margin-bottom: 0.45rem;">Discovery A/B evidence</div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.55rem; font-size: 0.72rem;">
+                        <div><span style="color: var(--text-muted);">Rules equivalent</span><br><strong>${Number(cp.rules_equivalent_pairs || 0).toLocaleString()}</strong></div>
+                        <div><span style="color: var(--text-muted);">Usable books</span><br><strong>${Number(cp.preflight_usable_pairs || 0).toLocaleString()}</strong></div>
+                        <div><span style="color: var(--text-muted);">Verifier budget</span><br><strong>${Number(allocation.verification_budget || 0).toLocaleString()}</strong></div>
+                        <div><span style="color: var(--text-muted);">Category entropy</span><br><strong>${Number(allocation.selected_category_entropy || 0).toFixed(2)}</strong></div>
+                    </div>
+                    <div style="font-size: 0.69rem; color: var(--text-muted); margin-top: 0.45rem;">Baseline top-score mix: ${mixText(allocation.baseline_category_counts)}</div>
+                    <div style="font-size: 0.69rem; color: var(--text-muted); margin-top: 0.25rem;">Stratified mix: ${mixText(allocation.stratified_category_counts)}</div>
+                    <div style="font-size: 0.69rem; color: var(--text-muted); margin-top: 0.25rem;">Shadow outcomes: baseline ${Number((shadowOutcomes.baseline || {}).equivalent_unique_families || 0)} equivalent families / ${Number((shadowPreflight.baseline || {}).usable_books || 0)} usable books · stratified ${Number((shadowOutcomes.stratified || {}).equivalent_unique_families || 0)} equivalent families / ${Number((shadowPreflight.stratified || {}).usable_books || 0)} usable books</div>
+                </div>
             </div>`;
             
             // 🔥 Update Live Opportunities Feed

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,9 @@ def build_paper_run_report(
                 connection, "cross_platform_evaluations"
             ),
             "discovery_cycles": _table_exists(connection, "semantic_discovery_cycles"),
+            "discovery_candidates": _table_exists(
+                connection, "semantic_discovery_candidates"
+            ),
             "paper_trade_receipts": _table_exists(
                 connection, "paper_cross_platform_trades"
             )
@@ -141,6 +145,163 @@ def build_paper_run_report(
             if capabilities["discovery_cycles"]
             else None
         )
+        discovery_summary = {
+            "retrieved": 0,
+            "baseline_selected": 0,
+            "stratified_selected": 0,
+            "rules_equivalent": 0,
+            "usable_books": 0,
+        }
+        discovery_result = None
+        if discovery is not None:
+            discovery_result = dict(discovery)
+            discovery_result["metrics"] = json.loads(
+                discovery_result.pop("metrics_json")
+            )
+            if capabilities["discovery_candidates"]:
+                discovery_summary.update(
+                    dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS retrieved,
+                                   COALESCE(SUM(
+                                       selected_for_verification
+                                       AND selected_by_baseline
+                                   ), 0)
+                                       AS baseline_selected,
+                                   COALESCE(SUM(
+                                       selected_for_verification
+                                       AND selected_by_stratified
+                                   ), 0)
+                                       AS stratified_selected,
+                                   COALESCE(SUM(
+                                       CASE WHEN verifier_result = 'equivalent'
+                                            THEN 1 ELSE 0 END
+                                   ), 0) AS rules_equivalent,
+                                   COALESCE(SUM(
+                                       CASE WHEN preflight_result = 'usable'
+                                            THEN 1 ELSE 0 END
+                                   ), 0) AS usable_books
+                            FROM semantic_discovery_candidates WHERE cycle_id = ?
+                            """,
+                            (discovery_result["cycle_id"],),
+                        ).fetchone()
+                    )
+                )
+        discovery_ab_cycles: list[dict[str, Any]] = []
+        if capabilities["discovery_cycles"]:
+            cycle_rows = connection.execute(
+                """
+                SELECT id AS cycle_id, completed_at_utc, metrics_json
+                FROM semantic_discovery_cycles
+                WHERE run_id = ? ORDER BY id DESC LIMIT 24
+                """,
+                (selected_run_id,),
+            ).fetchall()
+            for cycle_row in reversed(cycle_rows):
+                cycle_summary = {
+                    "retrieved": 0,
+                    "baseline_selected": 0,
+                    "stratified_selected": 0,
+                    "rules_equivalent": 0,
+                    "usable_books": 0,
+                }
+                if capabilities["discovery_candidates"]:
+                    cycle_summary.update(
+                        dict(
+                            connection.execute(
+                                """
+                                SELECT COUNT(*) AS retrieved,
+                                       COALESCE(SUM(
+                                           selected_for_verification
+                                           AND selected_by_baseline
+                                       ), 0)
+                                           AS baseline_selected,
+                                       COALESCE(SUM(
+                                           selected_for_verification
+                                           AND selected_by_stratified
+                                       ), 0)
+                                           AS stratified_selected,
+                                       COALESCE(SUM(
+                                           verifier_result = 'equivalent'
+                                       ), 0) AS rules_equivalent,
+                                       COALESCE(SUM(
+                                           preflight_result = 'usable'
+                                       ), 0) AS usable_books
+                                FROM semantic_discovery_candidates
+                                WHERE cycle_id = ?
+                                """,
+                                (cycle_row["cycle_id"],),
+                            ).fetchone()
+                        )
+                    )
+                discovery_ab_cycles.append(
+                    {
+                        "cycle_id": cycle_row["cycle_id"],
+                        "completed_at_utc": cycle_row["completed_at_utc"],
+                        "metrics": json.loads(cycle_row["metrics_json"]),
+                        **cycle_summary,
+                    }
+                )
+        discovery_shadow_outcomes: dict[str, dict[str, Any]] = {}
+        if discovery_result is not None and capabilities["discovery_candidates"]:
+            for cohort, selection_column in (
+                ("baseline", "selected_by_baseline"),
+                ("stratified", "selected_by_stratified"),
+            ):
+                cohort_row = connection.execute(
+                    f"""
+                    SELECT COUNT(*) AS verified_sample,
+                           COALESCE(SUM(preflight_result = 'usable'), 0)
+                               AS usable_books
+                    FROM semantic_discovery_candidates
+                    WHERE cycle_id = ? AND selected_for_verification = 1
+                      AND {selection_column} = 1
+                    """,
+                    (discovery_result["cycle_id"],),
+                ).fetchone()
+                verified_sample = int(cohort_row["verified_sample"])
+                edge_row = {
+                    "direction_evaluations": 0,
+                    "mean_executable_net_edge": None,
+                    "best_executable_net_edge": None,
+                }
+                if capabilities["direction_evidence"]:
+                    edge_row.update(
+                        dict(
+                            connection.execute(
+                                f"""
+                                SELECT COUNT(*) AS direction_evaluations,
+                                       AVG(e.executable_net_edge)
+                                           AS mean_executable_net_edge,
+                                       MAX(e.executable_net_edge)
+                                           AS best_executable_net_edge
+                                FROM cross_platform_evaluations e
+                                JOIN semantic_discovery_candidates c
+                                  ON c.pair_id = e.pair_id
+                                WHERE c.cycle_id = ?
+                                  AND c.selected_for_verification = 1
+                                  AND c.{selection_column} = 1
+                                  AND e.run_id = ?
+                                  AND e.observed_at_utc >= ?
+                                """,
+                                (
+                                    discovery_result["cycle_id"],
+                                    selected_run_id,
+                                    discovery_result["completed_at_utc"],
+                                ),
+                            ).fetchone()
+                        )
+                    )
+                usable_books = int(cohort_row["usable_books"])
+                discovery_shadow_outcomes[cohort] = {
+                    "verified_sample": verified_sample,
+                    "usable_books": usable_books,
+                    "usable_book_rate": (
+                        usable_books / verified_sample if verified_sample else 0.0
+                    ),
+                    **edge_row,
+                }
 
         near_misses = (
             _rows(
@@ -242,7 +403,10 @@ def build_paper_run_report(
             "evaluation_funnel": funnel,
             "direction_evidence": evidence,
             "decision_outcomes": grouped_decisions,
-            "latest_discovery_cycle": dict(discovery) if discovery else None,
+            "latest_discovery_cycle": discovery_result,
+            "discovery_candidate_funnel": discovery_summary,
+            "discovery_ab_cycles": discovery_ab_cycles,
+            "discovery_shadow_outcomes": discovery_shadow_outcomes,
             "top_near_misses": near_misses,
             "paper_performance": {
                 **trade_totals,

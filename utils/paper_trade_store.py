@@ -254,6 +254,32 @@ class PaperTradeStore:
                 PRIMARY KEY (cycle_id, pair_id)
             );
 
+            CREATE TABLE IF NOT EXISTS semantic_discovery_candidates (
+                cycle_id INTEGER NOT NULL
+                    REFERENCES semantic_discovery_cycles(id) ON DELETE CASCADE,
+                pair_id TEXT NOT NULL,
+                polymarket_id TEXT NOT NULL,
+                kalshi_ticker TEXT NOT NULL,
+                polymarket_present INTEGER NOT NULL CHECK (polymarket_present IN (0, 1)),
+                kalshi_present INTEGER NOT NULL CHECK (kalshi_present IN (0, 1)),
+                category TEXT NOT NULL,
+                event_family TEXT NOT NULL,
+                category_decision TEXT NOT NULL,
+                temporal_decision TEXT NOT NULL,
+                retrieval_score REAL NOT NULL,
+                per_market_rank INTEGER NOT NULL,
+                global_rank INTEGER NOT NULL,
+                selected_by_baseline INTEGER NOT NULL CHECK (selected_by_baseline IN (0, 1)),
+                selected_by_stratified INTEGER NOT NULL CHECK (selected_by_stratified IN (0, 1)),
+                selected_for_verification INTEGER NOT NULL CHECK (selected_for_verification IN (0, 1)),
+                allocation_lane TEXT NOT NULL,
+                verifier_result TEXT NOT NULL,
+                rejection_reason TEXT NOT NULL,
+                preflight_result TEXT NOT NULL,
+                executable_capacity REAL NOT NULL DEFAULT 0,
+                PRIMARY KEY (cycle_id, pair_id)
+            );
+
             CREATE TABLE IF NOT EXISTS news_catalyst_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 headline TEXT NOT NULL,
@@ -390,6 +416,12 @@ class PaperTradeStore:
                 ON semantic_pair_reviews (approval_status, verification_confidence DESC);
             CREATE INDEX IF NOT EXISTS idx_semantic_discovery_cycles_run
                 ON semantic_discovery_cycles (run_id, completed_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_semantic_candidates_cycle_rank
+                ON semantic_discovery_candidates (cycle_id, global_rank);
+            CREATE INDEX IF NOT EXISTS idx_semantic_candidates_cycle_family
+                ON semantic_discovery_candidates (
+                    cycle_id, event_family, selected_by_stratified
+                );
             CREATE INDEX IF NOT EXISTS idx_news_catalyst_events_scanned
                 ON news_catalyst_events (scanned_at_utc DESC);
             CREATE INDEX IF NOT EXISTS idx_news_market_relevance_market
@@ -751,6 +783,7 @@ class PaperTradeStore:
         *,
         pairs: list[dict[str, Any]],
         metrics: dict[str, Any],
+        candidates: Optional[list[dict[str, Any]]] = None,
         completed_at: Optional[datetime] = None,
     ) -> int:
         """Persist one complete semantic-review result set in one transaction."""
@@ -829,6 +862,7 @@ class PaperTradeStore:
         auto_approved_count = sum(
             1 for pair in pairs if pair["approval_status"] == "auto_approved"
         )
+        normalized_candidates = self._normalize_discovery_candidates(candidates or [])
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             cursor = self._conn.execute(
@@ -884,6 +918,31 @@ class PaperTradeStore:
                 """,
                 ((*row, now, now) for row in normalized),
             )
+            self._conn.executemany(
+                """
+                INSERT INTO semantic_discovery_candidates (
+                    cycle_id, pair_id, polymarket_id, kalshi_ticker,
+                    polymarket_present, kalshi_present, category,
+                    event_family, category_decision, temporal_decision,
+                    retrieval_score, per_market_rank, global_rank,
+                    selected_by_baseline, selected_by_stratified,
+                    selected_for_verification,
+                    allocation_lane, verifier_result, rejection_reason,
+                    preflight_result, executable_capacity
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ((cycle_id, *row) for row in normalized_candidates),
+            )
+            self._conn.execute(
+                """
+                DELETE FROM semantic_discovery_cycles
+                WHERE run_id = ? AND id NOT IN (
+                    SELECT id FROM semantic_discovery_cycles
+                    WHERE run_id = ? ORDER BY id DESC LIMIT 48
+                )
+                """,
+                (run_id, run_id),
+            )
             self._conn.commit()
             return cycle_id
         except BaseException:
@@ -927,7 +986,152 @@ class PaperTradeStore:
                 pair.pop("verification_reasons_json")
             )
             result["pairs"].append(pair)
+        candidate_rows = self._conn.execute(
+            """
+            SELECT pair_id, polymarket_id, kalshi_ticker,
+                   polymarket_present, kalshi_present, category, event_family,
+                   category_decision, temporal_decision, retrieval_score,
+                   per_market_rank, global_rank, selected_by_baseline,
+                   selected_by_stratified, selected_for_verification,
+                   allocation_lane, verifier_result,
+                   rejection_reason, preflight_result, executable_capacity
+            FROM semantic_discovery_candidates
+            WHERE cycle_id = ? ORDER BY global_rank, pair_id
+            """,
+            (result["id"],),
+        ).fetchall()
+        result["candidates"] = []
+        for candidate_row in candidate_rows:
+            candidate = dict(candidate_row)
+            candidate["polymarket_present"] = bool(candidate["polymarket_present"])
+            candidate["kalshi_present"] = bool(candidate["kalshi_present"])
+            candidate["selected_by_baseline"] = bool(candidate["selected_by_baseline"])
+            candidate["selected_by_stratified"] = bool(
+                candidate["selected_by_stratified"]
+            )
+            candidate["selected_for_verification"] = bool(
+                candidate["selected_for_verification"]
+            )
+            result["candidates"].append(candidate)
         return result
+
+    @staticmethod
+    def _normalize_discovery_candidates(
+        candidates: list[dict[str, Any]],
+    ) -> list[tuple[Any, ...]]:
+        if len(candidates) > 100_000:
+            raise ValueError("discovery candidate cycle exceeds 100000 rows")
+        text_fields = (
+            "pair_id",
+            "polymarket_id",
+            "kalshi_ticker",
+            "category",
+            "event_family",
+            "category_decision",
+            "temporal_decision",
+            "allocation_lane",
+            "verifier_result",
+            "preflight_result",
+        )
+        normalized: list[tuple[Any, ...]] = []
+        seen: set[str] = set()
+        text_limits = {
+            "pair_id": 600,
+            "polymarket_id": 256,
+            "kalshi_ticker": 256,
+            "category": 64,
+            "event_family": 512,
+            "category_decision": 64,
+            "temporal_decision": 64,
+            "allocation_lane": 64,
+            "verifier_result": 64,
+            "preflight_result": 64,
+        }
+        for candidate in candidates:
+            if any(
+                not isinstance(candidate.get(field), str)
+                or not candidate[field].strip()
+                for field in text_fields
+            ):
+                raise ValueError("discovery candidate fields must be non-empty text")
+            for field, limit in text_limits.items():
+                if len(candidate[field]) > limit:
+                    raise ValueError(
+                        f"discovery candidate {field} exceeds {limit} characters"
+                    )
+            pair_id = candidate["pair_id"]
+            if pair_id in seen:
+                raise ValueError("discovery cycle contains duplicate candidates")
+            seen.add(pair_id)
+            score = candidate.get("retrieval_score")
+            capacity = candidate.get("executable_capacity", 0.0)
+            if (
+                isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not math.isfinite(float(score))
+                or not 0 <= float(score) <= 1
+            ):
+                raise ValueError("candidate retrieval score must be in [0, 1]")
+            if (
+                isinstance(capacity, bool)
+                or not isinstance(capacity, (int, float))
+                or not math.isfinite(float(capacity))
+                or float(capacity) < 0
+            ):
+                raise ValueError("candidate capacity must be finite and non-negative")
+            ranks = (candidate.get("per_market_rank"), candidate.get("global_rank"))
+            if any(
+                isinstance(rank, bool) or not isinstance(rank, int) or rank < 0
+                for rank in ranks
+            ):
+                raise ValueError("candidate ranks must be non-negative integers")
+            polymarket_present = candidate.get("polymarket_present", True)
+            kalshi_present = candidate.get("kalshi_present", True)
+            if not isinstance(polymarket_present, bool) or not isinstance(
+                kalshi_present, bool
+            ):
+                raise ValueError("candidate inventory flags must be booleans")
+            selected_by_baseline = candidate.get("selected_by_baseline")
+            selected_by_stratified = candidate.get("selected_by_stratified")
+            selected_for_verification = candidate.get(
+                "selected_for_verification", selected_by_stratified
+            )
+            if (
+                not isinstance(selected_by_baseline, bool)
+                or not isinstance(selected_by_stratified, bool)
+                or not isinstance(selected_for_verification, bool)
+            ):
+                raise ValueError("candidate selection flags must be booleans")
+            rejection_reason = candidate.get("rejection_reason", "")
+            if not isinstance(rejection_reason, str):
+                raise ValueError("candidate rejection reason must be text")
+            if len(rejection_reason) > 512:
+                raise ValueError("candidate rejection_reason exceeds 512 characters")
+            normalized.append(
+                (
+                    pair_id,
+                    candidate["polymarket_id"],
+                    candidate["kalshi_ticker"],
+                    int(polymarket_present),
+                    int(kalshi_present),
+                    candidate["category"],
+                    candidate["event_family"],
+                    candidate["category_decision"],
+                    candidate["temporal_decision"],
+                    float(score),
+                    ranks[0],
+                    ranks[1],
+                    int(selected_by_baseline),
+                    int(selected_by_stratified),
+                    int(selected_for_verification),
+                    candidate["allocation_lane"],
+                    candidate["verifier_result"],
+                    rejection_reason,
+                    candidate["preflight_result"],
+                    float(capacity),
+                )
+            )
+        return normalized
 
     def recent_pair_reviews(self, limit: int = 200) -> list[dict[str, Any]]:
         rows = self._conn.execute(
