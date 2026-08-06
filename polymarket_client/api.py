@@ -211,6 +211,15 @@ class PolymarketClient(BasePolymarketClient):
 
         # HTTP client
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._http_recycle_lock = asyncio.Lock()
+        self._http_recycle_cooldown_seconds = 30.0
+        self._last_http_recycle_at = float("-inf")
+        self._http_pool_recycles = 0
+        self._http_recycle_suppressed = 0
+        self._last_http_recycle_reason = ""
+        self._retired_http_clients: list[httpx.AsyncClient] = []
+        self._retired_http_close_failures = 0
+        self._http_close_timeout_seconds = 5.0
 
         # WebSocket connection
         self._ws_connection: Any = None
@@ -253,6 +262,17 @@ class PolymarketClient(BasePolymarketClient):
             "normalization_failures": self._orderbook_normalization_failures,
         }
 
+    @property
+    def connection_metrics(self) -> dict[str, int | str]:
+        """Return lifecycle evidence for automatic read-pool recovery."""
+        return {
+            "pool_recycles": self._http_pool_recycles,
+            "recycle_suppressed": self._http_recycle_suppressed,
+            "retired_pools": len(self._retired_http_clients),
+            "retired_pool_close_failures": self._retired_http_close_failures,
+            "last_recycle_reason": self._last_http_recycle_reason,
+        }
+
     async def __aenter__(self) -> "PolymarketClient":
         await self.connect()
         return self
@@ -262,13 +282,59 @@ class PolymarketClient(BasePolymarketClient):
 
     async def connect(self) -> None:
         """Initialize HTTP client and optional live trading bridge."""
-        self._http_client = httpx.AsyncClient(
-            timeout=self.timeout,
-            headers=self._get_headers(),
-        )
+        self._http_client = self._build_http_client()
         if not self.dry_run:
             self._init_clob_bridge()
         logger.info(f"Polymarket client connected (dry_run={self.dry_run})")
+
+    def _build_http_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=self.timeout,
+            headers=self._get_headers(),
+        )
+
+    async def _try_close_http_client(self, client: httpx.AsyncClient) -> bool:
+        try:
+            async with asyncio.timeout(self._http_close_timeout_seconds):
+                await client.aclose()
+        except TimeoutError:
+            self._retired_http_close_failures += 1
+            logger.error("Timed out closing exhausted Polymarket HTTP pool")
+            return False
+        except Exception:
+            self._retired_http_close_failures += 1
+            logger.exception("Failed closing exhausted Polymarket HTTP pool")
+            return False
+        return True
+
+    async def _drain_retired_http_clients(self) -> None:
+        for client in tuple(self._retired_http_clients):
+            if await self._try_close_http_client(client):
+                self._retired_http_clients.remove(client)
+
+    async def recycle_http_client(self, *, reason: str) -> bool:
+        """Atomically replace a starved read pool, bounded by a cooldown."""
+        async with self._http_recycle_lock:
+            now = time.monotonic()
+            if now - self._last_http_recycle_at < self._http_recycle_cooldown_seconds:
+                self._http_recycle_suppressed += 1
+                return False
+            await self._drain_retired_http_clients()
+            if self._retired_http_clients:
+                self._http_recycle_suppressed += 1
+                logger.error(
+                    "Polymarket HTTP recycle suppressed until retired pool closes"
+                )
+                return False
+            old_client = self._http_client
+            self._http_client = self._build_http_client()
+            self._last_http_recycle_at = now
+            self._http_pool_recycles += 1
+            self._last_http_recycle_reason = reason
+            if old_client is not None:
+                if not await self._try_close_http_client(old_client):
+                    self._retired_http_clients.append(old_client)
+            return True
 
     def _init_clob_bridge(self) -> None:
         """Initialize authenticated CLOB trading when running live."""
@@ -352,9 +418,13 @@ class PolymarketClient(BasePolymarketClient):
 
     async def disconnect(self) -> None:
         """Close connections."""
-        if self._http_client:
-            await self._http_client.aclose()
-            self._http_client = None
+        async with self._http_recycle_lock:
+            await self._drain_retired_http_clients()
+            if self._http_client and await self._try_close_http_client(
+                self._http_client
+            ):
+                self._http_client = None
+            await self._drain_retired_http_clients()
         if self._ws_connection:
             await self._ws_connection.close()
             self._ws_connection = None
@@ -383,10 +453,6 @@ class PolymarketClient(BasePolymarketClient):
         """Make an HTTP request with retry logic."""
         if not self._http_client:
             await self.connect()
-        client = self._http_client
-        if client is None:
-            raise RuntimeError("Polymarket HTTP client failed to initialize")
-
         url = f"{base_url or self.rest_url}{endpoint}"
         resilience = self._resilience.setdefault(
             base_url or self.rest_url,
@@ -394,6 +460,9 @@ class PolymarketClient(BasePolymarketClient):
         )
         for attempt in range(self.max_retries):
             try:
+                client = self._http_client
+                if client is None:
+                    raise RuntimeError("Polymarket HTTP client failed to initialize")
                 resilience.before_request()
                 response = await client.request(
                     method,
@@ -799,8 +868,12 @@ class PolymarketClient(BasePolymarketClient):
         Uses Polymarket CLOB API:
         GET https://clob.polymarket.com/book?token_id={token_id}
         """
-        # Get market to find token IDs
-        market = await self.get_market(market_id)
+        # Token identities are immutable for a market. Discovery already caches
+        # them under both the Gamma id and condition id, so the hot order-book
+        # path must not hit Gamma again for every snapshot.
+        market = self._markets_cache.get(market_id)
+        if market is None:
+            market = await self.get_market(market_id)
 
         if not market.yes_token_id or not market.no_token_id:
             logger.warning(f"No token IDs for market {market_id}")

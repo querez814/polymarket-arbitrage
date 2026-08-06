@@ -158,6 +158,12 @@ class DashboardState:
             "matching_checked": 0,  # Number of comparisons done
             "matching_total": 0,  # Total comparisons to do
             "matching_status": "idle",  # idle/loading/matching/complete/no_matches/error
+            "scan_status": "idle",
+            "last_scan_attempt_at": None,
+            "last_fresh_snapshot_at": None,
+            "degraded_reason": None,
+            "polymarket_connection_metrics": {},
+            "kalshi_connection_metrics": {},
         }
 
         # WebSocket connections
@@ -1780,6 +1786,11 @@ def get_embedded_html() -> str:
         .connection-status.connected {
             border-color: var(--accent-green);
         }
+
+        .connection-status.degraded {
+            border-color: #f59e0b;
+            color: #fbbf24;
+        }
         
         .connection-status.disconnected {
             border-color: var(--accent-red);
@@ -2233,7 +2244,7 @@ def get_embedded_html() -> str:
             
             ws.onopen = () => {
                 console.log('WebSocket connected');
-                document.getElementById('connectionStatus').textContent = '🟢 Connected';
+                document.getElementById('connectionStatus').textContent = '🟢 Dashboard connected';
                 document.getElementById('connectionStatus').className = 'connection-status connected';
                 reconnectAttempts = 0;
             };
@@ -2724,10 +2735,23 @@ def get_embedded_html() -> str:
         function updateCrossPlatform() {
             const cp = state.cross_platform || {};
             const matchingStatus = cp.matching_status || 'idle';
+            const scanStatus = cp.scan_status || 'idle';
             const semanticMetrics = cp.semantic_metrics || {};
+            const connectionEl = document.getElementById('connectionStatus');
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                if (scanStatus === 'degraded' || scanStatus === 'error') {
+                    connectionEl.textContent = '🟠 Data scanner degraded';
+                    connectionEl.className = 'connection-status degraded';
+                } else {
+                    connectionEl.textContent = '🟢 Dashboard connected';
+                    connectionEl.className = 'connection-status connected';
+                }
+            }
             
             // Update status badge
             const statusEl = document.getElementById('crossPlatformStatus');
+            statusEl.title = '';
             if (!cp.enabled) {
                 statusEl.textContent = 'DISABLED';
                 statusEl.style.background = 'linear-gradient(135deg, #666, #444)';
@@ -2736,6 +2760,10 @@ def get_embedded_html() -> str:
                 statusEl.style.background = 'linear-gradient(135deg, #ef4444, #b91c1c)';
             } else if (matchingStatus === 'no_matches') {
                 statusEl.textContent = 'NO VERIFIED PAIRS';
+                statusEl.style.background = 'linear-gradient(135deg, #f59e0b, #b45309)';
+            } else if (scanStatus === 'degraded' || scanStatus === 'error') {
+                statusEl.textContent = 'SCANNER DEGRADED';
+                statusEl.title = cp.degraded_reason || 'Fresh paired snapshots are unavailable';
                 statusEl.style.background = 'linear-gradient(135deg, #f59e0b, #b45309)';
             } else if (matchingStatus === 'complete' && (cp.matched_pairs || 0) > 0) {
                 statusEl.textContent = 'SCANNING PRICES';

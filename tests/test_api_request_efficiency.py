@@ -7,7 +7,21 @@ import pytest
 from kalshi_client.api import KalshiClient
 from kalshi_client.models import KalshiMarket
 from polymarket_client.api import OrderBookNormalizationError, PolymarketClient
-from polymarket_client.models import TokenType
+from polymarket_client.models import Market, TokenType
+
+
+class _ControlledCloseClient:
+    def __init__(self, *outcomes: str):
+        self.outcomes = list(outcomes)
+        self.close_calls = 0
+
+    async def aclose(self):
+        self.close_calls += 1
+        outcome = self.outcomes.pop(0) if self.outcomes else "success"
+        if outcome == "timeout":
+            await asyncio.Event().wait()
+        if outcome == "error":
+            raise RuntimeError("close failed")
 
 
 def test_polymarket_suppresses_token_after_first_no_orderbook_response():
@@ -240,6 +254,182 @@ def test_polymarket_active_market_list_uses_ttl_cache():
     assert first[0].end_date is not None
     assert first[0].end_date.month == 8
     assert metrics["https://gamma-api.polymarket.com"]["requests"] == 1
+
+
+def test_polymarket_orderbook_uses_cached_market_metadata():
+    gamma_calls = 0
+    clob_calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal gamma_calls, clob_calls
+        if request.url.host == "gamma-api.polymarket.com":
+            gamma_calls += 1
+            pytest.fail("cached orderbook lookup must not call Gamma")
+        clob_calls += 1
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "bids": [{"price": "0.40", "size": "10"}],
+                "asks": [{"price": "0.60", "size": "10"}],
+            },
+        )
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1)
+        client._cache_market(
+            Market(
+                market_id="cached-1",
+                condition_id="condition-cached-1",
+                question="Cached market?",
+                yes_token_id="yes-cached-1",
+                no_token_id="no-cached-1",
+                active=True,
+            )
+        )
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            return await client.get_orderbook("cached-1")
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    book = asyncio.run(exercise())
+
+    assert gamma_calls == 0
+    assert clob_calls == 2
+    assert book.yes.bids.best_price == pytest.approx(0.40)
+    assert book.no.asks.best_price == pytest.approx(0.60)
+
+
+def test_polymarket_http_pool_recycle_is_atomic_and_rate_limited():
+    async def exercise():
+        client = PolymarketClient()
+        await client.connect()
+        try:
+            first = await client.recycle_http_client(reason="snapshot_starvation")
+            second = await client.recycle_http_client(reason="snapshot_starvation")
+            return first, second, client.connection_metrics
+        finally:
+            await client.disconnect()
+
+    first, second, metrics = asyncio.run(exercise())
+
+    assert first is True
+    assert second is False
+    assert metrics == {
+        "pool_recycles": 1,
+        "recycle_suppressed": 1,
+        "retired_pools": 0,
+        "retired_pool_close_failures": 0,
+        "last_recycle_reason": "snapshot_starvation",
+    }
+
+
+def test_kalshi_http_pool_recycle_is_atomic_and_rate_limited():
+    async def exercise():
+        async with KalshiClient() as client:
+            first = await client.recycle_http_client(reason="snapshot_starvation")
+            second = await client.recycle_http_client(reason="snapshot_starvation")
+            return first, second, client.connection_metrics
+
+    first, second, metrics = asyncio.run(exercise())
+
+    assert first is True
+    assert second is False
+    assert metrics == {
+        "pool_recycles": 1,
+        "recycle_suppressed": 1,
+        "retired_pools": 0,
+        "retired_pool_close_failures": 0,
+        "last_recycle_reason": "snapshot_starvation",
+    }
+
+
+def test_polymarket_failed_pool_close_is_bounded_and_retried_on_shutdown():
+    async def exercise():
+        client = PolymarketClient()
+        exhausted = _ControlledCloseClient("timeout", "timeout", "success")
+        replacement = _ControlledCloseClient("success")
+        builds = 0
+
+        def build_client():
+            nonlocal builds
+            builds += 1
+            return replacement
+
+        client._http_client = exhausted
+        client._build_http_client = build_client
+        client._http_close_timeout_seconds = 0.001
+
+        first = await client.recycle_http_client(reason="snapshot_starvation")
+        client._last_http_recycle_at = float("-inf")
+        second = await client.recycle_http_client(reason="snapshot_starvation")
+        before_shutdown = client.connection_metrics
+        await client.disconnect()
+        return (
+            first,
+            second,
+            builds,
+            exhausted.close_calls,
+            before_shutdown,
+            client.connection_metrics,
+        )
+
+    first, second, builds, close_calls, before_shutdown, after_shutdown = asyncio.run(
+        exercise()
+    )
+
+    assert first is True
+    assert second is False
+    assert builds == 1
+    assert close_calls == 3
+    assert before_shutdown["retired_pools"] == 1
+    assert before_shutdown["retired_pool_close_failures"] == 2
+    assert after_shutdown["retired_pools"] == 0
+
+
+def test_kalshi_failed_pool_close_is_bounded_and_retried_on_shutdown():
+    async def exercise():
+        client = KalshiClient()
+        exhausted = _ControlledCloseClient("error", "error", "success")
+        replacement = _ControlledCloseClient("success")
+        builds = 0
+
+        def build_client():
+            nonlocal builds
+            builds += 1
+            return replacement
+
+        client._client = exhausted
+        client._build_http_client = build_client
+        client._http_close_timeout_seconds = 0.001
+
+        first = await client.recycle_http_client(reason="snapshot_starvation")
+        client._last_http_recycle_at = float("-inf")
+        second = await client.recycle_http_client(reason="snapshot_starvation")
+        before_shutdown = client.connection_metrics
+        await client.__aexit__(None, None, None)
+        return (
+            first,
+            second,
+            builds,
+            exhausted.close_calls,
+            before_shutdown,
+            client.connection_metrics,
+        )
+
+    first, second, builds, close_calls, before_shutdown, after_shutdown = asyncio.run(
+        exercise()
+    )
+
+    assert first is True
+    assert second is False
+    assert builds == 1
+    assert close_calls == 3
+    assert before_shutdown["retired_pools"] == 1
+    assert before_shutdown["retired_pool_close_failures"] == 2
+    assert after_shutdown["retired_pools"] == 0
 
 
 def test_polymarket_market_pagination_does_not_use_rejected_volume_sort():

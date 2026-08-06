@@ -1443,7 +1443,29 @@ class TradingBotWithDashboard:
             and self._matched_pairs
             and self._xplat_scan_task
             and not self._xplat_scan_task.done()
+            and self._snapshot_scanner_is_fresh()
         )
+
+    def _snapshot_scanner_is_fresh(self) -> bool:
+        if dashboard_state.cross_platform.get("scan_status") != "scanning":
+            return False
+        raw_timestamp = dashboard_state.cross_platform.get("last_fresh_snapshot_at")
+        if not isinstance(raw_timestamp, str) or not raw_timestamp:
+            return False
+        try:
+            observed_at = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        age_seconds = (
+            datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)
+        ).total_seconds()
+        freshness_window = max(
+            60.0,
+            float(self.config.mode.cold_pair_scan_seconds) * 3,
+        )
+        return 0 <= age_seconds <= freshness_window
 
     def _critical_task_done(self, task: asyncio.Task) -> None:
         if not self._running or task.cancelled():
@@ -1562,6 +1584,7 @@ class TradingBotWithDashboard:
             evaluation_counts: Counter[str] = Counter()
             evaluation_rows: list[dict] = []
             pending_snapshots: dict[asyncio.Task, object] = {}
+            unexpected_snapshot_failure = False
             try:
                 due_pairs = (
                     self.pair_monitor.due_pairs(list(self._matched_pairs))
@@ -1578,6 +1601,9 @@ class TradingBotWithDashboard:
                 dashboard_state.cross_platform["kalshi_rest_metrics"] = (
                     self.kalshi_client.request_metrics
                 )
+                dashboard_state.cross_platform["kalshi_connection_metrics"] = getattr(
+                    self.kalshi_client, "connection_metrics", {}
+                )
                 if self.client:
                     dashboard_state.cross_platform["polymarket_rest_metrics"] = (
                         self.client.request_metrics
@@ -1585,11 +1611,18 @@ class TradingBotWithDashboard:
                     dashboard_state.cross_platform["polymarket_orderbook_metrics"] = (
                         self.client.orderbook_metrics
                     )
+                    dashboard_state.cross_platform["polymarket_connection_metrics"] = (
+                        getattr(self.client, "connection_metrics", {})
+                    )
                 if not due_pairs:
                     await asyncio.sleep(0.25)
                     continue
+                dashboard_state.cross_platform["last_scan_attempt_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
 
                 async def fetch_due_snapshot(due_pair):
+                    nonlocal unexpected_snapshot_failure
                     preflight = self._preflight_snapshots.pop(
                         due_pair.pair.pair_id, None
                     )
@@ -1604,12 +1637,16 @@ class TradingBotWithDashboard:
                     except PairSnapshotError as exc:
                         return exc
                     except Exception as exc:
+                        unexpected_snapshot_failure = True
                         logger.warning(
                             "Pair snapshot isolated unexpected %s for %s",
                             type(exc).__name__,
                             due_pair.pair.pair_id,
                         )
                         dashboard_state.cross_platform["scan_status"] = "degraded"
+                        dashboard_state.cross_platform["degraded_reason"] = (
+                            "paired_snapshot_unexpected_error"
+                        )
                         dashboard_state.cross_platform[
                             "last_pair_snapshot_unexpected_error"
                         ] = {
@@ -1691,6 +1728,9 @@ class TradingBotWithDashboard:
                     )
                     dashboard_state.cross_platform["last_scan_at"] = (
                         datetime.utcnow().isoformat()
+                    )
+                    dashboard_state.cross_platform["last_fresh_snapshot_at"] = (
+                        datetime.now(timezone.utc).isoformat()
                     )
 
                     try:
@@ -1923,6 +1963,26 @@ class TradingBotWithDashboard:
                 if pending_snapshots:
                     await self._cancel_pending_snapshot_tasks(pending_snapshots)
 
+                if due_pairs and evaluation_counts["paired_snapshot_fresh"] == 0:
+                    all_timed_out = evaluation_counts["paired_snapshot_timeout"] == len(
+                        due_pairs
+                    )
+                    reason = (
+                        "all_paired_snapshots_timed_out"
+                        if all_timed_out
+                        else "paired_snapshot_starvation"
+                    )
+                    dashboard_state.cross_platform["scan_status"] = "degraded"
+                    dashboard_state.cross_platform["degraded_reason"] = reason
+                    if evaluation_counts["paired_snapshot_timeout"] > 0:
+                        await self._recycle_snapshot_http_clients(reason=reason)
+                elif (
+                    evaluation_counts["paired_snapshot_fresh"] > 0
+                    and not unexpected_snapshot_failure
+                ):
+                    dashboard_state.cross_platform["scan_status"] = "scanning"
+                    dashboard_state.cross_platform.pop("degraded_reason", None)
+
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
                 self._persist_cross_platform_evaluations(evaluation_rows)
@@ -1945,6 +2005,28 @@ class TradingBotWithDashboard:
                     evidence={"error": str(e)},
                 )
                 raise
+
+    async def _recycle_snapshot_http_clients(self, *, reason: str) -> None:
+        """Recycle read pools after a cycle proves they cannot yield one pair."""
+        for venue, client in (
+            ("polymarket", self.client),
+            ("kalshi", self.kalshi_client),
+        ):
+            recycle = getattr(client, "recycle_http_client", None)
+            if recycle is None:
+                logger.error(
+                    "%s client cannot recycle its HTTP pool after %s", venue, reason
+                )
+                continue
+            try:
+                recycled = await recycle(reason=reason)
+            except Exception:
+                logger.exception(
+                    "Failed to recycle %s HTTP pool after %s", venue, reason
+                )
+                continue
+            if recycled:
+                logger.warning("Recycled %s HTTP pool after %s", venue, reason)
 
     @staticmethod
     async def _cancel_pending_snapshot_tasks(

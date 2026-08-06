@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 import asyncio
 
@@ -123,10 +124,41 @@ def test_cross_platform_readiness_requires_live_monitor_and_scanner_tasks():
     bot._matched_pairs = [object()]
     from dashboard.server import dashboard_state
 
-    dashboard_state.cross_platform["matching_status"] = "complete"
+    dashboard_state.cross_platform.update(
+        {
+            "matching_status": "complete",
+            "scan_status": "scanning",
+            "last_fresh_snapshot_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     assert bot._critical_dependencies_ready() is True
 
     bot._xplat_scan_task = finished
+    assert bot._critical_dependencies_ready() is False
+
+
+def test_cross_platform_readiness_rejects_stale_snapshot_scanner():
+    config = BotConfig()
+    config.mode.cross_platform_enabled = True
+    config.mode.kalshi_enabled = True
+    bot = TradingBotWithDashboard(config)
+    pending = SimpleNamespace(done=lambda: False)
+    bot._kalshi_monitor_task = pending
+    bot._xplat_scan_task = pending
+    bot._matched_pairs = [object()]
+
+    from dashboard.server import dashboard_state
+
+    dashboard_state.cross_platform.update(
+        {
+            "matching_status": "complete",
+            "scan_status": "scanning",
+            "last_fresh_snapshot_at": (
+                datetime.now(timezone.utc) - timedelta(minutes=5)
+            ).isoformat(),
+        }
+    )
+
     assert bot._critical_dependencies_ready() is False
 
 

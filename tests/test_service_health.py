@@ -157,6 +157,15 @@ def test_embedded_dashboard_distinguishes_no_matches_from_active_price_scanning(
     assert "filtered_kalshi_markets" in html
 
 
+def test_embedded_dashboard_distinguishes_transport_from_scanner_health():
+    html = get_embedded_html()
+
+    assert "SCANNER DEGRADED" in html
+    assert "Data scanner degraded" in html
+    assert "Dashboard connected" in html
+    assert "const scanStatus = cp.scan_status || 'idle';" in html
+
+
 def test_embedded_dashboard_exposes_discovery_ab_and_book_preflight_evidence():
     html = get_embedded_html()
 

@@ -149,6 +149,46 @@ async def test_pair_snapshot_timeout_is_a_reason_coded_pair_outcome():
 
 
 @pytest.mark.asyncio
+async def test_pair_snapshot_timeout_cancels_and_awaits_both_venue_reads():
+    active_reads = 0
+    completed_cleanup = 0
+    both_started = asyncio.Event()
+
+    async def blocked_read() -> OrderBook:
+        nonlocal active_reads, completed_cleanup
+        active_reads += 1
+        if active_reads == 2:
+            both_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            active_reads -= 1
+            completed_cleanup += 1
+
+    class SlowClient:
+        async def get_orderbook(self, market_id: str) -> OrderBook:
+            return await blocked_read()
+
+        async def get_orderbook_unified(self, ticker: str) -> OrderBook:
+            return await blocked_read()
+
+    pair = MarketPair("poly-1", "KX-1", "Alice?", "Alice?", 0.98)
+    source = PairSnapshotSource(
+        SlowClient(),
+        SlowClient(),
+        max_age_seconds=5,
+        timeout_seconds=0.01,
+    )
+
+    with pytest.raises(PairSnapshotError, match="paired_snapshot_timeout"):
+        await source.fetch(pair)
+
+    assert both_started.is_set()
+    assert active_reads == 0
+    assert completed_cleanup == 2
+
+
+@pytest.mark.asyncio
 async def test_pair_snapshot_rejects_an_empty_book_as_unusable_evidence():
     now = datetime.now(timezone.utc)
 
@@ -747,3 +787,203 @@ async def test_scanner_cancellation_cancels_and_awaits_child_snapshot_tasks():
         await scanner
 
     assert cancelled == len(pairs)
+
+
+@pytest.mark.asyncio
+async def test_all_timeout_scan_cycle_recycles_read_clients_and_degrades_health():
+    pair = MarketPair("poly-timeout", "KX-TIMEOUT", "Timeout?", "Timeout?", 0.98)
+    recycle_calls = []
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            return PairSnapshotError(
+                "paired_snapshot_timeout", evidence={"timeout_seconds": 5.0}
+            )
+
+    class PairMonitor:
+        calls = 0
+
+        def due_pairs(self, requested):
+            self.calls += 1
+            if self.calls > 1:
+                bot._running = False
+                return []
+            return [DuePair(pair=pair, tier="hot")]
+
+        def mark_evaluated(self, *args, **kwargs):
+            pass
+
+    class ReadClient:
+        request_metrics = {}
+        orderbook_metrics = {}
+
+        def __init__(self, venue):
+            self.venue = venue
+
+        async def recycle_http_client(self, *, reason):
+            recycle_calls.append((self.venue, reason))
+            return True
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = [pair]
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = type("Detector", (), {"min_edge": 0.02})()
+    bot.client = ReadClient("polymarket")
+    bot.kalshi_client = ReadClient("kalshi")
+    bot.pair_snapshot_source = SnapshotSource()
+
+    await asyncio.wait_for(bot._scan_cross_platform_pairs(), timeout=0.5)
+
+    from dashboard.server import dashboard_state
+
+    assert recycle_calls == [
+        ("polymarket", "all_paired_snapshots_timed_out"),
+        ("kalshi", "all_paired_snapshots_timed_out"),
+    ]
+    assert dashboard_state.cross_platform["scan_status"] == "degraded"
+    assert dashboard_state.cross_platform["degraded_reason"] == (
+        "all_paired_snapshots_timed_out"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scanner_resumes_fresh_evaluations_after_timeout_pool_recovery():
+    pair = MarketPair("poly-recover", "KX-RECOVER", "Recover?", "Recover?", 0.98)
+    now = datetime.now(timezone.utc)
+    fetches = 0
+    evaluations = 0
+    recycle_calls = []
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            nonlocal fetches
+            fetches += 1
+            if fetches == 1:
+                return PairSnapshotError("paired_snapshot_timeout")
+            return PairSnapshot(
+                requested.pair_id,
+                _book_with_depth(requested.polymarket_id, now),
+                _book_with_depth(requested.kalshi_ticker, now),
+                5,
+            )
+
+    class PairMonitor:
+        def due_pairs(self, requested):
+            return [DuePair(pair=pair, tier="hot")]
+
+        def mark_evaluated(self, *args, **kwargs):
+            pass
+
+    class ReadClient:
+        request_metrics = {}
+        orderbook_metrics = {}
+        connection_metrics = {}
+
+        def __init__(self, venue):
+            self.venue = venue
+
+        async def recycle_http_client(self, *, reason):
+            recycle_calls.append((self.venue, reason))
+            return True
+
+    class Detector:
+        min_edge = 0.02
+
+        def get_last_direction_evaluations(self, pair_id):
+            return ()
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = [pair]
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = Detector()
+    bot.client = ReadClient("polymarket")
+    bot.kalshi_client = ReadClient("kalshi")
+    bot.pair_snapshot_source = SnapshotSource()
+
+    async def evaluate(*args):
+        nonlocal evaluations
+        evaluations += 1
+        bot._running = False
+        return None, None
+
+    bot.evaluate_cross_platform_pair = evaluate
+
+    await asyncio.wait_for(bot._scan_cross_platform_pairs(), timeout=1)
+
+    from dashboard.server import dashboard_state
+
+    assert evaluations == 1
+    assert recycle_calls == [
+        ("polymarket", "all_paired_snapshots_timed_out"),
+        ("kalshi", "all_paired_snapshots_timed_out"),
+    ]
+    assert dashboard_state.cross_platform["scan_status"] == "scanning"
+    assert dashboard_state.cross_platform["last_fresh_snapshot_at"] is not None
+    assert "degraded_reason" not in dashboard_state.cross_platform
+
+
+@pytest.mark.asyncio
+async def test_zero_fresh_cycle_recycles_pool_when_any_pair_times_out():
+    pairs = [
+        MarketPair("poly-timeout", "KX-TIMEOUT", "Timeout?", "Timeout?", 0.98),
+        MarketPair("poly-empty", "KX-EMPTY", "Empty?", "Empty?", 0.98),
+    ]
+    recycle_calls = []
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            reason = (
+                "paired_snapshot_timeout"
+                if pair is pairs[0]
+                else "empty_polymarket_orderbook"
+            )
+            return PairSnapshotError(reason)
+
+    class PairMonitor:
+        calls = 0
+
+        def due_pairs(self, requested):
+            self.calls += 1
+            if self.calls > 1:
+                bot._running = False
+                return []
+            return [DuePair(pair=pair, tier="hot") for pair in requested]
+
+        def mark_evaluated(self, *args, **kwargs):
+            pass
+
+    class ReadClient:
+        request_metrics = {}
+        orderbook_metrics = {}
+        connection_metrics = {}
+
+        def __init__(self, venue):
+            self.venue = venue
+
+        async def recycle_http_client(self, *, reason):
+            recycle_calls.append((self.venue, reason))
+            return True
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = pairs
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = type("Detector", (), {"min_edge": 0.02})()
+    bot.client = ReadClient("polymarket")
+    bot.kalshi_client = ReadClient("kalshi")
+    bot.pair_snapshot_source = SnapshotSource()
+
+    await asyncio.wait_for(bot._scan_cross_platform_pairs(), timeout=0.5)
+
+    from dashboard.server import dashboard_state
+
+    assert recycle_calls == [
+        ("polymarket", "paired_snapshot_starvation"),
+        ("kalshi", "paired_snapshot_starvation"),
+    ]
+    assert dashboard_state.cross_platform["scan_status"] == "degraded"
+    assert dashboard_state.cross_platform["degraded_reason"] == (
+        "paired_snapshot_starvation"
+    )
