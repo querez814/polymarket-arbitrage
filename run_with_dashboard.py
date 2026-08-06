@@ -1545,6 +1545,7 @@ class TradingBotWithDashboard:
             started = datetime.utcnow()
             evaluation_counts: Counter[str] = Counter()
             evaluation_rows: list[dict] = []
+            pending_snapshots: dict[asyncio.Task, object] = {}
             try:
                 due_pairs = (
                     self.pair_monitor.due_pairs(list(self._matched_pairs))
@@ -1571,7 +1572,6 @@ class TradingBotWithDashboard:
                 if not due_pairs:
                     await asyncio.sleep(0.25)
                     continue
-                snapshot_limit = asyncio.Semaphore(8)
 
                 async def fetch_due_snapshot(due_pair):
                     preflight = self._preflight_snapshots.pop(
@@ -1581,40 +1581,63 @@ class TradingBotWithDashboard:
                         try:
                             require_pair_snapshot_fresh(preflight)
                             return preflight
-                        except PairSnapshotError as exc:
-                            return exc
-                    async with snapshot_limit:
-                        try:
-                            return await self.pair_snapshot_source.fetch(due_pair.pair)
-                        except PairSnapshotError as exc:
-                            return exc
-                        except Exception as exc:
-                            logger.warning(
-                                "Pair snapshot isolated unexpected %s for %s",
-                                type(exc).__name__,
-                                due_pair.pair.pair_id,
-                            )
-                            dashboard_state.cross_platform["scan_status"] = "degraded"
-                            dashboard_state.cross_platform[
-                                "last_pair_snapshot_unexpected_error"
-                            ] = {
-                                "error_type": type(exc).__name__,
-                                "pair_id": due_pair.pair.pair_id,
-                            }
-                            return PairSnapshotError(
-                                "paired_snapshot_unexpected_error",
-                                evidence={"error_type": type(exc).__name__},
-                            )
+                        except PairSnapshotError:
+                            pass
+                    try:
+                        return await self.pair_snapshot_source.fetch(due_pair.pair)
+                    except PairSnapshotError as exc:
+                        return exc
+                    except Exception as exc:
+                        logger.warning(
+                            "Pair snapshot isolated unexpected %s for %s",
+                            type(exc).__name__,
+                            due_pair.pair.pair_id,
+                        )
+                        dashboard_state.cross_platform["scan_status"] = "degraded"
+                        dashboard_state.cross_platform[
+                            "last_pair_snapshot_unexpected_error"
+                        ] = {
+                            "error_type": type(exc).__name__,
+                            "pair_id": due_pair.pair.pair_id,
+                        }
+                        return PairSnapshotError(
+                            "paired_snapshot_unexpected_error",
+                            evidence={"error_type": type(exc).__name__},
+                        )
 
-                snapshot_results = await asyncio.gather(
-                    *(fetch_due_snapshot(due_pair) for due_pair in due_pairs)
-                )
-                for due_pair, snapshot_result in zip(
-                    due_pairs, snapshot_results, strict=True
-                ):
+                due_iterator = iter(due_pairs)
+
+                def schedule_snapshot() -> bool:
+                    try:
+                        scheduled_pair = next(due_iterator)
+                    except StopIteration:
+                        return False
+                    task = asyncio.create_task(fetch_due_snapshot(scheduled_pair))
+                    pending_snapshots[task] = scheduled_pair
+                    return True
+
+                for _ in range(min(8, len(due_pairs))):
+                    schedule_snapshot()
+
+                while pending_snapshots and self._running:
+                    completed, _ = await asyncio.wait(
+                        pending_snapshots,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    completed_task = completed.pop()
+                    due_pair = pending_snapshots.pop(completed_task)
+                    snapshot_result = completed_task.result()
                     pair = due_pair.pair
                     if not self._running:
                         break
+                    if not isinstance(snapshot_result, PairSnapshotError):
+                        try:
+                            require_pair_snapshot_fresh(snapshot_result)
+                        except PairSnapshotError:
+                            snapshot_result = await fetch_due_snapshot(due_pair)
+                    if not self._running:
+                        break
+                    schedule_snapshot()
 
                     if isinstance(snapshot_result, PairSnapshotError):
                         exc = snapshot_result
@@ -1881,6 +1904,9 @@ class TradingBotWithDashboard:
 
                     await asyncio.sleep(0.05)
 
+                if pending_snapshots:
+                    await self._cancel_pending_snapshot_tasks(pending_snapshots)
+
                 elapsed = (datetime.utcnow() - started).total_seconds()
                 dashboard_state.cross_platform["scan_cycle_seconds"] = round(elapsed, 2)
                 self._persist_cross_platform_evaluations(evaluation_rows)
@@ -1888,8 +1914,10 @@ class TradingBotWithDashboard:
                 self._scanner_supervisor.mark_healthy()
                 await asyncio.sleep(0.1)
             except asyncio.CancelledError:
+                await self._cancel_pending_snapshot_tasks(pending_snapshots)
                 raise
             except Exception as e:
+                await self._cancel_pending_snapshot_tasks(pending_snapshots)
                 self._persist_cross_platform_evaluations(evaluation_rows)
                 self._persist_cross_platform_evaluation_counts(evaluation_counts)
                 logger.exception("Cross-platform scan error: %s", e)
@@ -1901,6 +1929,18 @@ class TradingBotWithDashboard:
                     evidence={"error": str(e)},
                 )
                 raise
+
+    @staticmethod
+    async def _cancel_pending_snapshot_tasks(
+        pending_snapshots: dict[asyncio.Task, object],
+    ) -> None:
+        if not pending_snapshots:
+            return
+        tasks = tuple(pending_snapshots)
+        pending_snapshots.clear()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def _persist_cross_platform_evaluations(
         self,

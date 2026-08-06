@@ -602,11 +602,148 @@ async def test_scanner_rejects_cached_preflight_snapshot_that_aged_out():
 
     async def evaluate(pair, polymarket_book, kalshi_book):
         evaluated.append(pair.pair_id)
-        bot._running = False
+        if len(evaluated) == 2:
+            bot._running = False
         return None, None
 
     bot.evaluate_cross_platform_pair = evaluate
 
     await bot._scan_cross_platform_pairs()
 
-    assert evaluated == [fresh_pair.pair_id]
+    assert len(evaluated) == 2
+    assert set(evaluated) == {stale_pair.pair_id, fresh_pair.pair_id}
+
+
+@pytest.mark.asyncio
+async def test_scanner_fetches_each_snapshot_immediately_before_evaluation():
+    first = MarketPair("poly-first", "KX-FIRST", "First?", "First?", 0.98)
+    second = MarketPair("poly-second", "KX-SECOND", "Second?", "Second?", 0.98)
+    now = datetime.now(timezone.utc)
+    events = []
+    release_slow = asyncio.Event()
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            events.append(("fetch", pair.pair_id))
+            if pair is first:
+                await release_slow.wait()
+            return PairSnapshot(
+                pair.pair_id,
+                _book_with_depth(pair.polymarket_id, now),
+                _book_with_depth(pair.kalshi_ticker, now),
+                5,
+            )
+
+    class PairMonitor:
+        def due_pairs(self, pairs):
+            return [DuePair(pair=pair, tier="cold") for pair in pairs]
+
+        def mark_evaluated(self, *args, **kwargs):
+            pass
+
+    class Detector:
+        min_edge = 0.02
+
+        def get_last_direction_evaluations(self, pair_id):
+            return ()
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = [first, second]
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = Detector()
+    bot.kalshi_client = type("KalshiMetrics", (), {"request_metrics": {}})()
+    bot.pair_snapshot_source = SnapshotSource()
+
+    async def evaluate(pair, polymarket_book, kalshi_book):
+        events.append(("evaluate", pair.pair_id))
+        if pair is second:
+            release_slow.set()
+            bot._running = False
+        return None, None
+
+    bot.evaluate_cross_platform_pair = evaluate
+
+    await asyncio.wait_for(bot._scan_cross_platform_pairs(), timeout=0.5)
+
+    assert ("evaluate", second.pair_id) in events
+    assert ("evaluate", first.pair_id) not in events
+
+
+@pytest.mark.asyncio
+async def test_scanner_does_not_evaluate_after_shutdown_during_snapshot_fetch():
+    pair = MarketPair("poly-stop", "KX-STOP", "Stop?", "Stop?", 0.98)
+    now = datetime.now(timezone.utc)
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = [pair]
+
+    class SnapshotSource:
+        async def fetch(self, requested):
+            bot._running = False
+            return PairSnapshot(
+                requested.pair_id,
+                _book_with_depth(requested.polymarket_id, now),
+                _book_with_depth(requested.kalshi_ticker, now),
+                5,
+            )
+
+    class PairMonitor:
+        def due_pairs(self, pairs):
+            return [DuePair(pair=pair, tier="hot")]
+
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = type("Detector", (), {"min_edge": 0.02})()
+    bot.kalshi_client = type("KalshiMetrics", (), {"request_metrics": {}})()
+    bot.pair_snapshot_source = SnapshotSource()
+
+    async def evaluate(*args):
+        pytest.fail("evaluation must not start after shutdown")
+
+    bot.evaluate_cross_platform_pair = evaluate
+
+    await bot._scan_cross_platform_pairs()
+
+
+@pytest.mark.asyncio
+async def test_scanner_cancellation_cancels_and_awaits_child_snapshot_tasks():
+    pairs = [
+        MarketPair(f"poly-{index}", f"KX-{index}", "Wait?", "Wait?", 0.98)
+        for index in range(2)
+    ]
+    both_started = asyncio.Event()
+    started = 0
+    cancelled = 0
+
+    class SnapshotSource:
+        async def fetch(self, pair):
+            nonlocal started, cancelled
+            started += 1
+            if started == len(pairs):
+                both_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled += 1
+                raise
+
+    class PairMonitor:
+        def due_pairs(self, requested):
+            return [DuePair(pair=pair, tier="hot") for pair in requested]
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._running = True
+    bot._matched_pairs = pairs
+    bot.pair_monitor = PairMonitor()
+    bot.cross_platform_engine = type("Detector", (), {"min_edge": 0.02})()
+    bot.kalshi_client = type("KalshiMetrics", (), {"request_metrics": {}})()
+    bot.pair_snapshot_source = SnapshotSource()
+
+    scanner = asyncio.create_task(bot._scan_cross_platform_pairs())
+    await asyncio.wait_for(both_started.wait(), timeout=0.5)
+    scanner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await scanner
+
+    assert cancelled == len(pairs)
