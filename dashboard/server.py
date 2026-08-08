@@ -131,6 +131,17 @@ class DashboardState:
             "items": [],
             "boosted_markets": [],
         }
+        self.event_week: dict = {
+            "enabled": False,
+            "status": "disabled",
+            "last_calendar_refresh_at": None,
+            "calendar_sources": [],
+            "upcoming_events": [],
+            "coverage": [],
+            "verified_event_pairs": 0,
+            "active_lanes": [],
+            "scorecard": {},
+        }
         self.is_running: bool = False
         self.mode: str = "dry_run"
         self.last_update: datetime = utc_now()
@@ -193,6 +204,7 @@ class DashboardState:
             "timing": self.timing,  # Opportunity timing stats
             "operational": self.operational,  # Operational stats
             "news_catalysts": self.news_catalysts,
+            "event_week": self.event_week,
             "cross_platform": self.cross_platform,  # Cross-platform arbitrage stats
             "is_running": self.is_running,
             "mode": self.mode,
@@ -2124,6 +2136,20 @@ def get_embedded_html() -> str:
             </div>
         </section>
 
+        <section class="card" id="eventWeekCard">
+            <div class="card-header">
+                <span class="card-title">📅 Scheduled Event Week</span>
+                <span id="eventWeekStatus" style="font-size: 0.75rem; color: var(--text-secondary);">DISABLED</span>
+            </div>
+            <div class="card-body">
+                <div id="eventWeekSummary" style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+                    Event lane disabled
+                </div>
+                <div id="eventWeekSources" style="font-size: 0.72rem; color: var(--text-muted); margin-bottom: 0.75rem;"></div>
+                <div id="eventWeekItems" style="display: grid; gap: 0.65rem;"></div>
+            </div>
+        </section>
+
         <section class="card" id="newsCatalystCard">
             <div class="card-header">
                 <span class="card-title">📰 Today’s Catalysts</span>
@@ -2328,6 +2354,9 @@ def get_embedded_html() -> str:
             
             // Cross-Platform
             updateCrossPlatform();
+
+            // Authoritative scheduled-event monitoring lane
+            updateEventWeek();
 
             // Source-backed news priority signals
             updateNewsCatalysts();
@@ -3237,6 +3266,63 @@ def get_embedded_html() -> str:
                 return `<div style="border-left: 2px solid var(--accent-purple); padding-left: 0.65rem;">
                     <div style="font-size: 0.85rem; font-weight: 600;">${headline}</div>
                     <div style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(news.topic_category || 'other')} · ${matchText || 'no market above threshold'}</div>
+                </div>`;
+            }).join('');
+        }
+
+        function updateEventWeek() {
+            const eventWeek = state.event_week || {};
+            const status = document.getElementById('eventWeekStatus');
+            const summary = document.getElementById('eventWeekSummary');
+            const sources = document.getElementById('eventWeekSources');
+            const items = document.getElementById('eventWeekItems');
+            const mode = eventWeek.status || 'disabled';
+            status.textContent = mode.replaceAll('_', ' ').toUpperCase();
+            status.style.color = mode === 'complete'
+                ? 'var(--accent-green)'
+                : mode === 'partial'
+                    ? '#f59e0b'
+                    : mode === 'error'
+                        ? 'var(--accent-red)'
+                        : 'var(--text-secondary)';
+            const upcoming = Array.isArray(eventWeek.upcoming_events)
+                ? eventWeek.upcoming_events : [];
+            const coverage = Array.isArray(eventWeek.coverage)
+                ? eventWeek.coverage : [];
+            const lanes = Array.isArray(eventWeek.active_lanes)
+                ? eventWeek.active_lanes : [];
+            const scorecard = eventWeek.scorecard || {};
+            const edgeLift = scorecard.average_edge_lift == null
+                ? 'baseline pending'
+                : `${(Number(scorecard.average_edge_lift) * 100).toFixed(2)}¢ avg edge lift`;
+            summary.textContent = eventWeek.enabled
+                ? `${upcoming.length} scheduled · ${Number(eventWeek.verified_event_pairs || 0)} verified pairs · ${lanes.length} active lanes · ${Number(scorecard.evaluation_count || 0)} event-window evaluations · ${Number(scorecard.opportunity_count || 0)} opportunities · ${Number(scorecard.operational_failure_count || 0)} operational failures · ${edgeLift}`
+                : 'Event lane disabled by configuration';
+            const sourceRows = Array.isArray(eventWeek.calendar_sources)
+                ? eventWeek.calendar_sources : [];
+            sources.textContent = sourceRows.length
+                ? sourceRows.map(row => `${row.source_id}: ${row.status}`).join(' · ')
+                : 'No calendar source refresh recorded';
+            if (!upcoming.length) {
+                items.innerHTML = '<div style="color: var(--text-muted); font-size: 0.8rem;">No scheduled events in the active window.</div>';
+                return;
+            }
+            const coverageByEvent = new Map(coverage.map(row => [row.event_id, row]));
+            const laneByEvent = new Map(lanes.map(row => [row.event_id, row]));
+            items.innerHTML = upcoming.slice(0, 16).map(event => {
+                const source = safeHttpUrl(event.source_url);
+                const eventCoverage = coverageByEvent.get(event.event_id) || {};
+                const lane = laneByEvent.get(event.event_id);
+                const title = source
+                    ? `<a href="${escapeHtml(source)}" target="_blank" rel="noopener noreferrer" style="color: var(--text-primary);">${escapeHtml(event.title)}</a>`
+                    : escapeHtml(event.title);
+                const clock = new Date(event.scheduled_at).toLocaleString();
+                const coverageText = `${Number(eventCoverage.polymarket_candidates || 0)}P / ${Number(eventCoverage.kalshi_candidates || 0)}K candidates · ${Number(eventCoverage.verified_pairs || 0)} verified`;
+                const laneText = lane ? ` · ${escapeHtml(lane.state)} @ ${Number(lane.interval_seconds || 0)}s` : '';
+                const freshnessText = event.cadence_eligible === false ? ' · stale schedule (no priority)' : '';
+                return `<div style="border-left: 2px solid #f59e0b; padding-left: 0.65rem;">
+                    <div style="font-size: 0.85rem; font-weight: 600;">${title}</div>
+                    <div style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(event.event_type)} · ${escapeHtml(clock)} · ${coverageText}${laneText}${freshnessText}</div>
                 </div>`;
             }).join('');
         }

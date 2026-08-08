@@ -98,10 +98,31 @@ monitoring:
   paper_trade_db_path: data/paper_performance.db
   display_timezone: America/New_York
 
-news_catalyst:
-  # Log-only rollout: enable scanning after review, then separately authorize
-  # priority changes with apply_priority_boost.
+event_week:
+  # Scheduled events control discovery and monitoring cadence only. They never
+  # authorize a directional position or bypass executable-arbitrage economics.
   enabled: true
+  calendar_refresh_seconds: 21600
+  source_max_staleness_seconds: 86400
+  lookahead_days: 7
+  warm_before_hours: 24
+  hot_before_minutes: 60
+  burst_before_minutes: 5
+  burst_after_minutes: 15
+  cooldown_after_hours: 24
+  scheduled_interval_seconds: 300
+  warm_interval_seconds: 60
+  hot_interval_seconds: 2
+  burst_interval_seconds: 1
+  cooldown_interval_seconds: 10
+  max_events_per_refresh: 500
+  max_verification_candidates_per_event: 100
+  max_verification_candidates_per_cycle: 500
+
+news_catalyst:
+  # Retained as optional context, but the authoritative event calendar now owns
+  # the event clock. Keep recent-news scanning off for the event-week rollout.
+  enabled: false
   apply_priority_boost: false
   model: gpt-5.6-terra
   scan_interval_seconds: 1800

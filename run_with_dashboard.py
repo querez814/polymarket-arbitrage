@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -51,7 +52,11 @@ from core.two_leg_execution import ExecutionPhase
 from core.operations import PersistentOperatorControls, WebhookAlertSink
 from core.production_runtime import ProductionArbitrageRuntime, RuntimeNotReadyError
 from core.paper_locked_arb import PaperLockedArbitrageLedger
-from core.pair_monitoring import PairTierMonitor, discovery_priority_score
+from core.pair_monitoring import (
+    PairScheduleOverride,
+    PairTierMonitor,
+    discovery_priority_score,
+)
 from core.pair_snapshot import (
     PairSnapshot,
     PairSnapshotError,
@@ -74,6 +79,16 @@ from core.news_catalyst import (
     TrackedMarket,
     rank_pairs,
 )
+from core.event_calendar import (
+    BEACalendarSource,
+    CensusCalendarSource,
+    FREDEconomicCalendarSource,
+    FederalReserveCalendarSource,
+    HttpTextFetcher,
+    OfficialEventCalendar,
+)
+from core.event_contracts import EventContractDiscovery, EventPairLink
+from core.event_lane import EventLanePolicy, EventLaneScheduler
 from utils.config_loader import (
     BotConfig,
     load_config,
@@ -137,6 +152,12 @@ class TradingBotWithDashboard:
         self._news_catalyst_service = None
         self._news_market_scores: dict[tuple[str, str], float] = {}
         self._news_market_scores_updated_at: datetime | None = None
+        self.event_calendar = None
+        self.event_contract_discovery = None
+        self.event_lane_scheduler = None
+        self._event_calendar_snapshot = None
+        self._event_calendar_refreshed_at: datetime | None = None
+        self._event_pair_links: list[EventPairLink] = []
         self._semantic_embedder = None
         self._discovery_supervisor = RestartingTaskSupervisor(
             "cross-platform discovery",
@@ -167,6 +188,107 @@ class TradingBotWithDashboard:
     def failure_event(self) -> asyncio.Event:
         """Signal that a critical trading dependency ended terminally."""
         return self._failure_event
+
+    def _build_semantic_pipeline(
+        self,
+        *,
+        api_key: str,
+        max_verification_candidates: int,
+    ) -> SemanticMarketPipeline:
+        """Build one independent matcher pipeline over the shared embedding cache."""
+        if self._semantic_embedder is None:
+            raise RuntimeError("semantic embedder must be configured first")
+        return SemanticMarketPipeline(
+            embedder=self._semantic_embedder,
+            verifier=OpenAIResolutionVerifier(
+                api_key=api_key,
+                model=self.config.mode.semantic_verification_model,
+            ),
+            top_k=self.config.mode.semantic_top_k,
+            retrieval_floor=self.config.mode.semantic_retrieval_floor,
+            auto_approve_confidence=self.config.mode.semantic_auto_approve_confidence,
+            max_verification_candidates=max_verification_candidates,
+            category_cap_share=self.config.mode.semantic_category_cap_share,
+            family_cap_share=self.config.mode.semantic_family_cap_share,
+            exploration_share=self.config.mode.semantic_exploration_share,
+            min_polymarket_liquidity=(
+                self.config.mode.semantic_min_polymarket_liquidity
+            ),
+            min_polymarket_volume_24h=(
+                self.config.mode.semantic_min_polymarket_volume_24h
+            ),
+            min_kalshi_volume=self.config.mode.semantic_min_kalshi_volume,
+            min_kalshi_open_interest=(
+                self.config.mode.semantic_min_kalshi_open_interest
+            ),
+        )
+
+    def _configure_event_week(self, *, api_key: str) -> None:
+        """Configure authoritative calendars without authorizing exchange mutation."""
+        event_config = self.config.event_week
+        dashboard_state.event_week = {
+            "enabled": event_config.enabled,
+            "status": "waiting" if event_config.enabled else "disabled",
+            "last_calendar_refresh_at": None,
+            "calendar_sources": [],
+            "upcoming_events": [],
+            "coverage": [],
+            "verified_event_pairs": 0,
+            "active_lanes": [],
+            "scorecard": {},
+        }
+        if not event_config.enabled:
+            return
+        if self._semantic_embedder is None:
+            raise RuntimeError("event-week discovery requires semantic matching")
+        fetcher = HttpTextFetcher(timeout_seconds=self.config.api.timeout_seconds)
+        self.event_calendar = OfficialEventCalendar(
+            sources=(
+                FREDEconomicCalendarSource(fetcher=fetcher),
+                BEACalendarSource(fetcher=fetcher),
+                FederalReserveCalendarSource(fetcher=fetcher),
+                CensusCalendarSource(fetcher=fetcher),
+            ),
+            max_staleness=timedelta(seconds=event_config.source_max_staleness_seconds),
+        )
+        event_matcher = MarketMatcher(
+            min_similarity=self.config.mode.min_match_similarity,
+            semantic_pipeline=self._build_semantic_pipeline(
+                api_key=api_key,
+                max_verification_candidates=(
+                    event_config.max_verification_candidates_per_event
+                ),
+            ),
+        )
+        self.event_contract_discovery = EventContractDiscovery(
+            matcher=event_matcher,
+            max_matcher_calls_per_cycle=max(
+                1,
+                event_config.max_verification_candidates_per_cycle
+                // event_config.max_verification_candidates_per_event,
+            ),
+        )
+        self.event_lane_scheduler = EventLaneScheduler(
+            policy=EventLanePolicy(
+                lookahead=timedelta(days=event_config.lookahead_days),
+                warm_before=timedelta(hours=event_config.warm_before_hours),
+                hot_before=timedelta(minutes=event_config.hot_before_minutes),
+                burst_before=timedelta(minutes=event_config.burst_before_minutes),
+                burst_after=timedelta(minutes=event_config.burst_after_minutes),
+                cooldown_after=timedelta(hours=event_config.cooldown_after_hours),
+                scheduled_interval_seconds=(event_config.scheduled_interval_seconds),
+                warm_interval_seconds=event_config.warm_interval_seconds,
+                hot_interval_seconds=event_config.hot_interval_seconds,
+                burst_interval_seconds=event_config.burst_interval_seconds,
+                cooldown_interval_seconds=event_config.cooldown_interval_seconds,
+            )
+        )
+        logger.info(
+            "Scheduled event-week lane configured | lookahead=%.1fd refresh=%.0fs "
+            "execution_authority=locked_edge_only",
+            event_config.lookahead_days,
+            event_config.calendar_refresh_seconds,
+        )
 
     async def start(self) -> None:
         """Start the bot and dashboard."""
@@ -314,32 +436,10 @@ class TradingBotWithDashboard:
                     model=self.config.mode.semantic_embedding_model,
                     dimensions=self.config.mode.semantic_embedding_dimensions,
                 )
-                semantic_pipeline = SemanticMarketPipeline(
-                    embedder=self._semantic_embedder,
-                    verifier=OpenAIResolutionVerifier(
-                        api_key=api_key,
-                        model=self.config.mode.semantic_verification_model,
-                    ),
-                    top_k=self.config.mode.semantic_top_k,
-                    retrieval_floor=self.config.mode.semantic_retrieval_floor,
-                    auto_approve_confidence=(
-                        self.config.mode.semantic_auto_approve_confidence
-                    ),
+                semantic_pipeline = self._build_semantic_pipeline(
+                    api_key=api_key,
                     max_verification_candidates=(
                         self.config.mode.semantic_max_verification_candidates
-                    ),
-                    category_cap_share=(self.config.mode.semantic_category_cap_share),
-                    family_cap_share=(self.config.mode.semantic_family_cap_share),
-                    exploration_share=(self.config.mode.semantic_exploration_share),
-                    min_polymarket_liquidity=(
-                        self.config.mode.semantic_min_polymarket_liquidity
-                    ),
-                    min_polymarket_volume_24h=(
-                        self.config.mode.semantic_min_polymarket_volume_24h
-                    ),
-                    min_kalshi_volume=self.config.mode.semantic_min_kalshi_volume,
-                    min_kalshi_open_interest=(
-                        self.config.mode.semantic_min_kalshi_open_interest
                     ),
                 )
                 self.market_matcher = MarketMatcher(
@@ -347,6 +447,7 @@ class TradingBotWithDashboard:
                     semantic_pipeline=semantic_pipeline,
                 )
                 self.cross_platform_engine.matcher = self.market_matcher
+                self._configure_event_week(api_key=api_key)
             else:
                 self.market_matcher = self.cross_platform_engine.matcher
                 self.market_matcher.min_similarity = (
@@ -1072,6 +1173,145 @@ class TradingBotWithDashboard:
             )
             await asyncio.sleep(refresh_seconds)
 
+    async def _refresh_event_week_discovery(self, polymarket_markets: list) -> list:
+        """Refresh the event clock and run its independent verifier lane."""
+        if (
+            not self.config.event_week.enabled
+            or self.event_calendar is None
+            or self.event_contract_discovery is None
+        ):
+            self._event_pair_links = []
+            return []
+        now = datetime.now(timezone.utc)
+        refresh_due = (
+            self._event_calendar_snapshot is None
+            or self._event_calendar_refreshed_at is None
+            or (now - self._event_calendar_refreshed_at).total_seconds()
+            >= self.config.event_week.calendar_refresh_seconds
+        )
+        if refresh_due:
+            snapshot = await self.event_calendar.refresh(
+                start=now
+                - timedelta(hours=self.config.event_week.cooldown_after_hours),
+                end=now + timedelta(days=self.config.event_week.lookahead_days),
+            )
+            limited_events = snapshot.events[
+                : self.config.event_week.max_events_per_refresh
+            ]
+            snapshot = replace(snapshot, events=limited_events)
+            self._event_calendar_snapshot = snapshot
+            self._event_calendar_refreshed_at = now
+            if self.paper_trade_store is not None:
+                self.paper_trade_store.record_event_calendar_snapshot(snapshot)
+            dashboard_state.event_week.update(
+                {
+                    "status": snapshot.status,
+                    "last_calendar_refresh_at": snapshot.generated_at.isoformat(),
+                    "calendar_sources": [
+                        {
+                            "source_id": source.source_id,
+                            "source_url": source.source_url,
+                            "status": source.status,
+                            "last_success_at": (
+                                source.last_success_at.isoformat()
+                                if source.last_success_at
+                                else None
+                            ),
+                            "event_count": source.event_count,
+                            "error": source.error,
+                        }
+                        for source in snapshot.sources
+                    ],
+                    "upcoming_events": [
+                        {
+                            "event_id": event.event_id,
+                            "event_type": event.event_type,
+                            "title": event.title,
+                            "scheduled_at": event.scheduled_at.isoformat(),
+                            "reference_period": event.reference_period,
+                            "status": event.status,
+                            "source_url": event.source_url,
+                            "cadence_eligible": event in snapshot.fresh_events,
+                        }
+                        for event in snapshot.events
+                    ],
+                }
+            )
+        snapshot = self._event_calendar_snapshot
+        if snapshot is None:
+            self._event_pair_links = []
+            return []
+        result = await self.event_contract_discovery.discover(
+            events=snapshot.fresh_events,
+            polymarket_markets=polymarket_markets,
+            kalshi_markets=self._kalshi_markets,
+        )
+        self._event_pair_links = list(result.links)
+        if self.paper_trade_store is not None:
+            self.paper_trade_store.record_event_contract_discovery(
+                result, observed_at=now
+            )
+        dashboard_state.event_week.update(
+            {
+                "coverage": [
+                    {
+                        "event_id": row.event_id,
+                        "event_type": row.event_type,
+                        "status": row.status,
+                        "polymarket_candidates": row.polymarket_candidates,
+                        "kalshi_candidates": row.kalshi_candidates,
+                        "verified_pairs": row.verified_pairs,
+                    }
+                    for row in result.coverage
+                ],
+                "verified_event_pairs": len(result.pairs),
+            }
+        )
+        return list(result.pairs)
+
+    def _apply_event_lane_schedule(self) -> None:
+        """Apply current event states to the existing pair-monitoring seam."""
+        if self.pair_monitor is None:
+            return
+        set_overrides = getattr(self.pair_monitor, "set_schedule_overrides", None)
+        if self.event_lane_scheduler is None or not self._event_pair_links:
+            if set_overrides is not None:
+                set_overrides({})
+            dashboard_state.event_week["active_lanes"] = []
+            return
+        if set_overrides is None:
+            raise RuntimeError(
+                "event-week monitoring requires schedule override support"
+            )
+        snapshot = self.event_lane_scheduler.schedule(self._event_pair_links)
+        set_overrides(
+            {
+                schedule.pair_id: PairScheduleOverride(
+                    event_id=schedule.event_id,
+                    lane_state=schedule.state,
+                    interval_seconds=schedule.interval_seconds,
+                )
+                for schedule in snapshot.pairs
+            }
+        )
+        if (
+            self.paper_trade_store is not None
+            and self.paper_trade_store.active_run() is not None
+        ):
+            self.paper_trade_store.record_event_lane_snapshot(snapshot)
+        dashboard_state.event_week["active_lanes"] = [
+            {
+                "pair_id": schedule.pair_id,
+                "event_id": schedule.event_id,
+                "event_type": schedule.event_type,
+                "state": schedule.state,
+                "scheduled_at": schedule.scheduled_at.isoformat(),
+                "seconds_to_event": schedule.seconds_to_event,
+                "interval_seconds": schedule.interval_seconds,
+            }
+            for schedule in snapshot.pairs
+        ]
+
     async def _run_matching_background(self, polymarket_markets: list) -> None:
         """Match one venue snapshot while yielding to live dashboard work."""
         try:
@@ -1107,14 +1347,52 @@ class TradingBotWithDashboard:
                 self._kalshi_markets,
                 on_progress=on_progress,
             )
+            event_verified_pairs = []
+            try:
+                event_verified_pairs = await self._refresh_event_week_discovery(
+                    polymarket_markets
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._event_pair_links = []
+                dashboard_state.event_week.update(
+                    {
+                        "status": "error",
+                        "last_error": f"{type(exc).__name__}: {exc}"[:300],
+                        "verified_event_pairs": 0,
+                        "active_lanes": [],
+                    }
+                )
+                logger.exception(
+                    "Scheduled event-week discovery failed; broad discovery continues"
+                )
+            merged_verified_pairs = {
+                pair.pair_id: pair
+                for pair in [*rules_verified_pairs, *event_verified_pairs]
+            }
             self._matched_pairs, preflight_evidence = (
-                await self._preflight_verified_pairs(rules_verified_pairs)
+                await self._preflight_verified_pairs(
+                    list(merged_verified_pairs.values())
+                )
             )
+            admitted_pair_ids = {pair.pair_id for pair in self._matched_pairs}
+            self._event_pair_links = [
+                link
+                for link in self._event_pair_links
+                if link.pair_id in admitted_pair_ids
+            ]
 
             dashboard_state.cross_platform["matching_progress"] = 100
             dashboard_state.cross_platform["matched_pairs"] = len(self._matched_pairs)
             dashboard_state.cross_platform["rules_equivalent_pairs"] = len(
+                merged_verified_pairs
+            )
+            dashboard_state.cross_platform["broad_rules_equivalent_pairs"] = len(
                 rules_verified_pairs
+            )
+            dashboard_state.cross_platform["event_rules_equivalent_pairs"] = len(
+                event_verified_pairs
             )
             dashboard_state.cross_platform["preflight_usable_pairs"] = len(
                 [
@@ -1213,7 +1491,9 @@ class TradingBotWithDashboard:
                     metrics=(
                         {
                             **vars(pipeline_metrics),
-                            "rules_equivalent_pairs": len(rules_verified_pairs),
+                            "rules_equivalent_pairs": len(merged_verified_pairs),
+                            "broad_rules_equivalent_pairs": len(rules_verified_pairs),
+                            "event_rules_equivalent_pairs": len(event_verified_pairs),
                             "preflight_usable_pairs": preflight_usable_pairs,
                             "preflight_tracked_pairs": len(self._matched_pairs),
                             "preflight_rejections": dashboard_state.cross_platform[
@@ -1586,6 +1866,7 @@ class TradingBotWithDashboard:
             pending_snapshots: dict[asyncio.Task, object] = {}
             unexpected_snapshot_failure = False
             try:
+                self._apply_event_lane_schedule()
                 due_pairs = (
                     self.pair_monitor.due_pairs(list(self._matched_pairs))
                     if self.pair_monitor
@@ -1695,6 +1976,9 @@ class TradingBotWithDashboard:
                     if isinstance(snapshot_result, PairSnapshotError):
                         exc = snapshot_result
                         evaluation_counts[exc.reason_code] += 1
+                        self._persist_event_operational_failure(
+                            due_pair, exc.reason_code
+                        )
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
                             reason_code=exc.reason_code,
@@ -1742,6 +2026,9 @@ class TradingBotWithDashboard:
                         )
                     except EconomicsUnavailableError as exc:
                         evaluation_counts["economics_unavailable"] += 1
+                        self._persist_event_operational_failure(
+                            due_pair, "economics_unavailable"
+                        )
                         self._record_cross_platform_decision(
                             outcome=DecisionOutcome.SKIP,
                             reason_code="economics_unavailable",
@@ -1759,6 +2046,9 @@ class TradingBotWithDashboard:
                         continue
                     except RuntimeNotReadyError as exc:
                         evaluation_counts["production_runtime_not_ready"] += 1
+                        self._persist_event_operational_failure(
+                            due_pair, "production_runtime_not_ready"
+                        )
                         dashboard_state.cross_platform["scan_status"] = (
                             "operator_halted"
                         )
@@ -1803,6 +2093,13 @@ class TradingBotWithDashboard:
                         "kalshi_no_ask": kalshi_ob.best_ask_no,
                         "required_net_edge": self.cross_platform_engine.min_edge,
                     }
+                    if due_pair.scheduled_event_id:
+                        evidence.update(
+                            {
+                                "scheduled_event_id": due_pair.scheduled_event_id,
+                                "event_lane_state": due_pair.event_lane_state,
+                            }
+                        )
                     if direction_evaluations:
                         strongest_direction = max(
                             direction_evaluations,
@@ -1882,6 +2179,10 @@ class TradingBotWithDashboard:
                                 "suggested_size": item.suggested_size,
                                 "outcome": item.outcome,
                                 "reason_code": item.reason_code,
+                                "scheduled_event_id": (
+                                    due_pair.scheduled_event_id or None
+                                ),
+                                "event_lane_state": (due_pair.event_lane_state or None),
                             }
                             for item in direction_evaluations
                         )
@@ -1905,6 +2206,8 @@ class TradingBotWithDashboard:
                             "suggested_size": opportunity.suggested_size,
                             "max_size": opportunity.max_size,
                             "similarity": pair.similarity_score,
+                            "scheduled_event_id": (due_pair.scheduled_event_id or None),
+                            "event_lane_state": due_pair.event_lane_state or None,
                         }
                         if evaluation is not None and evaluation.execution is not None:
                             opp_dict["execution_id"] = evaluation.execution.execution_id
@@ -2049,6 +2352,31 @@ class TradingBotWithDashboard:
         self.paper_trade_store.record_cross_platform_evaluations(evaluations)
         dashboard_state.cross_platform["evaluation_ledger_count"] = (
             self.paper_trade_store.cross_platform_evaluation_count()
+        )
+        dashboard_state.event_week["scorecard"] = (
+            self.paper_trade_store.event_week_scorecard()
+        )
+
+    def _persist_event_operational_failure(
+        self,
+        due_pair,
+        reason_code: str,
+    ) -> None:
+        if (
+            self.paper_trade_store is None
+            or not due_pair.scheduled_event_id
+            or not due_pair.event_lane_state
+            or self.paper_trade_store.active_run() is None
+        ):
+            return
+        self.paper_trade_store.record_event_operational_failure(
+            event_id=due_pair.scheduled_event_id,
+            pair_id=due_pair.pair.pair_id,
+            lane_state=due_pair.event_lane_state,
+            reason_code=reason_code,
+        )
+        dashboard_state.event_week["scorecard"] = (
+            self.paper_trade_store.event_week_scorecard()
         )
 
     def _persist_cross_platform_evaluation_counts(

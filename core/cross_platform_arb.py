@@ -55,7 +55,7 @@ class MarketPair:
     discovery_priority: float = 0.0
 
     # Timestamps
-    matched_at: datetime = field(default_factory=datetime.utcnow)
+    matched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def pair_id(self) -> str:
@@ -98,7 +98,7 @@ class CrossPlatformOpportunity:
     sell_liquidity: float = 0.0
 
     # Metadata
-    detected_at: datetime = field(default_factory=datetime.utcnow)
+    detected_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __str__(self) -> str:
         return (

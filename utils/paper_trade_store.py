@@ -5,6 +5,7 @@ Persistent SQLite ledger for paper trading lifecycle events.
 from __future__ import annotations
 
 import logging
+import hashlib
 import math
 import os
 import json
@@ -315,6 +316,120 @@ class PaperTradeStore:
                 error_detail TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS scheduled_events (
+                event_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                scheduled_at_utc TEXT NOT NULL,
+                reference_period TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('scheduled', 'cancelled')),
+                source_url TEXT NOT NULL,
+                first_seen_at_utc TEXT NOT NULL,
+                last_seen_at_utc TEXT NOT NULL,
+                revision_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (revision_count >= 0),
+                payload_hash TEXT NOT NULL,
+                UNIQUE(source_id, external_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS scheduled_event_revisions (
+                event_id TEXT NOT NULL
+                    REFERENCES scheduled_events(event_id) ON DELETE CASCADE,
+                revision_number INTEGER NOT NULL CHECK (revision_number >= 0),
+                observed_at_utc TEXT NOT NULL,
+                scheduled_at_utc TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                PRIMARY KEY (event_id, revision_number)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_calendar_source_runs (
+                source_id TEXT NOT NULL,
+                checked_at_utc TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('fresh', 'stale', 'error')),
+                last_success_at_utc TEXT,
+                event_count INTEGER NOT NULL CHECK (event_count >= 0),
+                error_detail TEXT,
+                PRIMARY KEY (source_id, checked_at_utc)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_contract_discovery_cycles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at_utc TEXT NOT NULL,
+                coverage_json TEXT NOT NULL,
+                candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+                verified_pair_count INTEGER NOT NULL CHECK (verified_pair_count >= 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_contract_candidates (
+                cycle_id INTEGER NOT NULL
+                    REFERENCES event_contract_discovery_cycles(id) ON DELETE CASCADE,
+                event_id TEXT NOT NULL
+                    REFERENCES scheduled_events(event_id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                platform TEXT NOT NULL
+                    CHECK (platform IN ('polymarket', 'kalshi')),
+                market_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                PRIMARY KEY (cycle_id, event_id, platform, market_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_pair_links (
+                event_id TEXT NOT NULL
+                    REFERENCES scheduled_events(event_id) ON DELETE CASCADE,
+                pair_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                scheduled_at_utc TEXT NOT NULL,
+                polymarket_id TEXT NOT NULL,
+                kalshi_ticker TEXT NOT NULL,
+                polymarket_question TEXT NOT NULL,
+                kalshi_title TEXT NOT NULL,
+                similarity_score REAL NOT NULL,
+                semantic_relation TEXT NOT NULL,
+                verification_confidence REAL NOT NULL,
+                verification_reasons_json TEXT NOT NULL,
+                auto_approved INTEGER NOT NULL CHECK (auto_approved IN (0, 1)),
+                first_seen_at_utc TEXT NOT NULL,
+                last_seen_at_utc TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                PRIMARY KEY (event_id, pair_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_lane_transitions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL
+                    REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
+                event_id TEXT NOT NULL
+                    REFERENCES scheduled_events(event_id) ON DELETE CASCADE,
+                pair_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                lane_state TEXT NOT NULL,
+                scheduled_at_utc TEXT NOT NULL,
+                observed_at_utc TEXT NOT NULL,
+                seconds_to_event REAL NOT NULL,
+                interval_seconds REAL NOT NULL CHECK (interval_seconds > 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_operational_failures (
+                run_id TEXT NOT NULL
+                    REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
+                event_id TEXT NOT NULL
+                    REFERENCES scheduled_events(event_id) ON DELETE CASCADE,
+                pair_id TEXT NOT NULL,
+                lane_state TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                observation_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (observation_count >= 0),
+                first_observed_at_utc TEXT NOT NULL,
+                last_observed_at_utc TEXT NOT NULL,
+                PRIMARY KEY (run_id, event_id, pair_id, lane_state, reason_code)
+            );
+
             CREATE TABLE IF NOT EXISTS cross_platform_evaluation_counts (
                 run_id TEXT NOT NULL
                     REFERENCES paper_run_sessions(run_id) ON DELETE CASCADE,
@@ -369,7 +484,9 @@ class PaperTradeStore:
                 required_net_edge REAL NOT NULL,
                 suggested_size REAL NOT NULL,
                 outcome TEXT NOT NULL,
-                reason_code TEXT NOT NULL
+                reason_code TEXT NOT NULL,
+                scheduled_event_id TEXT,
+                event_lane_state TEXT
             );
 
             CREATE TABLE IF NOT EXISTS paper_cross_platform_trades (
@@ -430,6 +547,20 @@ class PaperTradeStore:
                 );
             CREATE INDEX IF NOT EXISTS idx_news_catalyst_api_calls_called
                 ON news_catalyst_api_calls (called_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_events_time
+                ON scheduled_events (scheduled_at_utc, status);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_events_type_time
+                ON scheduled_events (event_type, scheduled_at_utc);
+            CREATE INDEX IF NOT EXISTS idx_event_calendar_sources_checked
+                ON event_calendar_source_runs (checked_at_utc DESC, source_id);
+            CREATE INDEX IF NOT EXISTS idx_event_pair_links_time
+                ON event_pair_links (scheduled_at_utc, active);
+            CREATE INDEX IF NOT EXISTS idx_event_contract_candidates_event
+                ON event_contract_candidates (event_id, platform, market_id);
+            CREATE INDEX IF NOT EXISTS idx_event_lane_transitions_run_pair
+                ON event_lane_transitions (run_id, pair_id, observed_at_utc DESC);
+            CREATE INDEX IF NOT EXISTS idx_event_operational_failures_run
+                ON event_operational_failures (run_id, event_id, reason_code);
             CREATE INDEX IF NOT EXISTS idx_cross_platform_evaluation_run
                 ON cross_platform_evaluation_counts (run_id);
             CREATE INDEX IF NOT EXISTS idx_cross_platform_evaluations_run_time
@@ -468,6 +599,11 @@ class PaperTradeStore:
             if column not in evaluation_columns:
                 self._conn.execute(
                     f"ALTER TABLE cross_platform_evaluations ADD COLUMN {column} REAL"
+                )
+        for column in ("scheduled_event_id", "event_lane_state"):
+            if column not in evaluation_columns:
+                self._conn.execute(
+                    f"ALTER TABLE cross_platform_evaluations ADD COLUMN {column} TEXT"
                 )
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_paper_trade_events_run_id
@@ -711,6 +847,466 @@ class PaperTradeStore:
             ]
             results.append(event)
         return results
+
+    def record_event_calendar_snapshot(self, snapshot: Any) -> None:
+        """Persist official source health and revision-aware scheduled events."""
+        generated_at = self._as_utc(snapshot.generated_at)
+        observed_iso = to_utc_iso(generated_at)
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for source in snapshot.sources:
+                checked_at = to_utc_iso(self._as_utc(source.checked_at))
+                last_success = (
+                    to_utc_iso(self._as_utc(source.last_success_at))
+                    if source.last_success_at is not None
+                    else None
+                )
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO event_calendar_source_runs (
+                        source_id, checked_at_utc, source_url, status,
+                        last_success_at_utc, event_count, error_detail
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source.source_id,
+                        checked_at,
+                        source.source_url,
+                        source.status,
+                        last_success,
+                        int(source.event_count),
+                        str(source.error)[:1000] or None,
+                    ),
+                )
+            for event in snapshot.events:
+                scheduled_iso = to_utc_iso(self._as_utc(event.scheduled_at))
+                payload = {
+                    "event_id": event.event_id,
+                    "source_id": event.source_id,
+                    "external_id": event.external_id,
+                    "title": event.title,
+                    "description": event.description,
+                    "event_type": event.event_type,
+                    "scheduled_at_utc": scheduled_iso,
+                    "reference_period": event.reference_period,
+                    "status": event.status,
+                    "source_url": event.source_url,
+                }
+                payload_json = json.dumps(
+                    payload,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+                current = self._conn.execute(
+                    """
+                    SELECT payload_hash, revision_count
+                    FROM scheduled_events WHERE event_id=?
+                    """,
+                    (event.event_id,),
+                ).fetchone()
+                if current is None:
+                    revision_number = 0
+                    self._conn.execute(
+                        """
+                        INSERT INTO scheduled_events (
+                            event_id, source_id, external_id, title, description,
+                            event_type, scheduled_at_utc, reference_period, status,
+                            source_url, first_seen_at_utc, last_seen_at_utc,
+                            revision_count, payload_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                        """,
+                        (
+                            event.event_id,
+                            event.source_id,
+                            event.external_id,
+                            event.title,
+                            event.description,
+                            event.event_type,
+                            scheduled_iso,
+                            event.reference_period,
+                            event.status,
+                            event.source_url,
+                            observed_iso,
+                            observed_iso,
+                            payload_hash,
+                        ),
+                    )
+                elif current["payload_hash"] != payload_hash:
+                    revision_number = int(current["revision_count"]) + 1
+                    self._conn.execute(
+                        """
+                        UPDATE scheduled_events SET
+                            source_id=?, external_id=?, title=?, description=?,
+                            event_type=?, scheduled_at_utc=?, reference_period=?,
+                            status=?, source_url=?, last_seen_at_utc=?,
+                            revision_count=?, payload_hash=?
+                        WHERE event_id=?
+                        """,
+                        (
+                            event.source_id,
+                            event.external_id,
+                            event.title,
+                            event.description,
+                            event.event_type,
+                            scheduled_iso,
+                            event.reference_period,
+                            event.status,
+                            event.source_url,
+                            observed_iso,
+                            revision_number,
+                            payload_hash,
+                            event.event_id,
+                        ),
+                    )
+                else:
+                    self._conn.execute(
+                        """
+                        UPDATE scheduled_events SET last_seen_at_utc=?
+                        WHERE event_id=?
+                        """,
+                        (observed_iso, event.event_id),
+                    )
+                    continue
+                self._conn.execute(
+                    """
+                    INSERT INTO scheduled_event_revisions (
+                        event_id, revision_number, observed_at_utc,
+                        scheduled_at_utc, status, payload_json, payload_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_id,
+                        revision_number,
+                        observed_iso,
+                        scheduled_iso,
+                        event.status,
+                        payload_json,
+                        payload_hash,
+                    ),
+                )
+            self._conn.commit()
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def upcoming_scheduled_events(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        include_cancelled: bool = False,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        start_iso = to_utc_iso(self._as_utc(start))
+        end_iso = to_utc_iso(self._as_utc(end))
+        if end_iso <= start_iso:
+            raise ValueError("scheduled event query end must be after start")
+        status_filter = "" if include_cancelled else "AND status='scheduled'"
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                f"""
+                SELECT * FROM scheduled_events
+                WHERE scheduled_at_utc >= ? AND scheduled_at_utc < ?
+                  {status_filter}
+                ORDER BY scheduled_at_utc, event_id
+                LIMIT ?
+                """,
+                (start_iso, end_iso, max(1, min(limit, 5000))),
+            ).fetchall()
+        ]
+
+    def scheduled_event_revisions(self, event_id: str) -> list[dict[str, Any]]:
+        if not event_id.strip():
+            raise ValueError("scheduled event ID must be non-empty")
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                """
+                SELECT event_id, revision_number, observed_at_utc,
+                       scheduled_at_utc, status, payload_json, payload_hash
+                FROM scheduled_event_revisions
+                WHERE event_id=?
+                ORDER BY revision_number
+                """,
+                (event_id,),
+            ).fetchall()
+        ]
+
+    def recent_event_calendar_sources(self, limit: int = 20) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                """
+                SELECT * FROM event_calendar_source_runs
+                ORDER BY checked_at_utc DESC, source_id
+                LIMIT ?
+                """,
+                (max(1, min(limit, 200)),),
+            ).fetchall()
+        ]
+
+    def record_event_contract_discovery(
+        self,
+        result: Any,
+        *,
+        observed_at: Optional[datetime] = None,
+    ) -> int:
+        """Persist event candidates, coverage, and verified pair links."""
+        observed_iso = to_utc_iso(self._as_utc(observed_at))
+        coverage = [
+            {
+                "event_id": row.event_id,
+                "event_type": row.event_type,
+                "status": row.status,
+                "polymarket_candidates": int(row.polymarket_candidates),
+                "kalshi_candidates": int(row.kalshi_candidates),
+                "verified_pairs": int(row.verified_pairs),
+            }
+            for row in result.coverage
+        ]
+        coverage_json = json.dumps(coverage, sort_keys=True, separators=(",", ":"))
+        event_ids = sorted({row["event_id"] for row in coverage})
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            cursor = self._conn.execute(
+                """
+                INSERT INTO event_contract_discovery_cycles (
+                    observed_at_utc, coverage_json, candidate_count,
+                    verified_pair_count
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (
+                    observed_iso,
+                    coverage_json,
+                    len(result.candidates),
+                    len(result.pairs),
+                ),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("failed to create event discovery cycle")
+            cycle_id = int(cursor.lastrowid)
+            candidate_rows = []
+            for candidate in result.candidates:
+                if candidate.platform not in {"polymarket", "kalshi"}:
+                    raise ValueError("event candidate platform is invalid")
+                if not candidate.event_id.strip() or not candidate.market_id.strip():
+                    raise ValueError("event candidate identity must be non-empty")
+                candidate_rows.append(
+                    (
+                        cycle_id,
+                        candidate.event_id,
+                        candidate.event_type,
+                        candidate.platform,
+                        candidate.market_id,
+                        candidate.title,
+                    )
+                )
+            if candidate_rows:
+                self._conn.executemany(
+                    """
+                    INSERT INTO event_contract_candidates (
+                        cycle_id, event_id, event_type, platform, market_id, title
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    candidate_rows,
+                )
+            if event_ids:
+                placeholders = ",".join("?" for _ in event_ids)
+                self._conn.execute(
+                    f"UPDATE event_pair_links SET active=0 WHERE event_id IN ({placeholders})",
+                    event_ids,
+                )
+            for link in result.links:
+                pair = link.pair
+                if pair.semantic_relation != "equivalent" or not pair.auto_approved:
+                    raise ValueError(
+                        "event pair link must be auto-approved semantic equivalence"
+                    )
+                reasons_json = json.dumps(
+                    list(pair.verification_reasons), separators=(",", ":")
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO event_pair_links (
+                        event_id, pair_id, event_type, scheduled_at_utc,
+                        polymarket_id, kalshi_ticker, polymarket_question,
+                        kalshi_title, similarity_score, semantic_relation,
+                        verification_confidence, verification_reasons_json,
+                        auto_approved, first_seen_at_utc, last_seen_at_utc, active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    ON CONFLICT(event_id, pair_id) DO UPDATE SET
+                        event_type=excluded.event_type,
+                        scheduled_at_utc=excluded.scheduled_at_utc,
+                        polymarket_id=excluded.polymarket_id,
+                        kalshi_ticker=excluded.kalshi_ticker,
+                        polymarket_question=excluded.polymarket_question,
+                        kalshi_title=excluded.kalshi_title,
+                        similarity_score=excluded.similarity_score,
+                        semantic_relation=excluded.semantic_relation,
+                        verification_confidence=excluded.verification_confidence,
+                        verification_reasons_json=excluded.verification_reasons_json,
+                        auto_approved=excluded.auto_approved,
+                        last_seen_at_utc=excluded.last_seen_at_utc,
+                        active=1
+                    """,
+                    (
+                        link.event_id,
+                        pair.pair_id,
+                        link.event_type,
+                        to_utc_iso(self._as_utc(link.scheduled_at)),
+                        pair.polymarket_id,
+                        pair.kalshi_ticker,
+                        pair.polymarket_question,
+                        pair.kalshi_title,
+                        float(pair.similarity_score),
+                        pair.semantic_relation,
+                        float(pair.verification_confidence),
+                        reasons_json,
+                        int(bool(pair.auto_approved)),
+                        observed_iso,
+                        observed_iso,
+                    ),
+                )
+            self._conn.execute("""
+                DELETE FROM event_contract_discovery_cycles
+                WHERE id NOT IN (
+                    SELECT id FROM event_contract_discovery_cycles
+                    ORDER BY observed_at_utc DESC, id DESC LIMIT 500
+                )
+                """)
+            self._conn.commit()
+            return cycle_id
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def active_event_pair_links(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        start_iso = to_utc_iso(self._as_utc(start))
+        end_iso = to_utc_iso(self._as_utc(end))
+        if end_iso <= start_iso:
+            raise ValueError("event pair query end must be after start")
+        rows = self._conn.execute(
+            """
+            SELECT links.*, events.title AS event_title,
+                   events.reference_period, events.source_url, events.status
+            FROM event_pair_links AS links
+            JOIN scheduled_events AS events ON events.event_id = links.event_id
+            WHERE links.active=1 AND events.status='scheduled'
+              AND links.scheduled_at_utc >= ? AND links.scheduled_at_utc < ?
+            ORDER BY links.scheduled_at_utc, links.event_id, links.pair_id
+            LIMIT ?
+            """,
+            (start_iso, end_iso, max(1, min(limit, 5000))),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["verification_reasons"] = json.loads(
+                item.pop("verification_reasons_json")
+            )
+            item["auto_approved"] = bool(item["auto_approved"])
+            item["active"] = bool(item["active"])
+            result.append(item)
+        return result
+
+    def latest_event_contract_discovery(self) -> Optional[dict[str, Any]]:
+        row = self._conn.execute("""
+            SELECT * FROM event_contract_discovery_cycles
+            ORDER BY observed_at_utc DESC, id DESC LIMIT 1
+            """).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["coverage"] = json.loads(result.pop("coverage_json"))
+        return result
+
+    def record_event_lane_snapshot(self, snapshot: Any) -> int:
+        """Append only event-lane state changes, not every scanner heartbeat."""
+        run_id = self._active_run_id
+        if run_id is None:
+            raise RuntimeError("event lane persistence requires an active paper run")
+        observed_iso = to_utc_iso(self._as_utc(snapshot.generated_at))
+        inserted = 0
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for schedule in snapshot.pairs:
+                latest = self._conn.execute(
+                    """
+                    SELECT event_id, lane_state
+                    FROM event_lane_transitions
+                    WHERE run_id=? AND pair_id=?
+                    ORDER BY observed_at_utc DESC, id DESC LIMIT 1
+                    """,
+                    (run_id, schedule.pair_id),
+                ).fetchone()
+                if (
+                    latest is not None
+                    and latest["event_id"] == schedule.event_id
+                    and latest["lane_state"] == schedule.state
+                ):
+                    continue
+                seconds_to_event = float(schedule.seconds_to_event)
+                interval_seconds = float(schedule.interval_seconds)
+                if not math.isfinite(seconds_to_event):
+                    raise ValueError("event seconds-to-event must be finite")
+                if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+                    raise ValueError("event lane interval must be finite and positive")
+                self._conn.execute(
+                    """
+                    INSERT INTO event_lane_transitions (
+                        run_id, event_id, pair_id, event_type, lane_state,
+                        scheduled_at_utc, observed_at_utc, seconds_to_event,
+                        interval_seconds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        schedule.event_id,
+                        schedule.pair_id,
+                        schedule.event_type,
+                        schedule.state,
+                        to_utc_iso(self._as_utc(schedule.scheduled_at)),
+                        observed_iso,
+                        seconds_to_event,
+                        interval_seconds,
+                    ),
+                )
+                inserted += 1
+            self._conn.commit()
+            return inserted
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def recent_event_lane_transitions(
+        self,
+        *,
+        run_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        selected_run_id = run_id or self._active_run_id
+        if selected_run_id is None:
+            return []
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                """
+                SELECT * FROM event_lane_transitions
+                WHERE run_id=?
+                ORDER BY observed_at_utc DESC, id DESC LIMIT ?
+                """,
+                (selected_run_id, max(1, min(limit, 2000))),
+            ).fetchall()
+        ]
 
     def record_pair_review(
         self,
@@ -1292,6 +1888,21 @@ class PaperTradeStore:
                     raise ValueError(f"{field} must be numeric")
                 if not math.isfinite(float(value)):
                     raise ValueError(f"{field} must be finite")
+            scheduled_event_id = evaluation.get("scheduled_event_id") or None
+            event_lane_state = evaluation.get("event_lane_state") or None
+            if (scheduled_event_id is None) != (event_lane_state is None):
+                raise ValueError(
+                    "scheduled event ID and event lane state must be provided together"
+                )
+            if scheduled_event_id is not None and (
+                not isinstance(scheduled_event_id, str)
+                or not scheduled_event_id.strip()
+                or not isinstance(event_lane_state, str)
+                or not re.fullmatch(
+                    r"scheduled|warm|hot|burst|cooldown", event_lane_state
+                )
+            ):
+                raise ValueError("invalid scheduled event evaluation context")
             rows.append(
                 (
                     run_id,
@@ -1300,6 +1911,8 @@ class PaperTradeStore:
                     *(evaluation.get(field) for field in numeric_fields),
                     evaluation["outcome"],
                     evaluation["reason_code"],
+                    scheduled_event_id,
+                    event_lane_state,
                 )
             )
         try:
@@ -1323,7 +1936,7 @@ class PaperTradeStore:
                     polymarket_age_seconds, kalshi_age_seconds,
                     gross_edge, fee_cost, slippage_reserve, net_edge,
                     executable_net_edge, required_net_edge, suggested_size,
-                    outcome, reason_code
+                    outcome, reason_code, scheduled_event_id, event_lane_state
                 ) VALUES ({placeholders})
                 """,
                 rows,
@@ -1570,6 +2183,49 @@ class PaperTradeStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def record_event_operational_failure(
+        self,
+        *,
+        event_id: str,
+        pair_id: str,
+        lane_state: str,
+        reason_code: str,
+        observed_at: Optional[datetime] = None,
+    ) -> None:
+        """Count an event-window failure even when economics cannot be evaluated."""
+        run_id = self._active_run_id
+        if run_id is None:
+            raise RuntimeError("event operational failure requires an active paper run")
+        if not event_id.strip() or not pair_id.strip():
+            raise ValueError("event operational failure identity must be non-empty")
+        if not re.fullmatch(r"scheduled|warm|hot|burst|cooldown", lane_state):
+            raise ValueError("invalid event lane state")
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", reason_code):
+            raise ValueError("invalid event operational failure reason")
+        observed_iso = to_utc_iso(self._as_utc(observed_at))
+        self._conn.execute(
+            """
+            INSERT INTO event_operational_failures (
+                run_id, event_id, pair_id, lane_state, reason_code,
+                observation_count, first_observed_at_utc, last_observed_at_utc
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(run_id, event_id, pair_id, lane_state, reason_code)
+            DO UPDATE SET
+                observation_count=event_operational_failures.observation_count + 1,
+                last_observed_at_utc=excluded.last_observed_at_utc
+            """,
+            (
+                run_id,
+                event_id,
+                pair_id,
+                lane_state,
+                reason_code,
+                observed_iso,
+                observed_iso,
+            ),
+        )
+        self._conn.commit()
+
     def cross_platform_evaluation_count(
         self,
         run_id: Optional[str] = None,
@@ -1604,6 +2260,130 @@ class PaperTradeStore:
             (selected_run_id, max(1, min(limit, 200))),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def event_week_scorecard(
+        self,
+        *,
+        run_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Summarize durable scheduled-event evaluation evidence for one run."""
+        selected_run_id = run_id or self._active_run_id
+        empty: dict[str, Any] = {
+            "evaluation_count": 0,
+            "event_count": 0,
+            "pair_count": 0,
+            "opportunity_count": 0,
+            "average_executable_net_edge": None,
+            "max_executable_net_edge": None,
+            "control_evaluation_count": 0,
+            "control_average_executable_net_edge": None,
+            "average_edge_lift": None,
+            "operational_failure_count": 0,
+            "operational_failures": {},
+            "by_lane": {},
+        }
+        if selected_run_id is None:
+            return empty
+        total = self._conn.execute(
+            """
+            SELECT
+                COUNT(*) AS evaluation_count,
+                COUNT(DISTINCT scheduled_event_id) AS event_count,
+                COUNT(DISTINCT pair_id) AS pair_count,
+                SUM(CASE WHEN outcome = 'opportunity' THEN 1 ELSE 0 END)
+                    AS opportunity_count,
+                AVG(executable_net_edge) AS average_executable_net_edge,
+                MAX(executable_net_edge) AS max_executable_net_edge
+            FROM cross_platform_evaluations
+            WHERE run_id = ? AND scheduled_event_id IS NOT NULL
+            """,
+            (selected_run_id,),
+        ).fetchone()
+        failure_rows = self._conn.execute(
+            """
+            SELECT reason_code, SUM(observation_count) AS observation_count
+            FROM event_operational_failures
+            WHERE run_id = ?
+            GROUP BY reason_code
+            ORDER BY reason_code
+            """,
+            (selected_run_id,),
+        ).fetchall()
+        operational_failures = {
+            str(row["reason_code"]): int(row["observation_count"])
+            for row in failure_rows
+        }
+        if total is None or int(total["evaluation_count"]) == 0:
+            return {
+                **empty,
+                "operational_failure_count": sum(operational_failures.values()),
+                "operational_failures": operational_failures,
+            }
+        lanes = self._conn.execute(
+            """
+            SELECT
+                event_lane_state,
+                COUNT(*) AS evaluation_count,
+                SUM(CASE WHEN outcome = 'opportunity' THEN 1 ELSE 0 END)
+                    AS opportunity_count,
+                AVG(executable_net_edge) AS average_executable_net_edge,
+                MAX(executable_net_edge) AS max_executable_net_edge
+            FROM cross_platform_evaluations
+            WHERE run_id = ? AND scheduled_event_id IS NOT NULL
+            GROUP BY event_lane_state
+            ORDER BY event_lane_state
+            """,
+            (selected_run_id,),
+        ).fetchall()
+        control = self._conn.execute(
+            """
+            WITH event_pairs AS (
+                SELECT DISTINCT pair_id
+                FROM cross_platform_evaluations
+                WHERE run_id = ? AND scheduled_event_id IS NOT NULL
+            )
+            SELECT
+                COUNT(*) AS evaluation_count,
+                AVG(executable_net_edge) AS average_executable_net_edge
+            FROM cross_platform_evaluations
+            WHERE run_id = ? AND scheduled_event_id IS NULL
+              AND pair_id IN (SELECT pair_id FROM event_pairs)
+            """,
+            (selected_run_id, selected_run_id),
+        ).fetchone()
+        event_average = float(total["average_executable_net_edge"])
+        control_count = int(control["evaluation_count"]) if control else 0
+        control_average = (
+            float(control["average_executable_net_edge"])
+            if control_count and control["average_executable_net_edge"] is not None
+            else None
+        )
+        return {
+            "evaluation_count": int(total["evaluation_count"]),
+            "event_count": int(total["event_count"]),
+            "pair_count": int(total["pair_count"]),
+            "opportunity_count": int(total["opportunity_count"] or 0),
+            "average_executable_net_edge": event_average,
+            "max_executable_net_edge": float(total["max_executable_net_edge"]),
+            "control_evaluation_count": control_count,
+            "control_average_executable_net_edge": control_average,
+            "average_edge_lift": (
+                event_average - control_average if control_average is not None else None
+            ),
+            "operational_failure_count": sum(operational_failures.values()),
+            "operational_failures": operational_failures,
+            "by_lane": {
+                str(row["event_lane_state"]): {
+                    "evaluation_count": int(row["evaluation_count"]),
+                    "opportunity_count": int(row["opportunity_count"] or 0),
+                    "average_executable_net_edge": float(
+                        row["average_executable_net_edge"]
+                    ),
+                    "max_executable_net_edge": float(row["max_executable_net_edge"]),
+                }
+                for row in lanes
+            },
+        }
 
     def cross_platform_evaluation_funnel(
         self,

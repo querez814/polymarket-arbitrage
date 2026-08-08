@@ -116,6 +116,26 @@ def test_dashboard_exposes_inspectable_news_catalyst_status_and_panel():
     assert "Transient upstream failure; retrying automatically" in page
 
 
+def test_dashboard_exposes_scheduled_event_week_state_and_panel():
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app
+
+    state = DashboardState()
+    state.event_week["status"] = "partial"
+    state.event_week["verified_event_pairs"] = 3
+
+    payload = state.to_dict()["event_week"]
+    assert payload["enabled"] is False
+    assert payload["status"] == "partial"
+    assert payload["verified_event_pairs"] == 3
+    assert payload["upcoming_events"] == []
+    assert payload["active_lanes"] == []
+    page = TestClient(app).get("/").text
+    assert "Scheduled Event Week" in page
+    assert "updateEventWeek" in page
+
+
 @pytest.mark.asyncio
 async def test_dashboard_integration_updates_paper_mode_fields():
     integration = DashboardIntegration(

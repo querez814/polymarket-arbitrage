@@ -1185,7 +1185,7 @@ class SemanticMarketPipeline:
                 reasons=reasons,
                 auto_approved=auto_approved,
             )
-            if relation is SemanticRelation.EQUIVALENT:
+            if auto_approved:
                 verified.append(result)
             else:
                 review.append(result)

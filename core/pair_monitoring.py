@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import calendar
+import math
 from typing import Any, Callable, Sequence
 
 
@@ -12,6 +13,21 @@ from typing import Any, Callable, Sequence
 class DuePair:
     pair: Any
     tier: str
+    scheduled_event_id: str = ""
+    event_lane_state: str = ""
+
+
+@dataclass(frozen=True)
+class PairScheduleOverride:
+    event_id: str
+    lane_state: str
+    interval_seconds: float
+
+    def __post_init__(self) -> None:
+        if not self.event_id.strip() or not self.lane_state.strip():
+            raise ValueError("pair schedule override identity must be non-empty")
+        if not math.isfinite(self.interval_seconds) or self.interval_seconds <= 0:
+            raise ValueError("pair schedule override interval must be positive")
 
 
 @dataclass
@@ -37,21 +53,46 @@ class PairTierMonitor:
         self.cold_interval = cold_interval
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._telemetry: dict[str, _Telemetry] = {}
+        self._schedule_overrides: dict[str, PairScheduleOverride] = {}
+
+    def set_schedule_overrides(
+        self, overrides: dict[str, PairScheduleOverride]
+    ) -> None:
+        if any(not pair_id.strip() for pair_id in overrides):
+            raise ValueError("pair schedule override IDs must be non-empty")
+        self._schedule_overrides = dict(overrides)
 
     def due_pairs(self, pairs: Sequence[Any]) -> list[DuePair]:
         now = self._now()
         ranked = sorted(pairs, key=self._rank, reverse=True)
-        hot_ids = {pair.pair_id for pair in ranked[: self.hot_limit]}
+        ordinary_ranked = [
+            pair
+            for pair in sorted(pairs, key=self._rank, reverse=True)
+            if pair.pair_id not in self._schedule_overrides
+        ]
+        hot_ids = {pair.pair_id for pair in ordinary_ranked[: self.hot_limit]}
         due: list[DuePair] = []
         for pair in ranked:
             telemetry = self._telemetry.setdefault(pair.pair_id, _Telemetry())
-            tier = "hot" if pair.pair_id in hot_ids else "cold"
-            interval = self.hot_interval if tier == "hot" else self.cold_interval
+            override = self._schedule_overrides.get(pair.pair_id)
+            if override is not None:
+                tier = f"event_{override.lane_state}"
+                interval = override.interval_seconds
+            else:
+                tier = "hot" if pair.pair_id in hot_ids else "cold"
+                interval = self.hot_interval if tier == "hot" else self.cold_interval
             if (
                 telemetry.last_evaluated is None
                 or (now - telemetry.last_evaluated).total_seconds() >= interval
             ):
-                due.append(DuePair(pair=pair, tier=tier))
+                due.append(
+                    DuePair(
+                        pair=pair,
+                        tier=tier,
+                        scheduled_event_id=(override.event_id if override else ""),
+                        event_lane_state=(override.lane_state if override else ""),
+                    )
+                )
         return due
 
     def mark_evaluated(
@@ -67,9 +108,10 @@ class PairTierMonitor:
         if opportunity:
             telemetry.opportunity_count += 1
 
-    def _rank(self, pair: Any) -> tuple[float, int, float, float, str]:
+    def _rank(self, pair: Any) -> tuple[int, float, int, float, float, str]:
         telemetry = self._telemetry.get(pair.pair_id, _Telemetry())
         return (
+            int(pair.pair_id in self._schedule_overrides),
             telemetry.observed_net_edge,
             telemetry.opportunity_count,
             float(getattr(pair, "discovery_priority", 0.0)),

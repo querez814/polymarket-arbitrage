@@ -7,6 +7,10 @@ import pytest
 
 from run_with_dashboard import TradingBotWithDashboard
 from core.combinatorial_arb import SamePlatformArbitrageDetector
+from core.cross_platform_arb import MarketPair
+from core.event_contracts import EventPairLink
+from core.event_lane import EventLanePolicy, EventLaneScheduler
+from core.pair_monitoring import PairTierMonitor
 from utils.config_loader import BotConfig
 from utils.task_supervision import RestartingTaskSupervisor
 from polymarket_client.models import (
@@ -219,6 +223,47 @@ async def test_zero_matches_is_an_honest_wait_state_not_a_started_scan():
     assert decision.reason_code == "no_equivalent_pairs"
     assert "price scan" not in decision.explanation
     assert bot._xplat_scan_task is None
+
+
+def test_runtime_applies_event_clock_to_existing_pair_monitoring_seam():
+    event_at = datetime(2026, 8, 12, 12, 30, tzinfo=timezone.utc)
+    now = event_at - timedelta(minutes=3)
+    bot = TradingBotWithDashboard(BotConfig())
+    pair = MarketPair(
+        polymarket_id="poly-cpi",
+        kalshi_ticker="kx-cpi",
+        polymarket_question="Core CPI above 0.3%?",
+        kalshi_title="Core CPI above 0.3%?",
+        similarity_score=0.98,
+    )
+    bot._event_pair_links = [
+        EventPairLink(
+            event_id="bls:cpi-july-2026",
+            event_type="cpi",
+            scheduled_at=event_at,
+            pair=pair,
+        )
+    ]
+    bot.event_lane_scheduler = EventLaneScheduler(
+        policy=EventLanePolicy(),
+        clock=lambda: now,
+    )
+    bot.pair_monitor = PairTierMonitor(
+        hot_limit=1,
+        hot_interval=2,
+        cold_interval=30,
+        clock=lambda: now,
+    )
+
+    bot._apply_event_lane_schedule()
+
+    due = bot.pair_monitor.due_pairs([pair])
+    assert len(due) == 1
+    assert due[0].tier == "event_burst"
+    assert due[0].scheduled_event_id == "bls:cpi-july-2026"
+    from dashboard.server import dashboard_state
+
+    assert dashboard_state.event_week["active_lanes"][0]["state"] == "burst"
 
 
 @pytest.mark.asyncio

@@ -228,6 +228,29 @@ class NewsCatalystConfig:
 
 
 @dataclass
+class EventWeekConfig:
+    """Authoritative scheduled-event discovery and paper monitoring policy."""
+
+    enabled: bool = False
+    calendar_refresh_seconds: float = 21600.0
+    source_max_staleness_seconds: float = 86400.0
+    lookahead_days: float = 7.0
+    warm_before_hours: float = 24.0
+    hot_before_minutes: float = 60.0
+    burst_before_minutes: float = 5.0
+    burst_after_minutes: float = 15.0
+    cooldown_after_hours: float = 24.0
+    scheduled_interval_seconds: float = 300.0
+    warm_interval_seconds: float = 60.0
+    hot_interval_seconds: float = 2.0
+    burst_interval_seconds: float = 1.0
+    cooldown_interval_seconds: float = 10.0
+    max_events_per_refresh: int = 500
+    max_verification_candidates_per_event: int = 100
+    max_verification_candidates_per_cycle: int = 500
+
+
+@dataclass
 class BotConfig:
     """Complete bot configuration."""
 
@@ -239,6 +262,7 @@ class BotConfig:
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     production: ProductionConfig = field(default_factory=ProductionConfig)
     news_catalyst: NewsCatalystConfig = field(default_factory=NewsCatalystConfig)
+    event_week: EventWeekConfig = field(default_factory=EventWeekConfig)
 
     @property
     def is_polymarket_us(self) -> bool:
@@ -294,6 +318,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     monitoring_data = raw_config.get("monitoring", {})
     production_data = raw_config.get("production", {})
     news_catalyst_data = raw_config.get("news_catalyst", {})
+    event_week_data = raw_config.get("event_week", {})
 
     # Handle environment variable overrides
     api_data = _apply_env_overrides(
@@ -336,6 +361,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         monitoring=_build_dataclass(MonitoringConfig, monitoring_data),
         production=_build_dataclass(ProductionConfig, production_data),
         news_catalyst=_build_dataclass(NewsCatalystConfig, news_catalyst_data),
+        event_week=_build_dataclass(EventWeekConfig, event_week_data),
     )
 
     # Validate
@@ -849,6 +875,102 @@ def validate_config(config: BotConfig) -> None:
             "news_catalyst.mispricing_detector_enabled is not available; "
             "directional news trading remains intentionally disabled"
         )
+
+    event_week = config.event_week
+    if not isinstance(event_week.enabled, bool):
+        errors.append("event_week.enabled must be a boolean")
+    event_positive_fields = (
+        "calendar_refresh_seconds",
+        "source_max_staleness_seconds",
+        "lookahead_days",
+        "warm_before_hours",
+        "hot_before_minutes",
+        "burst_before_minutes",
+        "burst_after_minutes",
+        "cooldown_after_hours",
+        "scheduled_interval_seconds",
+        "warm_interval_seconds",
+        "hot_interval_seconds",
+        "burst_interval_seconds",
+        "cooldown_interval_seconds",
+    )
+    for name in event_positive_fields:
+        value = getattr(event_week, name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            errors.append(f"event_week.{name} must be numeric")
+        elif not math.isfinite(float(value)) or float(value) <= 0:
+            errors.append(f"event_week.{name} must be finite and positive")
+    for name in (
+        "max_events_per_refresh",
+        "max_verification_candidates_per_event",
+        "max_verification_candidates_per_cycle",
+    ):
+        value = getattr(event_week, name)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            errors.append(f"event_week.{name} must be a positive integer")
+    if (
+        isinstance(event_week.max_events_per_refresh, int)
+        and not isinstance(event_week.max_events_per_refresh, bool)
+        and event_week.max_events_per_refresh > 5000
+    ):
+        errors.append("event_week.max_events_per_refresh must be <= 5000")
+    if (
+        isinstance(event_week.max_verification_candidates_per_event, int)
+        and not isinstance(event_week.max_verification_candidates_per_event, bool)
+        and event_week.max_verification_candidates_per_event > 500
+    ):
+        errors.append("event_week.max_verification_candidates_per_event must be <= 500")
+    if (
+        isinstance(event_week.max_verification_candidates_per_cycle, int)
+        and not isinstance(event_week.max_verification_candidates_per_cycle, bool)
+        and event_week.max_verification_candidates_per_cycle > 5000
+    ):
+        errors.append(
+            "event_week.max_verification_candidates_per_cycle must be <= 5000"
+        )
+    if (
+        isinstance(event_week.max_verification_candidates_per_event, int)
+        and not isinstance(event_week.max_verification_candidates_per_event, bool)
+        and isinstance(event_week.max_verification_candidates_per_cycle, int)
+        and not isinstance(event_week.max_verification_candidates_per_cycle, bool)
+        and event_week.max_verification_candidates_per_cycle
+        < event_week.max_verification_candidates_per_event
+    ):
+        errors.append(
+            "event_week.max_verification_candidates_per_cycle must be >= "
+            "max_verification_candidates_per_event"
+        )
+    if all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in (
+            event_week.lookahead_days,
+            event_week.warm_before_hours,
+            event_week.hot_before_minutes,
+            event_week.burst_before_minutes,
+            event_week.burst_after_minutes,
+            event_week.cooldown_after_hours,
+        )
+    ):
+        lookahead_seconds = float(event_week.lookahead_days) * 86400
+        warm_seconds = float(event_week.warm_before_hours) * 3600
+        hot_seconds = float(event_week.hot_before_minutes) * 60
+        burst_before_seconds = float(event_week.burst_before_minutes) * 60
+        burst_after_seconds = float(event_week.burst_after_minutes) * 60
+        cooldown_seconds = float(event_week.cooldown_after_hours) * 3600
+        if not (
+            lookahead_seconds > warm_seconds > hot_seconds > burst_before_seconds > 0
+        ):
+            errors.append(
+                "event_week windows must satisfy lookahead > warm > hot > burst > 0"
+            )
+        if cooldown_seconds <= burst_after_seconds:
+            errors.append(
+                "event_week cooldown_after_hours must exceed burst_after_minutes"
+            )
+    if event_week.enabled and not config.mode.cross_platform_enabled:
+        errors.append("event_week.enabled requires cross-platform monitoring")
+    if event_week.enabled and not config.mode.semantic_matching_enabled:
+        errors.append("event_week.enabled requires semantic matching")
 
     if not config.production.execution_journal_path.strip():
         errors.append("production.execution_journal_path must be non-empty")

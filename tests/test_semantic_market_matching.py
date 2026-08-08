@@ -127,6 +127,33 @@ def test_pipeline_verifies_equivalent_paraphrases_for_auto_approval():
     assert result.verified[0].confidence >= 0.92
 
 
+def test_low_confidence_equivalent_stays_in_review_and_out_of_trade_pairs():
+    class LowConfidenceVerifier:
+        async def verify_many(self, candidates):
+            return [
+                (SemanticRelation.EQUIVALENT, 0.70, ("uncertain equivalence",))
+                for _ in candidates
+            ]
+
+    pipeline = SemanticMarketPipeline(
+        verifier=LowConfidenceVerifier(),
+        auto_approve_confidence=0.92,
+        retrieval_floor=0.0,
+    )
+
+    result = asyncio.run(
+        pipeline.match(
+            [_poly("Will Alice Smith win the 2026 mayoral election?")],
+            [_kalshi("Alice Smith elected mayor in 2026?")],
+        )
+    )
+
+    assert result.verified == []
+    assert len(result.review) == 1
+    assert result.review[0].relation is SemanticRelation.EQUIVALENT
+    assert result.review[0].auto_approved is False
+
+
 def test_pipeline_rejects_similar_wording_with_different_resolution_scope():
     pipeline = SemanticMarketPipeline()
 

@@ -457,6 +457,8 @@ def test_cross_platform_evaluations_persist_exact_direction_evidence(tmp_path):
                     "suggested_size": 10.0,
                     "outcome": "skipped",
                     "reason_code": "edge_below_threshold",
+                    "scheduled_event_id": "bls:cpi-july-2026",
+                    "event_lane_state": "burst",
                 },
                 {
                     **common,
@@ -488,6 +490,18 @@ def test_cross_platform_evaluations_persist_exact_direction_evidence(tmp_path):
         assert yes["fee_cost"] == pytest.approx(0.006)
         assert yes["executable_net_edge"] == pytest.approx(-0.016)
         assert yes["polymarket_yes_ask_size"] == pytest.approx(110.0)
+        assert yes["scheduled_event_id"] == "bls:cpi-july-2026"
+        assert yes["event_lane_state"] == "burst"
+        scorecard = store.event_week_scorecard(run_id=run.run_id)
+        assert scorecard["evaluation_count"] == 1
+        assert scorecard["event_count"] == 1
+        assert scorecard["pair_count"] == 1
+        assert scorecard["opportunity_count"] == 0
+        assert scorecard["max_executable_net_edge"] == pytest.approx(-0.016)
+        assert scorecard["by_lane"]["burst"]["evaluation_count"] == 1
+        assert scorecard["control_evaluation_count"] == 1
+        assert scorecard["control_average_executable_net_edge"] == pytest.approx(-0.026)
+        assert scorecard["average_edge_lift"] == pytest.approx(0.01)
         assert yes["kalshi_yes_bid_size"] == pytest.approx(80.0)
         assert yes["reason_code"] == "edge_below_threshold"
         assert store.cross_platform_evaluation_count(run.run_id) == 2

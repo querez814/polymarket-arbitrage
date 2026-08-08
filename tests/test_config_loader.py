@@ -802,11 +802,16 @@ def test_production_shaped_paper_config_is_real_data_and_fixed_bankroll():
     assert config.risk.max_order_notional == pytest.approx(100.0)
     assert config.risk.max_position_per_market == pytest.approx(250.0)
     assert config.risk.max_global_exposure == pytest.approx(1_000.0)
-    assert config.news_catalyst.enabled is True
+    assert config.news_catalyst.enabled is False
     assert config.news_catalyst.apply_priority_boost is False
     assert config.news_catalyst.scan_interval_seconds == pytest.approx(1800)
     assert config.news_catalyst.max_daily_api_calls == 60
     assert config.news_catalyst.mispricing_detector_enabled is False
+    assert config.event_week.enabled is True
+    assert config.event_week.lookahead_days == pytest.approx(7)
+    assert config.event_week.calendar_refresh_seconds == pytest.approx(21600)
+    assert config.event_week.burst_interval_seconds == pytest.approx(1.0)
+    assert config.event_week.max_verification_candidates_per_cycle == 500
 
 
 def test_broad_orderbook_stream_flag_requires_real_boolean():
@@ -815,6 +820,28 @@ def test_broad_orderbook_stream_flag_requires_real_boolean():
 
     with pytest.raises(ConfigError, match="must be a boolean"):
         validate_config(config)
+
+
+def test_event_week_limits_reject_invalid_types_without_crashing_validation():
+    config = BotConfig()
+    config.event_week.max_events_per_refresh = "many"
+    config.event_week.max_verification_candidates_per_event = "all"
+    config.event_week.max_verification_candidates_per_cycle = "unlimited"
+
+    with pytest.raises(ConfigError) as error:
+        validate_config(config)
+
+    assert "event_week.max_events_per_refresh must be a positive integer" in str(
+        error.value
+    )
+    assert (
+        "event_week.max_verification_candidates_per_event must be a positive integer"
+        in str(error.value)
+    )
+    assert (
+        "event_week.max_verification_candidates_per_cycle must be a positive integer"
+        in str(error.value)
+    )
 
 
 def test_paper_locked_arb_rejects_random_fill_mode():
