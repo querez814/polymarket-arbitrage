@@ -142,6 +142,19 @@ class DashboardState:
             "active_lanes": [],
             "scorecard": {},
         }
+        self.platform_opportunity: dict = {
+            "enabled": False,
+            "mode": "disabled",
+            "status": "disabled",
+            "execution_authority": "none",
+            "catalog": {"contracts": 0, "revisions": 0},
+            "monitoring": {"hot": [], "warm_count": 0, "budget_excluded": []},
+            "relations": 0,
+            "intents": {},
+            "marks": 0,
+            "acceptance": {},
+            "worker": {"queued": 0, "processed": 0, "dropped": 0, "failures": 0},
+        }
         self.is_running: bool = False
         self.mode: str = "dry_run"
         self.last_update: datetime = utc_now()
@@ -205,6 +218,7 @@ class DashboardState:
             "operational": self.operational,  # Operational stats
             "news_catalysts": self.news_catalysts,
             "event_week": self.event_week,
+            "platform_opportunity": self.platform_opportunity,
             "cross_platform": self.cross_platform,  # Cross-platform arbitrage stats
             "is_running": self.is_running,
             "mode": self.mode,
@@ -2136,6 +2150,17 @@ def get_embedded_html() -> str:
             </div>
         </section>
 
+        <section class="card" id="platformOpportunityCard">
+            <div class="card-header">
+                <span class="card-title">⚡ Platform-First Opportunity System</span>
+                <span id="platformOpportunityStatus" style="font-size: 0.75rem; color: var(--text-secondary);">DISABLED</span>
+            </div>
+            <div class="card-body">
+                <div id="platformOpportunitySummary" style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.75rem;">Shadow system disabled</div>
+                <div id="platformOpportunityLanes" style="display: grid; gap: 0.5rem;"></div>
+            </div>
+        </section>
+
         <section class="card" id="eventWeekCard">
             <div class="card-header">
                 <span class="card-title">📅 Scheduled Event Week</span>
@@ -2354,6 +2379,9 @@ def get_embedded_html() -> str:
             
             // Cross-Platform
             updateCrossPlatform();
+
+            // Platform catalog and isolated shadow strategy lanes
+            updatePlatformOpportunity();
 
             // Authoritative scheduled-event monitoring lane
             updateEventWeek();
@@ -3226,6 +3254,40 @@ def get_embedded_html() -> str:
             } catch {
                 return null;
             }
+        }
+
+        function updatePlatformOpportunity() {
+            const opportunity = state.platform_opportunity || {};
+            const status = document.getElementById('platformOpportunityStatus');
+            const summary = document.getElementById('platformOpportunitySummary');
+            const lanes = document.getElementById('platformOpportunityLanes');
+            const mode = opportunity.status || 'disabled';
+            status.textContent = mode.replaceAll('_', ' ').toUpperCase();
+            status.style.color = mode === 'running'
+                ? 'var(--accent-green)'
+                : mode === 'degraded'
+                    ? '#f59e0b'
+                    : 'var(--text-secondary)';
+            const catalog = opportunity.catalog || {};
+            const monitoring = opportunity.monitoring || {};
+            const worker = opportunity.worker || {};
+            const hot = Array.isArray(monitoring.hot) ? monitoring.hot : [];
+            const excluded = Array.isArray(monitoring.budget_excluded)
+                ? monitoring.budget_excluded : [];
+            summary.textContent = opportunity.enabled
+                ? `${Number(catalog.contracts || 0)} catalog contracts · ${hot.length} hot · ${Number(monitoring.warm_count || 0)} warm · ${excluded.length} budget-excluded · ${Number(opportunity.relations || 0)} structural relations · execution authority: ${opportunity.execution_authority || 'none'}`
+                : 'Shadow system disabled by configuration';
+            const intents = opportunity.intents || {};
+            const acceptance = opportunity.acceptance || {};
+            lanes.innerHTML = [
+                ['Locked arbitrage', 'existing execution lane; unchanged'],
+                ['Relative value', `${Number(intents.relative_value || 0)} shadow intents · ${(acceptance.relative_value || {}).passed ? 'pilot gate passed' : 'proof pending'}`],
+                ['Directional reaction', `${Number(intents.directional_reaction || 0)} shadow intents · ${(acceptance.directional_reaction || {}).passed ? 'pilot gate passed' : 'proof pending'}`],
+                ['Research worker', `${Number(worker.queued || 0)} queued · ${Number(worker.processed || 0)} processed · ${Number(worker.dropped || 0)} dropped · ${Number(worker.failures || 0)} failures`],
+            ].map(row => `<div style="border-left: 2px solid var(--accent-green); padding-left: 0.65rem;">
+                <div style="font-size: 0.82rem; font-weight: 600;">${escapeHtml(row[0])}</div>
+                <div style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(row[1])}</div>
+            </div>`).join('');
         }
 
         function updateNewsCatalysts() {

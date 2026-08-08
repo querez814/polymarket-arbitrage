@@ -136,6 +136,23 @@ def test_dashboard_exposes_scheduled_event_week_state_and_panel():
     assert "updateEventWeek" in page
 
 
+def test_dashboard_exposes_platform_first_shadow_system():
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app
+
+    state = DashboardState()
+    state.platform_opportunity["enabled"] = True
+    state.platform_opportunity["catalog"]["contracts"] = 42
+
+    payload = state.to_dict()["platform_opportunity"]
+    assert payload["execution_authority"] == "none"
+    assert payload["catalog"]["contracts"] == 42
+    page = TestClient(app).get("/").text
+    assert "Platform-First Opportunity System" in page
+    assert "updatePlatformOpportunity" in page
+
+
 @pytest.mark.asyncio
 async def test_dashboard_integration_updates_paper_mode_fields():
     integration = DashboardIntegration(

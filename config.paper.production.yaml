@@ -98,6 +98,32 @@ monitoring:
   paper_trade_db_path: data/paper_performance.db
   display_timezone: America/New_York
 
+platform_opportunity:
+  # Platform inventory is the discovery source. All risk-bearing outputs are
+  # immutable shadow intents; this subsystem has no exchange-order authority.
+  enabled: true
+  experiment_id: platform-first-v1-2026-08
+  catalog_path: data/platform_opportunities.db
+  catalog_refresh_seconds: 1800
+  catalog_max_markets_per_venue: 25000
+  catalog_max_pages: 500
+  catalog_max_decoded_bytes: 67108864
+  catalog_wall_time_seconds: 120
+  lookahead_days: 7
+  max_hot_contracts: 40
+  min_liquidity: 100
+  min_volume: 100
+  queue_capacity: 10000
+  hot_poll_seconds: 1
+  # Venue fees are fetched from authoritative per-market metadata. This is an
+  # optional extra buffer on top of those dynamic entry and exit fees.
+  additional_fee_buffer_per_contract: 0
+  slippage_per_contract: 0.002
+  max_shadow_notional: 100
+  min_event_clusters: 50
+  min_intents: 200
+  max_research_drawdown: 50
+
 event_week:
   # Scheduled events control discovery and monitoring cadence only. They never
   # authorize a directional position or bypass executable-arbitrage economics.

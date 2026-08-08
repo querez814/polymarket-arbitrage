@@ -60,6 +60,7 @@ class DataFeed:
         self._priority_orderbook_task: Optional[asyncio.Task] = None
         self._running = False
         self._priority_market_ids: set[str] = set()
+        self._priority_market_groups: dict[str, set[str]] = {}
 
         # Statistics
         self._update_count = 0
@@ -180,6 +181,8 @@ class DataFeed:
             self._market_states.pop(stale, None)
             self._last_update.pop(stale, None)
         self._priority_market_ids.intersection_update(replacement)
+        for group in self._priority_market_groups.values():
+            group.intersection_update(replacement)
 
     async def resync_markets(self, *, restart_stream: bool = True) -> None:
         """Refresh the active snapshot and restart its snapshot-based stream."""
@@ -224,8 +227,19 @@ class DataFeed:
                 logger.exception("Polymarket market resync failed")
 
     def set_priority_markets(self, market_ids: list[str]) -> None:
-        """Continuously refresh verified markets inside the freshness window."""
-        priority = set(market_ids).intersection(self._markets)
+        """Set the backwards-compatible default priority group."""
+        self.set_priority_market_group("default", market_ids)
+
+    def set_priority_market_group(self, source: str, market_ids: list[str]) -> None:
+        """Merge independently owned priority sets without last-writer loss."""
+        if not source.strip():
+            raise ValueError("priority market group source must be non-empty")
+        group = set(market_ids).intersection(self._markets)
+        if group:
+            self._priority_market_groups[source] = group
+        else:
+            self._priority_market_groups.pop(source, None)
+        priority = set().union(*self._priority_market_groups.values()) if self._priority_market_groups else set()
         if priority == self._priority_market_ids:
             return
         self._priority_market_ids = priority

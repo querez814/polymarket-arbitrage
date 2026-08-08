@@ -109,6 +109,20 @@ def test_priority_lane_keeps_matched_market_books_fresh():
     assert "matched" in feed._order_books
 
 
+def test_priority_groups_merge_without_one_strategy_erasing_another():
+    feed = DataFeed(object(), [], config=_config())
+    feed._markets = {
+        "locked-arb": _market("locked-arb", liquidity=100, volume_24h=50),
+        "reaction": _market("reaction", liquidity=100, volume_24h=50),
+    }
+
+    feed.set_priority_market_group("locked_arb", ["locked-arb"])
+    feed.set_priority_market_group("platform_opportunity", ["reaction"])
+    feed.set_priority_market_group("locked_arb", [])
+
+    assert feed._priority_market_ids == {"reaction"}
+
+
 def test_broad_orderbook_stream_can_be_disabled_for_pair_scoped_paper_runtime():
     called = False
 

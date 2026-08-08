@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nightwatch — Platform-First Opportunity System</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --panel: #12121a;
+      --card: #1a1a24;
+      --card-2: #171722;
+      --border: #2a2a3a;
+      --text: #e8e8ef;
+      --muted: #9191a6;
+      --green: #00ff88;
+      --red: #ff4466;
+      --blue: #4488ff;
+      --yellow: #ffaa00;
+      --purple: #aa66ff;
+      --teal: #00d7c3;
+      --shadow: 0 18px 55px rgba(0,0,0,.35);
+    }
+    * { box-sizing: border-box; min-width: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 7% -5%, rgba(68,136,255,.16), transparent 30rem),
+        radial-gradient(circle at 95% 2%, rgba(170,102,255,.12), transparent 32rem),
+        var(--bg);
+      font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      line-height: 1.55;
+    }
+    a { color: #8fb3ff; text-underline-offset: 3px; }
+    .shell { width: min(1240px, calc(100% - 32px)); margin: 0 auto; padding: 26px 0 72px; }
+    .topbar { display: flex; justify-content: space-between; gap: 18px; align-items: center; margin-bottom: 22px; }
+    .brand { display: flex; align-items: center; gap: 10px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+    .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 14px rgba(0,255,136,.7); }
+    .status { border: 1px solid rgba(255,170,0,.36); background: rgba(255,170,0,.08); color: #ffd07a; padding: 7px 10px; border-radius: 999px; font-size: 11px; }
+    .hero { background: linear-gradient(145deg, rgba(18,18,26,.97), rgba(26,26,36,.94)); border: 1px solid var(--border); border-radius: 20px; padding: clamp(24px, 5vw, 58px); box-shadow: var(--shadow); position: relative; overflow: hidden; }
+    .hero::after { content: ""; position: absolute; inset: auto -80px -130px auto; width: 340px; height: 340px; border-radius: 50%; background: radial-gradient(circle, rgba(0,255,136,.11), transparent 68%); pointer-events: none; }
+    .eyebrow { color: var(--blue); text-transform: uppercase; font-size: 11px; letter-spacing: .16em; font-weight: 800; }
+    h1, h2, h3 { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.12; margin: 0; }
+    h1 { max-width: 980px; margin-top: 12px; font-size: clamp(35px, 6vw, 74px); letter-spacing: -.045em; }
+    h2 { font-size: clamp(25px, 4vw, 38px); letter-spacing: -.025em; }
+    h3 { font-size: 18px; }
+    .lede { max-width: 930px; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: clamp(17px, 2vw, 21px); color: #c7c7d4; margin: 22px 0 0; }
+    .verdict { margin-top: 28px; padding: 18px 20px; border-left: 4px solid var(--green); border-radius: 8px; background: rgba(0,255,136,.07); max-width: 970px; }
+    .verdict strong { color: var(--green); }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-top: 26px; }
+    .metric { background: rgba(10,10,15,.55); border: 1px solid var(--border); border-radius: 13px; padding: 15px; }
+    .metric span { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .11em; }
+    .metric b { display: block; margin-top: 7px; font-size: 22px; color: var(--text); }
+    .metric small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+    section { margin-top: 20px; background: rgba(18,18,26,.94); border: 1px solid var(--border); border-radius: 18px; padding: clamp(22px, 4vw, 36px); box-shadow: 0 10px 38px rgba(0,0,0,.18); }
+    .section-head { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 22px; }
+    .section-head p { max-width: 610px; margin: 0; color: var(--muted); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .evidence-grid, .compare, .lane-grid, .phase-grid { display: grid; gap: 14px; }
+    .evidence-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .evidence, .compare-card, .lane, .phase { background: var(--card-2); border: 1px solid var(--border); border-radius: 13px; padding: 18px; overflow-wrap: anywhere; }
+    .evidence .tag, .lane .tag { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 10px; text-transform: uppercase; letter-spacing: .1em; font-weight: 800; }
+    .tag.reported { color: #ffd788; background: rgba(255,170,0,.11); }
+    .tag.verified { color: #a8ffcf; background: rgba(0,255,136,.11); }
+    .tag.code { color: #abc2ff; background: rgba(68,136,255,.12); }
+    .evidence h3, .lane h3, .phase h3 { margin-top: 12px; }
+    .evidence p, .lane p, .phase p { margin: 9px 0 0; color: var(--muted); font-size: 12px; }
+    .proof { color: #cfd1de; font-size: 11px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+    code { font-family: inherit; color: #b9caff; background: rgba(68,136,255,.08); border-radius: 5px; padding: 1px 5px; overflow-wrap: anywhere; }
+    .compare { grid-template-columns: 1fr 1fr; }
+    .compare-card { position: relative; padding-top: 22px; }
+    .compare-card.current { border-color: rgba(255,68,102,.38); }
+    .compare-card.target { border-color: rgba(0,255,136,.38); }
+    .compare-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; font-weight: 900; }
+    .current .label { color: var(--red); }
+    .target .label { color: var(--green); }
+    .steps { margin: 17px 0 0; padding: 0; list-style: none; counter-reset: steps; }
+    .steps li { counter-increment: steps; display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 10px; align-items: start; margin-top: 12px; color: #c9c9d4; font-size: 12px; }
+    .steps li::before { content: counter(steps); display: grid; place-items: center; width: 25px; height: 25px; border-radius: 7px; background: var(--card); color: var(--muted); border: 1px solid var(--border); font-size: 10px; }
+    .callout { margin-top: 14px; border: 1px solid rgba(68,136,255,.34); background: rgba(68,136,255,.07); padding: 15px 17px; border-radius: 11px; color: #cbd8ff; font-size: 12px; }
+    .diagram-wrap { padding: 12px; border: 1px solid var(--border); background: #0d0d14; border-radius: 14px; overflow: auto; }
+    .diagram-wrap img { display: block; width: min(100%, 1080px); height: auto; margin: auto; }
+    .caption { color: var(--muted); font-size: 11px; margin: 11px 2px 0; }
+    .lane-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+    .lane { border-top: 3px solid var(--border); }
+    .lane.locked { border-top-color: var(--green); }
+    .lane.relative, .lane.directional { border-top-color: var(--yellow); }
+    .lane .tag.locked { background: rgba(0,255,136,.1); color: var(--green); }
+    .lane .tag.risk { background: rgba(255,170,0,.1); color: var(--yellow); }
+    .lane dl { margin: 15px 0 0; display: grid; grid-template-columns: 108px minmax(0,1fr); gap: 9px 10px; font-size: 11px; }
+    .lane dt { color: var(--muted); }
+    .lane dd { margin: 0; color: #d4d4de; }
+    .do-not { margin-top: 16px; color: #ffb5c2; background: rgba(255,68,102,.07); border: 1px solid rgba(255,68,102,.28); padding: 14px; border-radius: 10px; font-size: 12px; }
+    .phase-grid { grid-template-columns: repeat(2, minmax(0,1fr)); counter-reset: phase; }
+    .phase { counter-increment: phase; position: relative; padding-left: 64px; min-height: 142px; }
+    .phase::before { content: counter(phase, decimal-leading-zero); position: absolute; left: 18px; top: 18px; color: var(--blue); font-weight: 900; font-size: 20px; }
+    .phase ul { padding-left: 18px; color: var(--muted); font-size: 11px; margin: 10px 0 0; }
+    .phase li { margin-top: 6px; }
+    .phase .gate { display: inline-block; margin-top: 12px; color: #9effca; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+    .truth-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .truth-table th, .truth-table td { text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); padding: 12px 10px; }
+    .truth-table th { color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 9px; }
+    .truth-table td:first-child { color: #d9d9e4; font-weight: 800; }
+    .yes { color: var(--green); }
+    .no { color: var(--red); }
+    .conditional { color: var(--yellow); }
+    .decision { border-color: rgba(170,102,255,.43); background: linear-gradient(145deg, rgba(32,27,47,.92), rgba(18,18,26,.98)); }
+    .decision-copy { max-width: 880px; color: #c9c5d6; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .choice { display: grid; grid-template-columns: 24px minmax(0,1fr); gap: 12px; align-items: start; margin-top: 11px; padding: 15px; border: 1px solid var(--border); background: rgba(10,10,15,.42); border-radius: 11px; cursor: pointer; }
+    .choice:has(input:checked) { border-color: var(--purple); background: rgba(170,102,255,.11); }
+    .choice input { margin-top: 3px; accent-color: var(--purple); width: 16px; height: 16px; }
+    .choice strong { display: block; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    .choice small { display: block; color: var(--muted); margin-top: 4px; }
+    .recommended { display: inline-block; color: #d8c3ff; background: rgba(170,102,255,.18); padding: 2px 7px; border-radius: 999px; font: 800 9px/1.5 inherit; text-transform: uppercase; letter-spacing: .07em; margin-left: 7px; vertical-align: middle; }
+    .queue { margin-top: 16px; border: 1px solid rgba(170,102,255,.5); background: var(--purple); color: white; border-radius: 9px; padding: 11px 16px; font: 800 12px/1 inherit; cursor: pointer; }
+    .queued { display: none; color: var(--green); font-size: 11px; margin-left: 12px; }
+    .sources { margin-top: 20px; color: var(--muted); font-size: 10px; }
+    .sources a { margin-right: 14px; }
+    @media (max-width: 900px) {
+      .metrics, .evidence-grid, .lane-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+      .phase-grid, .compare { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 18px, 1240px); padding-top: 12px; }
+      .topbar, .section-head { align-items: flex-start; flex-direction: column; }
+      .metrics, .evidence-grid, .lane-grid { grid-template-columns: 1fr; }
+      .hero, section { border-radius: 13px; }
+      .phase { padding-left: 54px; }
+      .truth-table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+<main class="shell">
+  <div class="topbar">
+    <div class="brand"><span class="pulse"></span> Nightwatch / strategy reset</div>
+    <div class="status" style="border-color:rgba(0,255,136,.42);background:rgba(0,255,136,.08);color:#a8ffcf">BUILT · 609 TESTS PASS · SHADOW ONLY · NO NEW LIVE AUTHORITY</div>
+  </div>
+
+  <header class="hero">
+    <div class="eyebrow">The core correction</div>
+    <h1>Let the platforms reveal the opportunity universe.</h1>
+    <p class="lede">Start with every tradable event and contract on Polymarket and Kalshi. Then infer the catalyst, enrich it with calendars and sourced information, and route it into an explicit strategy. Calendars become evidence—not the admission gate.</p>
+    <div class="verdict"><strong>Recommendation:</strong> build one platform-first catalog and three isolated strategy lanes. Broaden discovery aggressively; keep the meaning of <em>arbitrage</em>, risk budgets, acceptance evidence, and execution authority strict.</div>
+    <div class="metrics">
+      <div class="metric"><span>Reported FRED events</span><b>55</b><small>Loaded, but no paired historical contracts found</small></div>
+      <div class="metric"><span>Reported archive scan</span><b>12,100</b><small>10,000 Kalshi + 2,100 Polymarket records</small></div>
+      <div class="metric"><span>Current auto-approved pairs</span><b>0</b><small>Collector correctly refuses to invent equivalence</small></div>
+      <div class="metric"><span>New API finding</span><b>Cursor path</b><small>Polymarket keyset pagination verified across pages</small></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <div><div class="eyebrow">What is actually true</div><h2>The failed run found a real design flaw—and an API escape hatch.</h2></div>
+      <p>The failure does not prove the events do not exist. It proves the current funnel asks the calendar to name a contract before the venue catalog has been reconstructed.</p>
+    </div>
+    <div class="evidence-grid">
+      <article class="evidence"><span class="tag reported">Reported result</span><h3>The historical manifest is honestly blocked</h3><p>Zero auto-approved equivalent pairs means there is no defensible two-venue target list. Refusing to run the collector is correct behavior.</p><div class="proof">Source: current run summary supplied in this review.</div></article>
+      <article class="evidence"><span class="tag code">Verified in repo</span><h3>Discovery is calendar-first by construction</h3><p><code>EventContractDiscovery.discover()</code> iterates events first, filters both venue lists by predefined event patterns and reference-period aliases, then invokes equivalence matching.</p><div class="proof"><code>core/event_contracts.py:88–217</code></div></article>
+      <article class="evidence"><span class="tag verified">Verified live</span><h3>The 2,100 Polymarket wall is bypassable</h3><p>The current official <code>/events/keyset</code> endpoint returned closed 2021 events and a <code>next_cursor</code>; the second cursor returned the next page. Offset is no longer the only discovery path.</p><div class="proof">Checked 2026-08-08 against the public Gamma API.</div></article>
+    </div>
+    <div class="callout"><b>Implication:</b> do not throw away the calendar work or lower semantic standards. Replace the root of discovery. A durable venue catalog can later join contracts to official releases, speeches, sports schedules, debates, hearings, earnings, court dates, and other catalysts—even when those catalysts were not pre-enumerated.</div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div><div class="eyebrow">Search order</div><h2>Invert the funnel, preserve the controls.</h2></div>
+    </div>
+    <div class="compare">
+      <article class="compare-card current">
+        <div class="label">Current · calendar-first</div>
+        <ol class="steps">
+          <li>Load a narrow set of official events.</li>
+          <li>Require contract text to contain a known family and reference period.</li>
+          <li>Require both venues to have a candidate before deeper analysis.</li>
+          <li>Require auto-approved equivalence.</li>
+          <li>Only then observe books and consider locked arbitrage.</li>
+        </ol>
+        <div class="do-not">Result: safe but sparse. It cannot see a platform-native event unless an existing calendar adapter already knows how to name it.</div>
+      </article>
+      <article class="compare-card target">
+        <div class="label">Target · platform-first</div>
+        <ol class="steps">
+          <li>Continuously enumerate venue events, nested markets, rules, timestamps, tags, and revisions.</li>
+          <li>Classify what could move each contract: scheduled release, speech, live event, rolling news, or no discrete catalyst.</li>
+          <li>Use official calendars and sourced news to corroborate or refine that hypothesis.</li>
+          <li>Generate several opportunity types with an explicit strategy label.</li>
+          <li>Apply that strategy’s own economics, model, risk, paper acceptance, and execution gate.</li>
+        </ol>
+        <div class="callout"><b>Result:</b> high-recall discovery without pretending a forecast or convergence trade has a locked payoff.</div>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div><div class="eyebrow">Target architecture</div><h2>One universe. Three meanings of opportunity.</h2></div>
+      <p>The shared catalog eliminates repeated ingestion and matching work. Isolation begins at the router, before any risk or order decision.</p>
+    </div>
+    <div class="diagram-wrap"><img src="platform-first-opportunity-system.png" alt="Platform-first contract catalog feeding catalyst intelligence and three independently gated strategy lanes" /></div>
+    <p class="caption">Architecture intent. The current locked-arbitrage executor remains the authority for that lane; relative-value and directional trades do not inherit its name, thresholds, or permissions.</p>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div><div class="eyebrow">Strategy contract</div><h2>Broaden the model by giving it lanes—not a vague mandate.</h2></div>
+      <p>A single “trade score” across all three would make results impossible to attribute and risk impossible to control.</p>
+    </div>
+    <div class="lane-grid">
+      <article class="lane locked"><span class="tag locked">Locked payoff</span><h3>Cross-venue / combinatorial arbitrage</h3><p>Equivalent contracts across venues, or a provably exhaustive outcome set, with executable prices that lock positive net payoff.</p><dl><dt>P&amp;L depends on</dt><dd>fills, fees, settlement validity</dd><dt>Model role</dt><dd>retrieval/rejection/downsize; never invent equivalence</dd><dt>First status</dt><dd class="yes">existing paper lane; live still separately gated</dd></dl></article>
+      <article class="lane relative"><span class="tag risk">Holding risk</span><h3>Relative value / convergence</h3><p>Related contracts appear misaligned, but are not identical or not simultaneously hedgeable. Profit depends on the spread converging or a later hedge appearing.</p><dl><dt>P&amp;L depends on</dt><dd>timing, liquidity, basis and model accuracy</dd><dt>Model role</dt><dd>estimate convergence probability, horizon and exit</dd><dt>First status</dt><dd class="conditional">observation then paper-only</dd></dl></article>
+      <article class="lane directional"><span class="tag risk">Outcome risk</span><h3>Directional catalyst trading</h3><p>Buy or sell one contract because the market price differs from an estimated probability, or because event-window order flow predicts a move.</p><dl><dt>P&amp;L depends on</dt><dd>forecast, reaction timing, exit and drawdown</dd><dt>Model role</dt><dd>probability/calibration or microstructure signal</dd><dt>First status</dt><dd class="conditional">observation then paper-only</dd></dl></article>
+    </div>
+    <div class="do-not"><b>Non-negotiable:</b> “locked arb was unavailable” must never cause an automatic fallthrough into a directional position. Every intent carries a strategy type before sizing, accounting, or execution.</div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div><div class="eyebrow">Build plan</div><h2>Six vertical slices to an evidence-producing system.</h2></div>
+      <p>Each slice produces a usable operator surface or dataset, rather than building disconnected layers that cannot prove value.</p>
+    </div>
+    <div class="phase-grid">
+      <article class="phase"><h3>Venue catalog + cursor checkpoints</h3><p>Normalize Polymarket events/markets and Kalshi events/live/historical markets. Persist raw payload hash, rules, parent event, series, listing/close times, tags, status, liquidity, and revision history.</p><ul><li>Migrate Polymarket discovery to keyset cursors.</li><li>Use Kalshi event identity plus historical-market filters.</li><li>Make scans resumable and date-addressable.</li></ul><span class="gate">Gate: repeated sync is complete, idempotent, and auditable</span></article>
+      <article class="phase"><h3>Platform-native catalyst intelligence</h3><p>Classify every active contract without requiring a calendar hit. Produce <code>catalyst_kind</code>, entities, predicted time/window, horizon, confidence, and evidence fields.</p><ul><li>Scheduled measurement or decision</li><li>Speech/hearing/debate/live event</li><li>Rolling/unscheduled or no discrete catalyst</li></ul><span class="gate">Gate: reviewed recall by category and time horizon</span></article>
+      <article class="phase"><h3>Calendar and source enrichment</h3><p>Join the platform-derived candidates to official calendars, venue metadata, and the existing sourced-news scanner. Enrichment may raise confidence or correct timing; its absence does not erase the market.</p><ul><li>Preserve source URL and observed-at time.</li><li>Track conflicts instead of silently overwriting.</li></ul><span class="gate">Gate: every catalyst time has provenance and confidence</span></article>
+      <article class="phase"><h3>Opportunity router + weekly board</h3><p>Generate locked-arb, relative-value, and directional candidates into separate tables and dashboard sections. Show reason codes, required data, time-to-catalyst, liquidity, and whether the candidate is observable, paper-eligible, or blocked.</p><ul><li>The first useful output is a ranked weekly opportunity map.</li><li>No strategy can borrow another strategy’s enablement.</li></ul><span class="gate">Gate: every candidate has one explicit strategy contract</span></article>
+      <article class="phase"><h3>Forward event-window collector</h3><p>Capture all selected venue contracts—not only pre-matched pairs—through scheduled/warm/hot/burst/cooldown windows. Record books, trades, source timestamps, receive timestamps, revisions, and catalyst links.</p><ul><li>Creates honest training data while old archives are reconstructed.</li><li>Never turns price-only history into executable fill claims.</li></ul><span class="gate">Gate: complete event windows and measured data loss</span></article>
+      <article class="phase"><h3>Independent paper acceptance</h3><p>Replay each lane against its own baseline and loss model. Acceptance analytics run asynchronously and in parallel, outside the real-time monitoring, signal, and execution path.</p><ul><li>Per lane: at least 50 catalyst windows and 200 intents; positive executable return at the 10% band; positive lower 95% event-clustered bound; controlled drawdown and concentration; stability across time and catalyst families.</li><li>Combined P&amp;L remains visible for reporting but cannot promote a failed lane. Any bounded live pilot still requires explicit operator approval.</li></ul><span class="gate">Gate: independent proof with zero hot-path latency</span></article>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <div><div class="eyebrow">Truth table</div><h2>What can be claimed at each point.</h2></div>
+    </div>
+    <table class="truth-table">
+      <thead><tr><th>Evidence state</th><th>May call it opportunity?</th><th>May paper trade?</th><th>May live trade?</th></tr></thead>
+      <tbody>
+        <tr><td>Platform contract + inferred catalyst only</td><td class="yes">Yes: discovery candidate</td><td class="no">No</td><td class="no">No</td></tr>
+        <tr><td>Equivalent rules + executable positive net payoff</td><td class="yes">Yes: locked arbitrage</td><td class="yes">Under existing paper controls</td><td class="conditional">Only after existing live-readiness gates</td></tr>
+        <tr><td>Related contracts + convergence model</td><td class="yes">Yes: relative-value candidate</td><td class="conditional">After lane-specific paper admission</td><td class="no">No until independent acceptance</td></tr>
+        <tr><td>Single contract + forecast/order-flow signal</td><td class="yes">Yes: directional candidate</td><td class="conditional">After calibration and loss controls</td><td class="no">No until independent acceptance</td></tr>
+        <tr><td>Historical last prices without paired depth</td><td class="conditional">Research signal only</td><td class="no">No executable P&amp;L claim</td><td class="no">No</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 1 · approved</div>
+    <h2 style="margin-top:10px">Shared discovery, isolated strategy lanes.</h2>
+    <div class="verdict"><strong>Recorded:</strong> one platform-first catalog feeds locked arbitrage, relative value, and directional catalyst trading. Each lane keeps its own admission rules, risk budget, ledger, acceptance evidence, enablement, and kill switch. Relative-value and directional trading remain non-live until independently accepted.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 2 · approved</div>
+    <h2 style="margin-top:10px">Forward shadow intents, scored from later books.</h2>
+    <div class="verdict"><strong>Recorded:</strong> relative-value and directional signals create immutable, timestamped shadow intents. Fillability, exits, P&amp;L, drawdown, and calibration are scored only from later observed books. They create no exchange orders and do not assume the displayed entry price was fillable. Locked arbitrage continues under its existing paper controls.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 3 · approved</div>
+    <h2 style="margin-top:10px">Event-window market microstructure.</h2>
+    <div class="verdict"><strong>Recorded:</strong> directional v1 uses order-book imbalance, trade flow, spread and depth changes, cross-venue lead-lag, volatility, and time-to-catalyst. The catalyst clock schedules monitoring but never chooses YES or NO by itself. Real-time news interpretation and fundamental outcome forecasting are outside directional v1.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 4 · approved</div>
+    <h2 style="margin-top:10px">Machine-checkable structural relationships only.</h2>
+    <div class="verdict"><strong>Recorded:</strong> relative-value v1 admits the same underlying event with ordered thresholds, nested deadlines, mutually exclusive or exhaustive buckets, or cross-venue near-equivalents with an explicitly recorded settlement-basis difference. Every pair stores its invariant and residual basis risk. Semantic similarity may retrieve candidates but cannot authorize a shadow intent.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 5 · approved</div>
+    <h2 style="margin-top:10px">Short-horizon event reaction capture.</h2>
+    <div class="verdict"><strong>Recorded:</strong> directional intents are emitted only in hot or burst windows. Research evaluates 30-second, 2-minute, 10-minute, and 30-minute outcomes, while the executable shadow policy exits at the first of signal reversal, 10 minutes, hard stop, or catalyst cooldown. Directional v1 never holds to resolution by default.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 6 · approved</div>
+    <h2 style="margin-top:10px">Full catalog, bounded hot lane.</h2>
+    <div class="verdict"><strong>Recorded:</strong> every active and newly listed contract is continuously cataloged at low cadence. High-frequency book and trade sampling is reserved for liquid, strategy-relevant contracts with a catalyst inside seven days. Budget-excluded candidates remain visible with reason codes instead of disappearing.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 7 · approved</div>
+    <h2 style="margin-top:10px">Evidence-tiered monitoring cadence.</h2>
+    <div class="verdict"><strong>Recorded:</strong> corroborated event times may enter burst cadence; exact venue metadata may enter hot cadence without external corroboration; model-inferred times remain warm or scheduled until corroborated. Provenance, confidence, conflicts, and every lane promotion or demotion are persisted.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 8 · approved</div>
+    <h2 style="margin-top:10px">Unit return plus executable-capacity bands.</h2>
+    <div class="verdict"><strong>Recorded:</strong> every shadow intent is scored at one contract and at 5%, 10%, and 20% of later verified executable depth, subject to maximum notional. Unit return and capacity-weighted P&amp;L are reported separately. Shadow balances do not compound and models cannot choose size in v1.</div>
+  </section>
+
+  <section>
+    <div class="eyebrow">Decision 9 · approved</div>
+    <h2 style="margin-top:10px">Per-lane proof authorizes promotion; pooled P&amp;L remains visible.</h2>
+    <div class="verdict"><strong>Recorded:</strong> directional and relative-value lanes must independently pass the pre-registered sample, executable-return, confidence, drawdown, concentration, and stability gates. Combined P&amp;L remains a dashboard and logging metric but cannot conceal a failed lane. Acceptance computation runs asynchronously and in parallel, outside the market-data, signal, shadow-intent, and future execution paths, so it cannot add reaction or order latency.</div>
+  </section>
+
+  <section style="border-color:rgba(0,255,136,.36)">
+    <div class="section-head">
+      <div><div class="eyebrow" style="color:var(--green)">Build complete</div><h2>Approved system is now wired into Nightwatch.</h2></div>
+      <p>This is a research-data deployment, not evidence of profitable performance and not permission to trade the new lanes.</p>
+    </div>
+    <div class="evidence-grid">
+      <article class="evidence"><span class="tag verified">Catalog shipped</span><h3>Cursor-exhaustive venue inventory</h3><p>Polymarket uses the official keyset cursor path. Kalshi exhausts ordinary and multivariate cursor streams. Contract revisions, timing provenance, and conflicts persist in a dedicated SQLite ledger.</p><div class="proof"><code>core/platform_opportunities.py</code> · <code>utils/platform_opportunity_store.py</code></div></article>
+      <article class="evidence"><span class="tag verified">Lanes shipped</span><h3>Two isolated shadow strategies</h3><p>Directional reaction records microstructure-only intents and reversal/stop/time exits. Relative value is authorized only by structural invariants and scores paired residual trades from later books.</p><div class="proof">No exchange client or order API exists inside the strategy module.</div></article>
+      <article class="evidence"><span class="tag verified">Latency isolated</span><h3>Dedicated reads and bounded worker</h3><p>Read-only venue clients, a non-blocking bounded queue, and off-thread persistence/bootstrap computation keep the locked-arbitrage execution path independent. Queue drops and failures are dashboard-visible.</p><div class="proof"><code>core/platform_opportunity_runtime.py</code></div></article>
+    </div>
+    <div class="verdict"><strong>Verified:</strong> 609 repository tests pass; focused type checking passes for the new deep modules. Security and correctness reviews were resolved with hard catalog resource budgets, authoritative venue-fee curves, cohort-isolated acceptance, restart recovery, and draining shutdown. <strong>Still pending:</strong> collection of at least 50 independent catalyst windows and 200 scored intents per lane, positive later-book 10% capacity P&amp;L, positive clustered lower bound, bounded drawdown/concentration, and stable performance across time and families. Until those gates pass, both new lanes remain shadow-only.</div>
+  </section>
+
+  <div class="sources">
+    Current platform references:
+    <a href="https://docs.polymarket.com/api-reference/events/list-events-keyset-pagination" target="_blank" rel="noreferrer">Polymarket event keyset API</a>
+    <a href="https://docs.polymarket.com/market-data/fetching-markets" target="_blank" rel="noreferrer">Polymarket discovery guidance</a>
+    <a href="https://docs.kalshi.com/api-reference/events/get-events" target="_blank" rel="noreferrer">Kalshi events API</a>
+    <a href="https://docs.kalshi.com/getting_started/historical_data" target="_blank" rel="noreferrer">Kalshi historical tiers</a>
+  </div>
+</main>
+</body>
+</html>

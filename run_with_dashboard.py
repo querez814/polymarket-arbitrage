@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -89,6 +89,16 @@ from core.event_calendar import (
 )
 from core.event_contracts import EventContractDiscovery, EventPairLink
 from core.event_lane import EventLanePolicy, EventLaneScheduler
+from core.platform_opportunities import (
+    AcceptancePolicy,
+    CatalystReference,
+    MonitoringPolicy,
+    PlatformOpportunitySystem,
+    VenueFeeSchedule,
+    kalshi_fee_schedule_from_metadata,
+    polymarket_fee_schedule_from_market_info,
+)
+from core.platform_opportunity_runtime import PlatformOpportunityWorker
 from utils.config_loader import (
     BotConfig,
     load_config,
@@ -97,6 +107,7 @@ from utils.config_loader import (
 )
 from utils.logging_utils import opportunity_logger, setup_logging
 from utils.paper_trade_store import PaperTradeStore
+from utils.platform_opportunity_store import PlatformOpportunityStore
 from utils.task_supervision import (
     RestartEvent,
     RestartingTaskSupervisor,
@@ -158,6 +169,17 @@ class TradingBotWithDashboard:
         self._event_calendar_snapshot = None
         self._event_calendar_refreshed_at: datetime | None = None
         self._event_pair_links: list[EventPairLink] = []
+        self.platform_opportunity_store = None
+        self.platform_opportunity_system = None
+        self.platform_opportunity_worker = None
+        self._platform_poly_client = None
+        self._platform_kalshi_client = None
+        self._platform_hot_task = None
+        self._platform_catalog_task = None
+        self._platform_hot_assignments = ()
+        self._platform_catalog_refreshed_at: datetime | None = None
+        self._platform_fee_cache: dict[str, tuple[VenueFeeSchedule, float]] = {}
+        self._platform_fee_failures = 0
         self._semantic_embedder = None
         self._discovery_supervisor = RestartingTaskSupervisor(
             "cross-platform discovery",
@@ -583,6 +605,8 @@ class TradingBotWithDashboard:
         )
         await self.data_feed.start()
 
+        await self._start_platform_opportunity_safely()
+
         self._configure_news_catalyst_scanner()
 
         # Initialize dashboard integration
@@ -629,6 +653,411 @@ class TradingBotWithDashboard:
             pnl = float(summary["pnl"]["total_pnl"])
             return float(summary["initial_balance"]) + pnl, pnl
         return float(self.config.mode.dry_run_initial_balance), 0.0
+
+    async def _configure_platform_opportunity_system(self) -> None:
+        """Start isolated, read-only research resources and persistence."""
+        policy = self.config.platform_opportunity
+        dashboard_state.platform_opportunity = {
+            "enabled": policy.enabled,
+            "mode": "shadow_only" if policy.enabled else "disabled",
+            "status": "starting" if policy.enabled else "disabled",
+            "execution_authority": "none",
+            "catalog": {"contracts": 0, "revisions": 0},
+            "monitoring": {"hot": [], "warm_count": 0, "budget_excluded": []},
+            "relations": 0,
+            "intents": {},
+            "marks": 0,
+            "acceptance": {},
+            "worker": {"queued": 0, "processed": 0, "dropped": 0, "failures": 0},
+        }
+        if not policy.enabled:
+            return
+        self.platform_opportunity_store = PlatformOpportunityStore(policy.catalog_path)
+        self.platform_opportunity_system = PlatformOpportunitySystem(
+            store=self.platform_opportunity_store,
+            monitoring_policy=MonitoringPolicy(
+                lookahead=timedelta(days=policy.lookahead_days),
+                max_hot_contracts=policy.max_hot_contracts,
+                min_liquidity=policy.min_liquidity,
+                min_volume=policy.min_volume,
+            ),
+            acceptance_policy=AcceptancePolicy(
+                min_event_clusters=policy.min_event_clusters,
+                min_intents=policy.min_intents,
+                max_drawdown=policy.max_research_drawdown,
+            ),
+            additional_fee_buffer_per_contract=(
+                policy.additional_fee_buffer_per_contract
+            ),
+            slippage_per_contract=policy.slippage_per_contract,
+            max_shadow_notional=policy.max_shadow_notional,
+            experiment_id=policy.experiment_id,
+        )
+
+        def publish(payload: dict) -> None:
+            catalog = payload.pop("catalog", None)
+            dashboard_state.platform_opportunity.update(payload)
+            if isinstance(catalog, dict):
+                dashboard_state.platform_opportunity.setdefault("catalog", {}).update(
+                    catalog
+                )
+
+        self.platform_opportunity_worker = PlatformOpportunityWorker(
+            self.platform_opportunity_system,
+            queue_capacity=policy.queue_capacity,
+            on_update=publish,
+        )
+        await self.platform_opportunity_worker.start()
+
+        # Dedicated public read pools prevent research persistence or sampling
+        # from queueing behind the locked-arbitrage execution clients.
+        if not self.config.is_polymarket_us:
+            self._platform_poly_client = PolymarketClient(
+                rest_url=self.config.api.polymarket_rest_url,
+                ws_url=self.config.api.polymarket_ws_url,
+                gamma_url=self.config.api.gamma_api_url,
+                timeout=self.config.api.timeout_seconds,
+                max_retries=self.config.api.max_retries,
+                retry_delay=self.config.api.retry_delay_seconds,
+                dry_run=True,
+            )
+            await self._platform_poly_client.connect()
+        if self.config.mode.kalshi_enabled:
+            self._platform_kalshi_client = KalshiClient(
+                base_url=self.config.api.kalshi_api_url,
+                timeout=self.config.api.timeout_seconds,
+                max_retries=self.config.api.max_retries,
+                dry_run=True,
+            )
+            await self._platform_kalshi_client.__aenter__()
+        self._platform_hot_task = asyncio.create_task(
+            self._platform_hot_sampling_loop(),
+            name="platform_opportunity_hot_sampler",
+        )
+        self._platform_catalog_task = asyncio.create_task(
+            self._platform_catalog_loop(),
+            name="platform_opportunity_catalog",
+        )
+        logger.info(
+            "Platform-first shadow system started | catalog=%s hot_cap=%s authority=none",
+            policy.catalog_path,
+            policy.max_hot_contracts,
+        )
+
+    async def _start_platform_opportunity_safely(self) -> None:
+        """A shadow-only failure must never abort locked-arbitrage startup."""
+        try:
+            await self._configure_platform_opportunity_system()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Platform-first shadow subsystem failed to start; "
+                "locked-arbitrage runtime will continue"
+            )
+            await self._shutdown_platform_opportunity_system()
+            dashboard_state.platform_opportunity.update(
+                {
+                    "enabled": True,
+                    "mode": "shadow_only",
+                    "status": "degraded",
+                    "execution_authority": "none",
+                    "last_error": f"{type(exc).__name__}: {exc}"[:300],
+                }
+            )
+
+    async def _shutdown_platform_opportunity_system(self) -> None:
+        """Clean up any partially initialized research-only resources."""
+        for task in (self._platform_catalog_task, self._platform_hot_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._platform_catalog_task = None
+        self._platform_hot_task = None
+        if self.platform_opportunity_worker:
+            await self.platform_opportunity_worker.stop()
+            self.platform_opportunity_worker = None
+        if self._platform_poly_client:
+            await self._platform_poly_client.disconnect()
+            self._platform_poly_client = None
+        if self._platform_kalshi_client:
+            await self._platform_kalshi_client.__aexit__(None, None, None)
+            self._platform_kalshi_client = None
+        if self.platform_opportunity_store:
+            self.platform_opportunity_store.close()
+            self.platform_opportunity_store = None
+        self.platform_opportunity_system = None
+
+    def _platform_catalyst_references(self) -> list[CatalystReference]:
+        snapshot = self._event_calendar_snapshot
+        if snapshot is None:
+            return []
+        return [
+            CatalystReference(
+                reference_id=event.event_id,
+                title=event.title,
+                scheduled_at=event.scheduled_at,
+                source=event.source_url,
+                authoritative=True,
+            )
+            for event in snapshot.fresh_events
+            if event.source_url
+        ]
+
+    async def _refresh_platform_catalog(self) -> None:
+        worker = self.platform_opportunity_worker
+        if worker is None:
+            return
+        now = datetime.now(timezone.utc)
+        interval = self.config.platform_opportunity.catalog_refresh_seconds
+        if (
+            self._platform_catalog_refreshed_at is not None
+            and (now - self._platform_catalog_refreshed_at).total_seconds() < interval
+        ):
+            return
+        dashboard_state.platform_opportunity["status"] = "refreshing_catalog"
+        poly_markets = []
+        poly_catalog_status = {
+            "complete": False,
+            "stop_reason": "dedicated_source_unavailable",
+        }
+        if self._platform_poly_client is not None:
+            poly_markets = await self._platform_poly_client.list_all_markets_keyset(
+                closed=False,
+                filters={"active": "true"},
+                max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
+                max_pages=self.config.platform_opportunity.catalog_max_pages,
+                max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
+                wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
+            )
+            poly_catalog_status = dict(self._platform_poly_client.last_catalog_status)
+        elif self.data_feed is not None:
+            poly_markets = list(self.data_feed._markets.values())
+        ordinary_kalshi = []
+        multivariate_kalshi = []
+        kalshi_not_applicable = not self.config.mode.kalshi_enabled
+        ordinary_status = {
+            "complete": kalshi_not_applicable,
+            "stop_reason": (
+                "not_applicable"
+                if kalshi_not_applicable
+                else "dedicated_source_unavailable"
+            ),
+        }
+        multivariate_status = dict(ordinary_status)
+        if self._platform_kalshi_client is not None:
+            ordinary_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
+                status="open",
+                mve_filter="exclude",
+                max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
+                max_pages=self.config.platform_opportunity.catalog_max_pages,
+                max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
+                wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
+            )
+            ordinary_status = dict(self._platform_kalshi_client.last_catalog_status)
+            multivariate_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
+                status="open",
+                mve_filter="only",
+                max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
+                max_pages=self.config.platform_opportunity.catalog_max_pages,
+                max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
+                wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
+            )
+            multivariate_status = dict(self._platform_kalshi_client.last_catalog_status)
+        elif self._kalshi_markets:
+            ordinary_kalshi = list(self._kalshi_markets)
+        kalshi_by_ticker = {
+            market.ticker: market for market in [*ordinary_kalshi, *multivariate_kalshi]
+        }
+        refresh = await worker.refresh_catalog(
+            polymarket_markets=poly_markets,
+            kalshi_markets=list(kalshi_by_ticker.values()),
+            catalyst_references=self._platform_catalyst_references(),
+            snapshot_complete=all(
+                bool(status.get("complete"))
+                for status in (
+                    poly_catalog_status,
+                    ordinary_status,
+                    multivariate_status,
+                )
+            ),
+            observed_at=now,
+        )
+        self._platform_hot_assignments = refresh.monitoring.hot
+        self._platform_catalog_refreshed_at = now
+
+        def assignment_payload(item) -> dict:
+            payload = asdict(item)
+            catalyst_at = payload.get("catalyst_at")
+            payload["catalyst_at"] = (
+                catalyst_at.isoformat() if catalyst_at is not None else None
+            )
+            return payload
+
+        dashboard_state.platform_opportunity.update(
+            {
+                "status": "running",
+                "last_catalog_refresh_at": now.isoformat(),
+                "catalog": {
+                    "contracts": refresh.catalog_contracts,
+                    "revisions_written": refresh.revisions_written,
+                    "polymarket": len(poly_markets),
+                    "kalshi": len(kalshi_by_ticker),
+                    "source_status": {
+                        "polymarket": poly_catalog_status,
+                        "kalshi_ordinary": ordinary_status,
+                        "kalshi_multivariate": multivariate_status,
+                    },
+                    "possibly_truncated": not all(
+                        bool(status.get("complete"))
+                        for status in (
+                            poly_catalog_status,
+                            ordinary_status,
+                            multivariate_status,
+                        )
+                    ),
+                },
+                "monitoring": {
+                    "hot": [
+                        assignment_payload(item) for item in refresh.monitoring.hot
+                    ],
+                    "warm_count": len(refresh.monitoring.warm),
+                    "budget_excluded": [
+                        assignment_payload(item)
+                        for item in refresh.monitoring.budget_excluded
+                    ],
+                },
+            }
+        )
+
+    async def _platform_hot_sampling_loop(self) -> None:
+        """Poll bounded hot contracts on isolated public read pools."""
+        next_due: dict[str, float] = {}
+        while self._running and self.platform_opportunity_worker is not None:
+            now_mono = time.monotonic()
+            due = [
+                assignment
+                for assignment in self._platform_hot_assignments
+                if next_due.get(assignment.contract_id, 0.0) <= now_mono
+            ][:8]
+            if not due:
+                await asyncio.sleep(0.25)
+                continue
+
+            async def fee_schedule(assignment):
+                cached = self._platform_fee_cache.get(assignment.contract_id)
+                if cached is not None and cached[1] > time.monotonic():
+                    return cached[0]
+                observed_at = datetime.now(timezone.utc)
+                if assignment.venue == "polymarket":
+                    if self._platform_poly_client is None:
+                        raise RuntimeError("Polymarket research client unavailable")
+                    market = await self._platform_poly_client.get_market(
+                        assignment.native_id
+                    )
+                    if market is None or not market.condition_id:
+                        raise RuntimeError("Polymarket condition metadata unavailable")
+                    info = await self._platform_poly_client.get_clob_market_info(
+                        market.condition_id
+                    )
+                    schedule = polymarket_fee_schedule_from_market_info(
+                        info, observed_at=observed_at
+                    )
+                else:
+                    if self._platform_kalshi_client is None:
+                        raise RuntimeError("Kalshi research client unavailable")
+                    metadata = await self._platform_kalshi_client.get_fee_schedule(
+                        assignment.native_id
+                    )
+                    schedule = kalshi_fee_schedule_from_metadata(
+                        fee_type=metadata.fee_type,
+                        multiplier=metadata.fee_multiplier,
+                        observed_at=observed_at,
+                        source=metadata.source,
+                    )
+                self._platform_fee_cache[assignment.contract_id] = (
+                    schedule,
+                    time.monotonic() + 300.0,
+                )
+                return schedule
+
+            async def fetch(assignment):
+                try:
+                    if assignment.venue == "polymarket":
+                        if self._platform_poly_client is None:
+                            return assignment, None
+                        book = await self._platform_poly_client.get_orderbook(
+                            assignment.native_id
+                        )
+                    else:
+                        if self._platform_kalshi_client is None:
+                            return assignment, None
+                        book = await self._platform_kalshi_client.get_orderbook_unified(
+                            assignment.native_id
+                        )
+                    schedule = await fee_schedule(assignment)
+                    return assignment, book, schedule
+                except Exception:
+                    self._platform_fee_failures += 1
+                    dashboard_state.platform_opportunity["fee_metadata_failures"] = (
+                        self._platform_fee_failures
+                    )
+                    logger.warning(
+                        "Shadow hot-book read failed | contract=%s",
+                        assignment.contract_id,
+                        exc_info=True,
+                    )
+                    return assignment, None, None
+
+            results = await asyncio.gather(*(fetch(item) for item in due))
+            for assignment, book, schedule in results:
+                next_due[assignment.contract_id] = time.monotonic() + max(
+                    self.config.platform_opportunity.hot_poll_seconds,
+                    assignment.interval_seconds,
+                )
+                if book is not None and schedule is not None:
+                    observed_at = book.timestamp
+                    if observed_at.tzinfo is None:
+                        observed_at = observed_at.replace(tzinfo=timezone.utc)
+                    else:
+                        observed_at = observed_at.astimezone(timezone.utc)
+                    self.platform_opportunity_worker.submit_book(
+                        assignment.contract_id,
+                        book,
+                        observed_at=observed_at,
+                        fee_schedule=schedule,
+                    )
+
+    async def _platform_catalog_loop(self) -> None:
+        """Refresh source-platform inventory independently of calendars/matching."""
+        interval = self.config.platform_opportunity.catalog_refresh_seconds
+        while self._running and self.platform_opportunity_worker is not None:
+            try:
+                await self._refresh_platform_catalog()
+                worker = self.platform_opportunity_worker
+                if worker is not None:
+                    directional, relative = await asyncio.gather(
+                        worker.acceptance_report("directional_reaction"),
+                        worker.acceptance_report("relative_value"),
+                    )
+                    dashboard_state.platform_opportunity["acceptance"] = {
+                        "directional_reaction": asdict(directional),
+                        "relative_value": asdict(relative),
+                    }
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                dashboard_state.platform_opportunity.update(
+                    {
+                        "status": "degraded",
+                        "last_error": f"{type(exc).__name__}: {exc}"[:300],
+                    }
+                )
+                logger.exception("Platform-first catalog refresh failed")
+            await asyncio.sleep(interval)
 
     def _configure_news_catalyst_scanner(self) -> None:
         """Configure source-backed log-only scanning without authorizing trades."""
@@ -2408,6 +2837,7 @@ class TradingBotWithDashboard:
                 await self._news_catalyst_task
             except asyncio.CancelledError:
                 pass
+        await self._shutdown_platform_opportunity_system()
         if self._xplat_scan_task:
             self._xplat_scan_task.cancel()
             try:

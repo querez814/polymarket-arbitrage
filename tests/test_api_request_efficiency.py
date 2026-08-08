@@ -455,6 +455,92 @@ def test_polymarket_market_pagination_does_not_use_rejected_volume_sort():
     assert "ascending" not in observed_queries[0]
 
 
+def test_polymarket_keyset_catalog_follows_opaque_cursor_without_offset():
+    observed_queries = []
+
+    def market(number):
+        return {
+            "id": str(number),
+            "conditionId": f"condition-{number}",
+            "question": f"Question {number}",
+            "clobTokenIds": f'["yes-{number}", "no-{number}"]',
+            "active": True,
+            "closed": False,
+        }
+
+    def handler(request: httpx.Request):
+        observed_queries.append(dict(request.url.params))
+        after = request.url.params.get("after_cursor")
+        payload = (
+            {"markets": [market(1), market(2)], "next_cursor": "opaque-2"}
+            if after is None
+            else {"markets": [market(3)], "next_cursor": None}
+        )
+        return httpx.Response(200, request=request, json=payload)
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            return await client.list_all_markets_keyset(closed=False, page_size=2)
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    markets = asyncio.run(exercise())
+
+    assert [market.market_id for market in markets] == ["1", "2", "3"]
+    assert observed_queries[1]["after_cursor"] == "opaque-2"
+    assert all("offset" not in query for query in observed_queries)
+
+
+def test_polymarket_keyset_catalog_stops_at_hard_page_budget():
+    calls = 0
+
+    def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        number = calls
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "markets": [
+                    {
+                        "id": str(number),
+                        "conditionId": f"c-{number}",
+                        "question": f"Question {number}",
+                        "clobTokenIds": f'["yes-{number}", "no-{number}"]',
+                    }
+                ],
+                "next_cursor": f"cursor-{number}",
+            },
+        )
+
+    async def exercise():
+        client = PolymarketClient(max_retries=1)
+        client._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            markets = await client.list_all_markets_keyset(
+                page_size=1,
+                max_pages=2,
+                max_markets=10,
+                max_decoded_bytes=1_000_000,
+                wall_time_seconds=5,
+            )
+            return markets, client.last_catalog_status
+        finally:
+            await client._http_client.aclose()
+            client._http_client = None
+
+    markets, status = asyncio.run(exercise())
+
+    assert len(markets) == 2
+    assert calls == 2
+    assert status["complete"] is False
+    assert status["stop_reason"] == "page_budget"
+
+
 def test_kalshi_event_market_list_uses_ttl_cache():
     async def exercise():
         client = KalshiClient()

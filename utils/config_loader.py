@@ -251,6 +251,32 @@ class EventWeekConfig:
 
 
 @dataclass
+class PlatformOpportunityConfig:
+    """Platform-first catalog plus shadow-only research lanes."""
+
+    enabled: bool = False
+    experiment_id: str = "platform-first-v1"
+    catalog_path: str = "data/platform_opportunities.db"
+    lookahead_days: float = 7.0
+    max_hot_contracts: int = 100
+    min_liquidity: float = 100.0
+    min_volume: float = 100.0
+    queue_capacity: int = 10_000
+    hot_poll_seconds: float = 1.0
+    catalog_refresh_seconds: float = 1800.0
+    catalog_max_markets_per_venue: int = 25_000
+    catalog_max_pages: int = 500
+    catalog_max_decoded_bytes: int = 64 * 1024 * 1024
+    catalog_wall_time_seconds: float = 120.0
+    additional_fee_buffer_per_contract: float = 0.0
+    slippage_per_contract: float = 0.002
+    max_shadow_notional: float = 100.0
+    min_event_clusters: int = 50
+    min_intents: int = 200
+    max_research_drawdown: float = 50.0
+
+
+@dataclass
 class BotConfig:
     """Complete bot configuration."""
 
@@ -263,6 +289,9 @@ class BotConfig:
     production: ProductionConfig = field(default_factory=ProductionConfig)
     news_catalyst: NewsCatalystConfig = field(default_factory=NewsCatalystConfig)
     event_week: EventWeekConfig = field(default_factory=EventWeekConfig)
+    platform_opportunity: PlatformOpportunityConfig = field(
+        default_factory=PlatformOpportunityConfig
+    )
 
     @property
     def is_polymarket_us(self) -> bool:
@@ -319,6 +348,7 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     production_data = raw_config.get("production", {})
     news_catalyst_data = raw_config.get("news_catalyst", {})
     event_week_data = raw_config.get("event_week", {})
+    platform_opportunity_data = raw_config.get("platform_opportunity", {})
 
     # Handle environment variable overrides
     api_data = _apply_env_overrides(
@@ -362,6 +392,9 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
         production=_build_dataclass(ProductionConfig, production_data),
         news_catalyst=_build_dataclass(NewsCatalystConfig, news_catalyst_data),
         event_week=_build_dataclass(EventWeekConfig, event_week_data),
+        platform_opportunity=_build_dataclass(
+            PlatformOpportunityConfig, platform_opportunity_data
+        ),
     )
 
     # Validate
@@ -971,6 +1004,77 @@ def validate_config(config: BotConfig) -> None:
         errors.append("event_week.enabled requires cross-platform monitoring")
     if event_week.enabled and not config.mode.semantic_matching_enabled:
         errors.append("event_week.enabled requires semantic matching")
+
+    platform = config.platform_opportunity
+    if not isinstance(platform.enabled, bool):
+        errors.append("platform_opportunity.enabled must be a boolean")
+    if not isinstance(platform.catalog_path, str) or not platform.catalog_path.strip():
+        errors.append("platform_opportunity.catalog_path must be non-empty")
+    if (
+        not isinstance(platform.experiment_id, str)
+        or not platform.experiment_id.strip()
+    ):
+        errors.append("platform_opportunity.experiment_id must be non-empty")
+    for name in (
+        "lookahead_days",
+        "hot_poll_seconds",
+        "catalog_refresh_seconds",
+        "catalog_wall_time_seconds",
+        "max_shadow_notional",
+        "max_research_drawdown",
+    ):
+        value = getattr(platform, name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            errors.append(f"platform_opportunity.{name} must be numeric")
+        elif not math.isfinite(float(value)) or float(value) <= 0:
+            errors.append(f"platform_opportunity.{name} must be finite and positive")
+    for name in (
+        "min_liquidity",
+        "min_volume",
+        "additional_fee_buffer_per_contract",
+        "slippage_per_contract",
+    ):
+        value = getattr(platform, name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            errors.append(f"platform_opportunity.{name} must be numeric")
+        elif not math.isfinite(float(value)) or float(value) < 0:
+            errors.append(
+                f"platform_opportunity.{name} must be finite and non-negative"
+            )
+    for name in (
+        "max_hot_contracts",
+        "queue_capacity",
+        "min_event_clusters",
+        "min_intents",
+        "catalog_max_markets_per_venue",
+        "catalog_max_pages",
+        "catalog_max_decoded_bytes",
+    ):
+        value = getattr(platform, name)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            errors.append(f"platform_opportunity.{name} must be a positive integer")
+    if isinstance(platform.max_hot_contracts, int) and platform.max_hot_contracts > 500:
+        errors.append("platform_opportunity.max_hot_contracts must be <= 500")
+    if isinstance(platform.queue_capacity, int) and platform.queue_capacity > 100_000:
+        errors.append("platform_opportunity.queue_capacity must be <= 100000")
+    critical_database_paths = {
+        "monitoring.paper_trade_db_path": config.monitoring.paper_trade_db_path,
+        "production.execution_journal_path": config.production.execution_journal_path,
+        "production.operator_state_path": config.production.operator_state_path,
+        "mode.semantic_cache_path": config.mode.semantic_cache_path,
+    }
+    if isinstance(platform.catalog_path, str) and platform.catalog_path.strip():
+        research_path = Path(platform.catalog_path).expanduser().resolve()
+        for label, candidate in critical_database_paths.items():
+            if (
+                isinstance(candidate, str)
+                and candidate.strip()
+                and research_path == Path(candidate).expanduser().resolve()
+            ):
+                errors.append(
+                    "platform_opportunity.catalog_path must not share a path with "
+                    f"{label}"
+                )
 
     if not config.production.execution_journal_path.strip():
         errors.append("production.execution_journal_path must be non-empty")

@@ -469,6 +469,27 @@ async def test_bot_shutdown_continues_when_no_active_paper_run_exists(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_shadow_startup_failure_degrades_without_aborting_bot(monkeypatch):
+    from dashboard.server import dashboard_state
+
+    bot = TradingBotWithDashboard(BotConfig())
+
+    async def fail():
+        raise OSError("research disk unavailable")
+
+    monkeypatch.setattr(bot, "_configure_platform_opportunity_system", fail)
+
+    await bot._start_platform_opportunity_safely()
+
+    assert dashboard_state.platform_opportunity["status"] == "degraded"
+    assert dashboard_state.platform_opportunity["execution_authority"] == "none"
+    assert (
+        "research disk unavailable"
+        in dashboard_state.platform_opportunity["last_error"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_critical_failure_marks_persisted_run_failed(tmp_path):
     from utils.paper_trade_store import PaperTradeStore
 

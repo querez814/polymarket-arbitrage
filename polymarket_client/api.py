@@ -244,6 +244,13 @@ class PolymarketClient(BasePolymarketClient):
         self._orderbook_successes = 0
         self._orderbook_not_found = 0
         self._orderbook_normalization_failures = 0
+        self.last_catalog_status: dict[str, Any] = {
+            "complete": False,
+            "stop_reason": "not_started",
+            "pages": 0,
+            "markets": 0,
+            "decoded_bytes": 0,
+        }
 
     @property
     def request_metrics(self) -> dict[str, dict[str, float | int | bool]]:
@@ -593,6 +600,101 @@ class PolymarketClient(BasePolymarketClient):
         except Exception as e:
             logger.error(f"Failed to fetch markets from API: {e}")
             raise
+
+    async def list_all_markets_keyset(
+        self,
+        *,
+        closed: bool = False,
+        page_size: int = 100,
+        max_markets: int = 25_000,
+        max_pages: int = 500,
+        max_decoded_bytes: int = 64 * 1024 * 1024,
+        wall_time_seconds: float = 120.0,
+        filters: Optional[dict] = None,
+    ) -> list[Market]:
+        """Return a stable full Gamma catalog using opaque keyset cursors.
+
+        Unlike the legacy offset endpoint, this remains date-addressable and
+        does not fail when the catalog grows past Gamma's offset ceiling.
+        """
+        if not 1 <= page_size <= 100:
+            raise ValueError("Gamma keyset page_size must be between 1 and 100")
+        if max_markets <= 0 or max_pages <= 0 or max_decoded_bytes <= 0:
+            raise ValueError("Gamma catalog budgets must be positive")
+        if not math.isfinite(wall_time_seconds) or wall_time_seconds <= 0:
+            raise ValueError("Gamma catalog wall_time_seconds must be positive")
+        params = dict(filters or {})
+        params.pop("offset", None)
+        params["closed"] = str(bool(closed)).lower()
+        params["limit"] = page_size
+        after_cursor: str | None = None
+        seen_cursors: set[str] = set()
+        seen_ids: set[str] = set()
+        markets: list[Market] = []
+        pages = 0
+        decoded_bytes = 0
+        stop_reason = "source_exhausted"
+        complete = False
+        started = time.monotonic()
+        while len(markets) < max_markets:
+            if pages >= max_pages:
+                stop_reason = "page_budget"
+                break
+            if time.monotonic() - started >= wall_time_seconds:
+                stop_reason = "wall_time_budget"
+                break
+            page_params = dict(params)
+            if after_cursor:
+                page_params["after_cursor"] = after_cursor
+            payload = await self._request(
+                "GET",
+                "/markets/keyset",
+                params=page_params,
+                base_url=self.gamma_url,
+            )
+            pages += 1
+            decoded_bytes += len(json.dumps(payload, default=str).encode("utf-8"))
+            if decoded_bytes > max_decoded_bytes:
+                stop_reason = "decoded_byte_budget"
+                break
+            raw_markets = payload.get("markets") if isinstance(payload, dict) else None
+            if not isinstance(raw_markets, list):
+                raise ValueError("Gamma keyset response is missing markets array")
+            for raw in raw_markets:
+                if not isinstance(raw, dict):
+                    continue
+                market = self._parse_market(raw)
+                if (
+                    market is None
+                    or not market.yes_token_id
+                    or not market.no_token_id
+                    or market.market_id in seen_ids
+                ):
+                    continue
+                seen_ids.add(market.market_id)
+                markets.append(market)
+                self._cache_market(market)
+                if len(markets) >= max_markets:
+                    break
+            next_cursor = payload.get("next_cursor")
+            if not isinstance(next_cursor, str) or not next_cursor:
+                complete = True
+                break
+            if next_cursor in seen_cursors:
+                raise RuntimeError("Gamma keyset pagination repeated a cursor")
+            seen_cursors.add(next_cursor)
+            after_cursor = next_cursor
+            await asyncio.sleep(0.05)
+        if not complete and len(markets) >= max_markets:
+            stop_reason = "market_budget"
+        self.last_catalog_status = {
+            "complete": complete,
+            "stop_reason": "source_exhausted" if complete else stop_reason,
+            "pages": pages,
+            "markets": len(markets),
+            "decoded_bytes": decoded_bytes,
+        }
+        return markets
 
     async def list_events(self, filters: Optional[dict] = None) -> list[dict]:
         """

@@ -42,6 +42,70 @@ mode:
     assert config.risk.strategy_exposure_limits["market_making"] == 35.0
 
 
+def test_platform_opportunity_config_loads_bounded_shadow_lane(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+mode:
+  trading_mode: dry_run
+platform_opportunity:
+  enabled: true
+  catalog_path: data/research.db
+  lookahead_days: 7
+  max_hot_contracts: 40
+  min_liquidity: 250
+  min_volume: 500
+  queue_capacity: 2000
+  hot_poll_seconds: 2
+""",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(config_path))
+
+    assert config.platform_opportunity.enabled is True
+    assert config.platform_opportunity.catalog_path == "data/research.db"
+    assert config.platform_opportunity.max_hot_contracts == 40
+    assert config.platform_opportunity.queue_capacity == 2000
+
+
+@pytest.mark.parametrize(
+    "collision_field",
+    ["paper", "execution", "operator", "semantic"],
+)
+def test_platform_opportunity_store_rejects_critical_database_collision(
+    tmp_path, collision_field
+):
+    shared = tmp_path / "shared.db"
+    values = {
+        "paper": tmp_path / "paper.db",
+        "execution": tmp_path / "execution.db",
+        "operator": tmp_path / "operator.db",
+        "semantic": tmp_path / "semantic.db",
+    }
+    values[collision_field] = shared
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"""
+mode:
+  trading_mode: dry_run
+  semantic_cache_path: {values['semantic']}
+monitoring:
+  paper_trade_db_path: {values['paper']}
+production:
+  execution_journal_path: {values['execution']}
+  operator_state_path: {values['operator']}
+platform_opportunity:
+  enabled: true
+  catalog_path: {shared}
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must not share a path"):
+        load_config(str(config_path))
+
+
 def test_explicit_values_override_aggressive_profile_defaults(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

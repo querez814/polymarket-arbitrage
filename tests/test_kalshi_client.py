@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 from datetime import datetime, timezone
 
 from kalshi_client import KalshiClient
+from kalshi_client.models import KalshiMarket
 
 
 def test_market_parser_preserves_expected_expiration_separately_from_legal_close():
@@ -39,6 +40,61 @@ async def test_list_markets_excludes_multivariate_events_by_default(monkeypatch)
     await client.list_markets(status="open", limit=1000)
 
     assert captured_params["mve_filter"] == "exclude"
+
+
+@pytest.mark.asyncio
+async def test_full_catalog_follows_cursor_until_exhausted(monkeypatch):
+    client = KalshiClient(dry_run=True)
+    calls = []
+
+    async def fake_list_markets(**kwargs):
+        calls.append(kwargs)
+        ticker = f"KX-{len(calls)}"
+        market = KalshiMarket(
+            ticker=ticker,
+            event_ticker="KXE",
+            series_ticker="KXS",
+            title=ticker,
+        )
+        return [market], ("cursor-2" if len(calls) == 1 else None)
+
+    monkeypatch.setattr(client, "list_markets", fake_list_markets)
+
+    markets = await client.list_full_market_catalog(status="open", mve_filter="only")
+
+    assert [market.ticker for market in markets] == ["KX-1", "KX-2"]
+    assert calls[1]["cursor"] == "cursor-2"
+    assert all(call["mve_filter"] == "only" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_full_catalog_stops_at_hard_page_budget(monkeypatch):
+    client = KalshiClient(dry_run=True)
+    calls = 0
+
+    async def fake_list_markets(**_kwargs):
+        nonlocal calls
+        calls += 1
+        market = KalshiMarket(
+            ticker=f"KX-{calls}",
+            event_ticker="KXE",
+            series_ticker="KXS",
+            title="Market",
+        )
+        return [market], f"cursor-{calls}"
+
+    monkeypatch.setattr(client, "list_markets", fake_list_markets)
+
+    markets = await client.list_full_market_catalog(
+        max_pages=2,
+        max_markets=10,
+        max_decoded_bytes=1_000_000,
+        wall_time_seconds=5,
+    )
+
+    assert len(markets) == 2
+    assert client.last_catalog_status["complete"] is False
+    assert client.last_catalog_status["stop_reason"] == "page_budget"
 
 
 @pytest.mark.asyncio

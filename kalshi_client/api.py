@@ -9,7 +9,9 @@ API Documentation: https://docs.kalshi.com/getting_started/quick_start_market_da
 """
 
 import asyncio
+import json
 import logging
+import math
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -159,6 +161,13 @@ class KalshiClient:
             tuple[str, int, int], tuple[float, list[KalshiMarket]]
         ] = {}
         self.market_list_ttl_seconds = 300.0
+        self.last_catalog_status: dict[str, Any] = {
+            "complete": False,
+            "stop_reason": "not_started",
+            "pages": 0,
+            "markets": 0,
+            "decoded_bytes": 0,
+        }
 
     @property
     def request_metrics(self) -> dict[str, float | int | bool]:
@@ -862,6 +871,81 @@ class KalshiClient:
 
         logger.info(f"Kalshi: {len(all_markets)} total markets loaded ✓")
         return all_markets[:max_markets]
+
+    async def list_full_market_catalog(
+        self,
+        *,
+        status: str = "open",
+        mve_filter: str = "exclude",
+        max_markets: int = 25_000,
+        max_pages: int = 500,
+        max_decoded_bytes: int = 64 * 1024 * 1024,
+        wall_time_seconds: float = 120.0,
+    ) -> list[KalshiMarket]:
+        """Follow Kalshi cursors until exhaustion without a count-based cutoff."""
+        if max_markets <= 0 or max_pages <= 0 or max_decoded_bytes <= 0:
+            raise ValueError("Kalshi catalog budgets must be positive")
+        if (
+            not isinstance(wall_time_seconds, (int, float))
+            or not math.isfinite(float(wall_time_seconds))
+            or wall_time_seconds <= 0
+        ):
+            raise ValueError("Kalshi catalog wall_time_seconds must be positive")
+        markets: list[KalshiMarket] = []
+        seen_tickers: set[str] = set()
+        seen_cursors: set[str] = set()
+        cursor: Optional[str] = None
+        pages = 0
+        decoded_bytes = 0
+        complete = False
+        stop_reason = "source_exhausted"
+        started = time.monotonic()
+        while len(markets) < max_markets:
+            if pages >= max_pages:
+                stop_reason = "page_budget"
+                break
+            if time.monotonic() - started >= wall_time_seconds:
+                stop_reason = "wall_time_budget"
+                break
+            page, next_cursor = await self.list_markets(
+                status=status,
+                limit=1000,
+                cursor=cursor,
+                mve_filter=mve_filter,
+            )
+            pages += 1
+            decoded_bytes += len(
+                json.dumps([vars(market) for market in page], default=str).encode(
+                    "utf-8"
+                )
+            )
+            if decoded_bytes > max_decoded_bytes:
+                stop_reason = "decoded_byte_budget"
+                break
+            for market in page:
+                if market.ticker and market.ticker not in seen_tickers:
+                    seen_tickers.add(market.ticker)
+                    markets.append(market)
+                    if len(markets) >= max_markets:
+                        break
+            if not next_cursor:
+                complete = True
+                break
+            if next_cursor in seen_cursors:
+                raise RuntimeError("Kalshi market pagination repeated a cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+            await asyncio.sleep(0.05)
+        if not complete and len(markets) >= max_markets:
+            stop_reason = "market_budget"
+        self.last_catalog_status = {
+            "complete": complete,
+            "stop_reason": "source_exhausted" if complete else stop_reason,
+            "pages": pages,
+            "markets": len(markets),
+            "decoded_bytes": decoded_bytes,
+        }
+        return markets
 
     async def get_market(self, ticker: str) -> Optional[KalshiMarket]:
         """
