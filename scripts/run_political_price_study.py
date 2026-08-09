@@ -54,7 +54,7 @@ def _write_csv(path: Path, result: dict) -> None:
         for split in ("train", "holdout")
         for trade in result[split]["trades"]
     ]
-    fields = ["split", "event_id", "family", "direction", "baseline_price", "entry_price", "exit_price", "signal", "gross_return", "assumed_round_trip_cost", "net_return"]
+    fields = ["split", "event_id", "family", "direction", "baseline_price", "entry_price", "exit_price", "signal", "gross_probability_points", "assumed_round_trip_cost", "net_probability_points"]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -77,8 +77,8 @@ def _write_html(path: Path, result: dict, manifest: Path) -> None:
 <tr><td>Missing windows</td><td>{coverage['missing_window_events']}</td></tr>
 <tr><td>Selected threshold (train only)</td><td>{result['walk_forward']['selected_threshold']:.4f}</td></tr>
 <tr><td>Holdout triggers</td><td>{holdout['trigger_count']}</td></tr>
-<tr><td>Holdout cumulative net signal return</td><td>{holdout['cumulative_net_return']:.4f}</td></tr>
-<tr><td>Holdout max drawdown</td><td>{holdout['max_drawdown']:.4f}</td></tr></table>
+<tr><td>Holdout cumulative net probability points</td><td>{holdout['cumulative_net_probability_points']:.4f}</td></tr>
+<tr><td>Holdout max drawdown (probability points)</td><td>{holdout['max_drawdown_probability_points']:.4f}</td></tr></table>
 <h2>Method</h2><p>Threshold selection is restricted to the chronological training event clusters. The later clusters are held out. Assumed round-trip cost is {result['parameters']['assumed_round_trip_cost']:.4f}; it is a sensitivity input, not a reconstructed fee or fill.</p>
 </body></html>""", encoding="utf-8")
 
@@ -90,6 +90,7 @@ def main() -> int:
     parser.add_argument("--baseline-minutes", type=int, default=30)
     parser.add_argument("--entry-minutes", type=int, default=15)
     parser.add_argument("--horizon-minutes", type=int, default=15)
+    parser.add_argument("--point-tolerance-minutes", type=int, default=2)
     parser.add_argument("--thresholds", default="0.01,0.02,0.03")
     parser.add_argument("--assumed-round-trip-cost", type=float, default=0.02)
     args = parser.parse_args()
@@ -102,6 +103,7 @@ def main() -> int:
         horizon_minutes=args.horizon_minutes,
         threshold_candidates=thresholds,
         assumed_round_trip_cost=args.assumed_round_trip_cost,
+        point_tolerance_minutes=args.point_tolerance_minutes,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     (args.output_dir / "political_price_study.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")

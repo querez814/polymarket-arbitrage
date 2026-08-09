@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from utils.political_event_study import EventSpec, PricePoint, run_price_only_study
 
 
@@ -42,7 +44,7 @@ def test_price_only_study_uses_event_clusters_for_holdout_and_labels_non_executa
     assert result["walk_forward"]["holdout_event_ids"] == ["vote-a", "vote-b"]
     assert result["walk_forward"]["selected_threshold"] == 0.03
     assert result["holdout"]["trigger_count"] == 2
-    assert all(row["net_return"] < 0 for row in result["holdout"]["trades"])
+    assert all(row["net_probability_points"] < 0 for row in result["holdout"]["trades"])
 
 
 def test_price_only_study_reports_missing_windows_as_coverage_not_zero_returns():
@@ -65,3 +67,49 @@ def test_price_only_study_reports_missing_windows_as_coverage_not_zero_returns()
     assert result["coverage"]["complete_events"] == 0
     assert result["coverage"]["missing_window_events"] == 1
     assert result["holdout"]["trigger_count"] == 0
+
+
+def test_price_only_study_requires_distinct_directional_points_within_tolerance():
+    event = EventSpec(
+        "timing-a",
+        "speech",
+        OCCURRENCE,
+        [
+            # This point is too late for both pre-event windows, and cannot be
+            # reused as the exit even though it is close to all three targets.
+            PricePoint(OCCURRENCE, 0.50, "prices-history"),
+            PricePoint(OCCURRENCE + timedelta(minutes=15), 0.55, "prices-history"),
+        ],
+    )
+
+    result = run_price_only_study(
+        [event],
+        baseline_minutes=30,
+        entry_minutes=15,
+        horizon_minutes=15,
+        threshold_candidates=(0.01,),
+        assumed_round_trip_cost=0.01,
+        point_tolerance_minutes=2,
+    )
+
+    assert result["coverage"]["complete_events"] == 0
+    assert result["coverage"]["missing_window_events"] == 1
+
+
+def test_price_only_study_reports_probability_points_not_returns():
+    event = EventSpec("speech-a", "speech", OCCURRENCE, _points(0.50, 0.56, 0.62, 0.66))
+
+    result = run_price_only_study(
+        [event],
+        baseline_minutes=30,
+        entry_minutes=15,
+        horizon_minutes=15,
+        threshold_candidates=(0.03,),
+        assumed_round_trip_cost=0.02,
+    )
+
+    trade = result["train"]["trades"][0]
+    assert trade["gross_probability_points"] == pytest.approx(0.10)
+    assert trade["net_probability_points"] == pytest.approx(0.08)
+    assert "gross_return" not in trade
+    assert "mean_net_probability_points" in result["train"]
