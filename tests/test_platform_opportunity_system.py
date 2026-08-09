@@ -742,7 +742,10 @@ def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_ask
 
     assert result["outcome"] == "filled"
     assert result["payload"]["quantity"] == 15
-    assert result["payload"]["debit_micros"] == 7_420_000
+    # Ordinary-account cent rounding accumulates across the one simulated
+    # order.  The second level rebates the cent carried by the first level;
+    # entries and exits are separate orders and therefore reset this state.
+    assert result["payload"]["debit_micros"] == 7_410_000
     assert result["payload"]["economics"]["levels"] == [
         {
             "displayed_ask": "0.4",
@@ -751,6 +754,10 @@ def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_ask
             "raw_fee": "0.084665",
             "rounded_trade_fee": "0.0847",
             "balance_change_micros": -2_140_000,
+            "ordinary_rounding_micros": 5_300,
+            "rounding_accumulator_before_micros": 0,
+            "rounding_rebate_micros": 0,
+            "rounding_accumulator_after_micros": 5_300,
         },
         {
             "displayed_ask": "0.5",
@@ -758,7 +765,11 @@ def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_ask
             "effective_price": "0.51",
             "raw_fee": "0.17493",
             "rounded_trade_fee": "0.175",
-            "balance_change_micros": -5_280_000,
+            "balance_change_micros": -5_270_000,
+            "ordinary_rounding_micros": 5_000,
+            "rounding_accumulator_before_micros": 5_300,
+            "rounding_rebate_micros": 10_000,
+            "rounding_accumulator_after_micros": 300,
         },
     ]
 

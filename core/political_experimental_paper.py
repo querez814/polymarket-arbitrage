@@ -222,6 +222,68 @@ class PoliticalExperimentalPaperLedger:
             direction=direction,
         )
 
+    @staticmethod
+    def _order_level_payloads(
+        *,
+        levels: list[tuple[str, PoliticalPaperTradeEconomics]],
+        direction: str,
+    ) -> tuple[list[dict[str, int | str]], int]:
+        """Settle ordinary-cent rounding across one simulated order.
+
+        The exchange fee remains rounded per displayed level (to a centicent),
+        but the ordinary-account cent residual belongs to the whole order.  A
+        cent of accumulated conservative rounding is rebated within that order
+        only; a later entry or exit starts with a fresh accumulator.
+        """
+        accumulator = Decimal("0")
+        payloads: list[dict[str, int | str]] = []
+        total_balance_change = 0
+        for displayed_price, economics in levels:
+            effective = Decimal(economics.effective_price)
+            fee = Decimal(economics.rounded_trade_fee)
+            gross = effective * economics.quantity
+            raw_balance = gross + fee if direction == "entry" else gross - fee
+            provisional = raw_balance.quantize(
+                _ONE_CENT,
+                rounding=ROUND_CEILING if direction == "entry" else ROUND_FLOOR,
+            )
+            residual = (
+                provisional - raw_balance
+                if direction == "entry"
+                else raw_balance - provisional
+            )
+            before = accumulator
+            accumulator += residual
+            rebate = (accumulator // _ONE_CENT) * _ONE_CENT
+            accumulator -= rebate
+            settled = (
+                provisional - rebate if direction == "entry" else provisional + rebate
+            )
+            balance_change = int(
+                settled * _MICROS_PER_DOLLAR * (-1 if direction == "entry" else 1)
+            )
+            total_balance_change += balance_change
+            level_name = "displayed_ask" if direction == "entry" else "displayed_bid"
+            payloads.append(
+                {
+                    level_name: displayed_price,
+                    "quantity": economics.quantity,
+                    "effective_price": economics.effective_price,
+                    "raw_fee": economics.raw_fee,
+                    "rounded_trade_fee": economics.rounded_trade_fee,
+                    "balance_change_micros": balance_change,
+                    "ordinary_rounding_micros": int(residual * _MICROS_PER_DOLLAR),
+                    "rounding_accumulator_before_micros": int(
+                        before * _MICROS_PER_DOLLAR
+                    ),
+                    "rounding_rebate_micros": int(rebate * _MICROS_PER_DOLLAR),
+                    "rounding_accumulator_after_micros": int(
+                        accumulator * _MICROS_PER_DOLLAR
+                    ),
+                }
+            )
+        return payloads, total_balance_change
+
     def record_pending_signal(
         self,
         *,
@@ -430,18 +492,10 @@ class PoliticalExperimentalPaperLedger:
                 economics={"preflight_reason": "fractional_or_zero_executable_depth"},
             )
         quantity = sum(economics.quantity for _, economics in level_economics)
-        debit_micros = sum(economics.debit_micros for _, economics in level_economics)
-        levels = [
-            {
-                "displayed_ask": displayed_ask,
-                "quantity": economics.quantity,
-                "effective_price": economics.effective_price,
-                "raw_fee": economics.raw_fee,
-                "rounded_trade_fee": economics.rounded_trade_fee,
-                "balance_change_micros": economics.balance_change_micros,
-            }
-            for displayed_ask, economics in level_economics
-        ]
+        levels, balance_change_micros = self._order_level_payloads(
+            levels=level_economics, direction="entry"
+        )
+        debit_micros = -balance_change_micros
         return self.store.resolve_political_experimental_pending_signal(
             cohort_id=self.cohort_id,
             signal_id=signal_id,
@@ -524,21 +578,12 @@ class PoliticalExperimentalPaperLedger:
                 "political paper exit has no whole-contract executable bids"
             )
         quantity = sum(item.quantity for _, item in level_economics)
-        credit_micros = sum(item.balance_change_micros for _, item in level_economics)
+        levels, credit_micros = self._order_level_payloads(
+            levels=level_economics, direction="exit"
+        )
         basis_release_micros = (
             int(position["cost_basis_micros"]) * quantity // int(position["quantity"])
         )
-        levels = [
-            {
-                "displayed_bid": displayed_bid,
-                "quantity": economics.quantity,
-                "effective_price": economics.effective_price,
-                "raw_fee": economics.raw_fee,
-                "rounded_trade_fee": economics.rounded_trade_fee,
-                "balance_change_micros": economics.balance_change_micros,
-            }
-            for displayed_bid, economics in level_economics
-        ]
         return self.store.exit_political_experimental_position(
             cohort_id=self.cohort_id,
             position_id=position_id,
