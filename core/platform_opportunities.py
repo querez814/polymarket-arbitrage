@@ -89,6 +89,18 @@ def _contract(payload: dict) -> PlatformContract:
     return PlatformContract(**payload, revision_hash=_fingerprint(revision_payload))
 
 
+def _stored_contract(payload: Mapping[str, object]) -> PlatformContract:
+    """Rehydrate a revision retained solely by an active political lock."""
+    values = dict(payload)
+    for field_name in ("close_time", "occurrence_at", "catalyst_at"):
+        value = values.get(field_name)
+        if isinstance(value, str):
+            values[field_name] = _aware(datetime.fromisoformat(value))
+    for field_name in ("occurrence_sources", "catalyst_sources"):
+        values[field_name] = tuple(values.get(field_name) or ())
+    return PlatformContract(**values)  # type: ignore[arg-type]
+
+
 def normalize_polymarket(market: Market) -> PlatformContract:
     close = _aware(market.end_date)
     return _contract(
@@ -684,15 +696,43 @@ class PlatformOpportunitySystem:
         contracts = self._apply_kalshi_milestones(contracts, kalshi_milestones)
         contracts = self._enrich_catalysts(contracts, catalyst_references)
         discovered = {contract.contract_id: contract for contract in contracts}
-        if snapshot_complete:
-            self._contracts = discovered
-        else:
-            self._contracts.update(discovered)
+        # A bounded/partial response is a new eligibility cohort, not a delta.
+        # Retaining every previously seen row turned repeated truncated pulls
+        # into a 556k-row stale catalog.  The only permitted carry-over is an
+        # already selected political lock, whose full observation window is a
+        # deliberate research commitment rather than ordinary eligibility.
+        retained_lock_ids = {
+            contract_id
+            for lock in self._political_locks.values()
+            if lock.locked_until >= observed_at
+            for contract_id in lock.contract_ids
+        }
+        # A restarted worker has not populated ``_political_locks`` yet. The
+        # store is authoritative for active locks, so reconstruct their
+        # contract ids before replacing this bounded eligibility cohort.
+        retained_lock_ids.update(
+            contract_id
+            for lock in self.store.active_political_event_locks(now=observed_at)
+            for contract_id in lock.get("contract_ids", ())
+        )
+        if retained_lock_ids:
+            previous = self.store.latest_contract_payloads(
+                retained_lock_ids - set(discovered)
+            )
+            discovered.update(
+                {
+                    contract_id: _stored_contract(payload)
+                    for contract_id, payload in previous.items()
+                }
+            )
+        self._contracts = discovered
         self._snapshot_complete = snapshot_complete
         revisions = self.store.upsert_contracts(
             contracts,
             observed_at=observed_at,
-            retire_absent=snapshot_complete,
+            # ``current`` mirrors this response's bounded cohort. Revisions
+            # retain all prior evidence, including lock-only contracts.
+            retire_absent=True,
         )
         self._refresh_political_locks(observed_at)
         monitoring = self.plan_monitoring(observed_at)

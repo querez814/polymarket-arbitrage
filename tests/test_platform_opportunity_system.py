@@ -141,6 +141,81 @@ def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
     assert store.catalog_counts() == {"current": 1, "revisions": 3}
 
 
+def test_partial_catalog_replaces_ordinary_eligibility_without_losing_history(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(
+        store=store,
+        monitoring_policy=MonitoringPolicy(
+            lookahead=timedelta(days=7),
+            max_hot_contracts=2,
+            min_liquidity=100,
+            min_volume=100,
+        ),
+    )
+    close = NOW + timedelta(minutes=30)
+    system.refresh_catalog(
+        polymarket_markets=[
+            _poly("old-high-volume", "Will CPI be above 3%?", end_date=close),
+            _poly("old-low-volume", "Will CPI be above 4%?", end_date=close),
+        ],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+
+    partial = system.refresh_catalog(
+        polymarket_markets=[
+            _poly("fresh", "Will CPI be above 5%?", end_date=close, volume=101),
+        ],
+        kalshi_markets=[],
+        snapshot_complete=False,
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    assert partial.catalog_contracts == 1
+    assert [item.contract_id for item in partial.monitoring.hot] == ["polymarket:fresh"]
+    assert store.catalog_counts() == {"current": 1, "revisions": 3}
+
+
+def test_partial_catalog_rehydrates_active_political_lock_after_restart(tmp_path):
+    path = tmp_path / "opportunities.db"
+    occurrence = NOW + timedelta(hours=2)
+    original = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(path),
+        political_watch_policy=PoliticalWatchPolicy(max_events=1),
+    )
+    original.refresh_catalog(
+        polymarket_markets=[
+            _poly(
+                "election",
+                "Will the President win the election?",
+                event_id="election-2026",
+                end_date=occurrence,
+            )
+        ],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    original.store.close()
+
+    resumed_store = PlatformOpportunityStore(path)
+    resumed = PlatformOpportunitySystem(
+        store=resumed_store,
+        political_watch_policy=PoliticalWatchPolicy(max_events=1),
+    )
+    partial = resumed.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[],
+        snapshot_complete=False,
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    assert partial.catalog_contracts == 1
+    assert [item.contract_id for item in partial.monitoring.warm] == [
+        "polymarket:election"
+    ]
+    assert resumed_store.catalog_counts() == {"current": 0, "revisions": 1}
+
+
 def test_selected_political_event_survives_refresh_volume_displacement_until_cooldown(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(

@@ -190,6 +190,37 @@ class PlatformOpportunityStore:
             ).fetchone()[0]
         return {"current": int(current), "revisions": int(revisions)}
 
+    def latest_contract_payloads(
+        self, contract_ids: Iterable[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return the newest immutable revision for explicitly retained contracts.
+
+        A truncated catalog response is never evidence that an ordinary
+        contract remains eligible.  Political locks are the narrow exception:
+        their selected contracts must survive a process restart through the
+        lock window, even when the latest bounded page did not include them.
+        Read those contracts from revision history rather than keeping an
+        ever-growing ``current`` catalog alive.
+        """
+        ids = tuple(dict.fromkeys(str(contract_id) for contract_id in contract_ids))
+        if not ids:
+            return {}
+        placeholders = ", ".join("?" for _ in ids)
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT r.contract_id, r.payload_json "
+                "FROM platform_contract_revisions r "
+                "JOIN ("
+                "  SELECT contract_id, MAX(observed_at) AS observed_at "
+                "  FROM platform_contract_revisions "
+                f"  WHERE contract_id IN ({placeholders}) "
+                "  GROUP BY contract_id"
+                ") latest ON latest.contract_id = r.contract_id "
+                "AND latest.observed_at = r.observed_at",
+                ids,
+            ).fetchall()
+        return {str(row["contract_id"]): json.loads(row["payload_json"]) for row in rows}
+
     def upsert_political_event_lock(self, lock: Any) -> None:
         """Persist a selected event through its occurrence/cooldown window."""
         with self._lock, self._connection:
