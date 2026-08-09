@@ -14,6 +14,7 @@ from core.platform_opportunities import (
     AcceptancePolicy,
     CatalystReference,
     MonitoringPolicy,
+    PoliticalWatchPolicy,
     PlatformOpportunitySystem,
     StructuralRelation,
     VenueFeeSchedule,
@@ -138,6 +139,71 @@ def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
     )
     assert retired.catalog_contracts == 1
     assert store.catalog_counts() == {"current": 1, "revisions": 3}
+
+
+def test_selected_political_event_survives_refresh_volume_displacement_until_cooldown(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=2,
+        cooldown_after=timedelta(hours=2),
+    )
+    system = PlatformOpportunitySystem(store=store, political_watch_policy=policy)
+    close = NOW + timedelta(minutes=30)
+
+    first = system.refresh_catalog(
+        polymarket_markets=[
+            _poly(
+                "election",
+                "Will the President win the election?",
+                event_id="election-2026",
+                end_date=close,
+                volume=100,
+            ),
+            _poly(
+                "approval",
+                "Will presidential approval exceed 50%?",
+                event_id="approval-2026",
+                end_date=close,
+                volume=50,
+            ),
+        ],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    assert [item.contract_id for item in first.monitoring.hot] == ["polymarket:election"]
+
+    displaced = system.refresh_catalog(
+        polymarket_markets=[
+            _poly(
+                "election",
+                "Will the President win the election?",
+                event_id="election-2026",
+                end_date=close,
+                volume=1,
+            ),
+            _poly(
+                "approval",
+                "Will presidential approval exceed 50%?",
+                event_id="approval-2026",
+                end_date=close,
+                volume=100_000,
+            ),
+            _poly(
+                "mve",
+                "MVE: President election and BTC above $100k",
+                event_id="combo",
+                end_date=close,
+                volume=1_000_000,
+            ),
+        ],
+        kalshi_markets=[],
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    assert [item.contract_id for item in displaced.monitoring.hot] == ["polymarket:election"]
+    locks = store.active_political_event_locks(now=NOW + timedelta(minutes=1))
+    assert [lock["event_id"] for lock in locks] == ["election-2026"]
 
 
 def test_fuzzy_calendar_title_does_not_schedule_unrelated_contract(tmp_path):

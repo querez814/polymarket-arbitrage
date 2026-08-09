@@ -63,6 +63,17 @@ class PlatformOpportunityStore:
                     PRIMARY KEY(contract_id, revision_hash)
                 );
 
+                CREATE TABLE IF NOT EXISTS political_event_locks (
+                    event_id TEXT PRIMARY KEY,
+                    event_title TEXT NOT NULL,
+                    occurrence_at TEXT NOT NULL,
+                    locked_until TEXT NOT NULL,
+                    selected_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_political_event_locks_until
+                    ON political_event_locks(locked_until);
+
                 CREATE TABLE IF NOT EXISTS structural_relations (
                     relation_id TEXT PRIMARY KEY,
                     relation_type TEXT NOT NULL,
@@ -178,6 +189,36 @@ class PlatformOpportunityStore:
                 "SELECT COUNT(*) FROM platform_contract_revisions"
             ).fetchone()[0]
         return {"current": int(current), "revisions": int(revisions)}
+
+    def upsert_political_event_lock(self, lock: Any) -> None:
+        """Persist a selected event through its occurrence/cooldown window."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO political_event_locks "
+                "(event_id, event_title, occurrence_at, locked_until, selected_at, payload_json) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(event_id) DO UPDATE SET "
+                "event_title=excluded.event_title, occurrence_at=excluded.occurrence_at, "
+                "locked_until=excluded.locked_until, payload_json=excluded.payload_json",
+                (
+                    lock.event_id,
+                    lock.event_title,
+                    _utc_iso(lock.occurrence_at),
+                    _utc_iso(lock.locked_until),
+                    _utc_iso(lock.selected_at),
+                    _json(lock),
+                ),
+            )
+
+    def active_political_event_locks(self, *, now: datetime) -> list[dict[str, Any]]:
+        """Return only locks that still own their full observation window."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT payload_json FROM political_event_locks WHERE locked_until >= ? "
+                "ORDER BY occurrence_at, event_id",
+                (_utc_iso(now),),
+            ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
 
     def record_relations(
         self,

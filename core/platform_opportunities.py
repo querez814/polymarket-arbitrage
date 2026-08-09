@@ -165,6 +165,74 @@ class MonitoringPolicy:
 
 
 @dataclass(frozen=True)
+class PoliticalWatchPolicy:
+    """Bounded, persistent selection policy for political-event research."""
+
+    max_events: int = 4
+    max_contracts_per_event: int = 6
+    cooldown_after: timedelta = timedelta(hours=2)
+
+    def __post_init__(self) -> None:
+        if self.max_events <= 0 or self.max_contracts_per_event <= 0:
+            raise ValueError("political watchlist caps must be positive")
+        if self.cooldown_after < timedelta(0):
+            raise ValueError("political watchlist cooldown cannot be negative")
+
+
+@dataclass(frozen=True)
+class PoliticalEventLock:
+    event_id: str
+    event_title: str
+    occurrence_at: datetime
+    locked_until: datetime
+    selected_at: datetime
+    contract_ids: tuple[str, ...]
+
+
+_POLITICAL_TERMS = frozenset(
+    {
+        "approval",
+        "congress",
+        "election",
+        "electoral",
+        "governor",
+        "mayor",
+        "parliament",
+        "political",
+        "politics",
+        "polling",
+        "president",
+        "presidential",
+        "prime minister",
+        "senate",
+        "trump",
+        "vote",
+        "voting",
+        "white house",
+    }
+)
+
+
+def _is_political_contract(contract: PlatformContract) -> bool:
+    """Use explicit political language; never infer politics from generic dates."""
+    text = " ".join((contract.title, contract.event_title, contract.category)).casefold()
+    return any(term in text for term in _POLITICAL_TERMS) or (
+        "approval" in text
+        and any(term in text for term in ("president", "trump", "white house"))
+    )
+
+
+def _is_combo_contract(contract: PlatformContract) -> bool:
+    """MVE/combo bundles are not single political-event contracts."""
+    text = " ".join(
+        (contract.native_id, contract.title, contract.event_title)
+    ).casefold()
+    return any(
+        marker in text for marker in ("mve", "multivariate", "combo", "parlay")
+    )
+
+
+@dataclass(frozen=True)
 class MonitoringAssignment:
     contract_id: str
     venue: str
@@ -378,6 +446,7 @@ class PlatformOpportunitySystem:
         *,
         store: PlatformOpportunityStore,
         monitoring_policy: MonitoringPolicy | None = None,
+        political_watch_policy: PoliticalWatchPolicy | None = None,
         acceptance_policy: AcceptancePolicy | None = None,
         additional_fee_buffer_per_contract: float = 0.0,
         slippage_per_contract: float = 0.002,
@@ -386,6 +455,7 @@ class PlatformOpportunitySystem:
     ):
         self.store = store
         self.monitoring_policy = monitoring_policy or MonitoringPolicy()
+        self.political_watch_policy = political_watch_policy
         self.acceptance_policy = acceptance_policy or AcceptancePolicy()
         self.additional_fee_buffer_per_contract = max(
             0.0, float(additional_fee_buffer_per_contract)
@@ -411,6 +481,7 @@ class PlatformOpportunitySystem:
         self._last_intent_at: dict[tuple[str, str], datetime] = {}
         self._marked: set[tuple[str, int, float]] = set()
         self._fee_schedules: dict[str, VenueFeeSchedule] = {}
+        self._political_locks: dict[str, PoliticalEventLock] = {}
         self.cohort_id = (
             "cohort:"
             + _fingerprint(
@@ -504,6 +575,84 @@ class PlatformOpportunitySystem:
                 self._last_intent_at[(cooldown_key[0], cooldown_key[1])] = created_at
         self._marked = self.store.mark_keys(cohort_id=self.cohort_id)
 
+    def _refresh_political_locks(self, now: datetime) -> None:
+        """Keep selected events locked until cooldown, regardless of later volume."""
+        policy = self.political_watch_policy
+        if policy is None:
+            self._political_locks = {}
+            return
+        retained: dict[str, PoliticalEventLock] = {}
+        for payload in self.store.active_political_event_locks(now=now):
+            lock = PoliticalEventLock(
+                event_id=str(payload["event_id"]),
+                event_title=str(payload["event_title"]),
+                occurrence_at=(
+                    _aware(datetime.fromisoformat(str(payload["occurrence_at"])))
+                    or now
+                ),
+                locked_until=(
+                    _aware(datetime.fromisoformat(str(payload["locked_until"])))
+                    or now
+                ),
+                selected_at=(
+                    _aware(datetime.fromisoformat(str(payload["selected_at"])))
+                    or now
+                ),
+                contract_ids=tuple(str(item) for item in payload["contract_ids"]),
+            )
+            current = [
+                self._contracts[contract_id]
+                for contract_id in lock.contract_ids
+                if contract_id in self._contracts
+            ]
+            if current or now >= lock.occurrence_at:
+                retained[lock.event_id] = lock
+
+        candidates: dict[str, list[PlatformContract]] = defaultdict(list)
+        for contract in self._contracts.values():
+            if (
+                contract.active
+                and contract.catalyst_at is not None
+                and contract.catalyst_at >= now
+                and _is_political_contract(contract)
+                and not _is_combo_contract(contract)
+            ):
+                candidates[contract.event_id].append(contract)
+        ranked = sorted(
+            candidates.items(),
+            key=lambda item: (
+                -max(contract.volume + contract.liquidity for contract in item[1]),
+                item[0],
+            ),
+        )
+        for event_id, contracts in ranked:
+            if len(retained) >= policy.max_events:
+                break
+            if event_id in retained:
+                continue
+            contracts.sort(
+                key=lambda contract: (
+                    -(contract.volume + contract.liquidity),
+                    contract.contract_id,
+                )
+            )
+            occurrence_at = min(
+                contract.catalyst_at
+                for contract in contracts
+                if contract.catalyst_at is not None
+            )
+            lock = PoliticalEventLock(
+                event_id=event_id,
+                event_title=contracts[0].event_title or contracts[0].title,
+                occurrence_at=occurrence_at,
+                locked_until=occurrence_at + policy.cooldown_after,
+                selected_at=now,
+                contract_ids=tuple(contract.contract_id for contract in contracts[: policy.max_contracts_per_event]),
+            )
+            retained[event_id] = lock
+            self.store.upsert_political_event_lock(lock)
+        self._political_locks = retained
+
     def refresh_catalog(
         self,
         *,
@@ -530,6 +679,7 @@ class PlatformOpportunitySystem:
             observed_at=observed_at,
             retire_absent=snapshot_complete,
         )
+        self._refresh_political_locks(observed_at)
         return CatalogRefresh(
             catalog_contracts=len(self._contracts),
             revisions_written=revisions,
@@ -567,9 +717,19 @@ class PlatformOpportunitySystem:
         policy = self.monitoring_policy
         eligible: list[MonitoringAssignment] = []
         warm: list[MonitoringAssignment] = []
+        locked_contract_ids = {
+            contract_id
+            for lock in self._political_locks.values()
+            for contract_id in lock.contract_ids
+        }
         for contract in self._contracts.values():
             catalyst_at = contract.catalyst_at
             reason = ""
+            if (
+                self.political_watch_policy is not None
+                and contract.contract_id not in locked_contract_ids
+            ):
+                reason = "political_watchlist_not_selected"
             if not contract.active:
                 reason = "inactive"
             elif contract.liquidity < policy.min_liquidity:
