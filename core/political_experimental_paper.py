@@ -333,7 +333,7 @@ class PoliticalExperimentalPaperLedger:
         )
 
     def process_observation(self, *, replay_sequence: int) -> list[dict[str, Any]]:
-        """Resolve prior same-contract signals from one canonical replay token.
+        """Apply deterministic old-position and pending-signal work for one token.
 
         This is deliberately the runtime-facing transition boundary: callers
         provide only the durable replay sequence.  The method never resolves
@@ -352,6 +352,40 @@ class PoliticalExperimentalPaperLedger:
                 "political paper observation requires durable replay evidence"
             )
         contract_id = str(event["contract_id"])
+        received_at = datetime.fromisoformat(str(event["received_at"]))
+        transitions: list[dict[str, Any]] = []
+        # A maximum hold is a frozen part of the political v2 model, not an
+        # instruction from the runtime caller.  Keep the legacy focused
+        # cohorts on the published ten-minute rule while accepting an explicit
+        # immutable policy value for newly initialized accounts.
+        policy = self.store.political_experimental_paper_policy(
+            cohort_id=self.cohort_id
+        )["policy"]
+        exit_rule = policy.get("exit_rule", {})
+        try:
+            maximum_hold_seconds = Decimal(
+                str(exit_rule.get("maximum_hold_seconds", "600"))
+            )
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(
+                "immutable political paper max-hold rule is invalid"
+            ) from exc
+        if not maximum_hold_seconds.is_finite() or maximum_hold_seconds < 0:
+            raise ValueError("immutable political paper max-hold rule is invalid")
+        for position in self.store.political_experimental_positions(
+            cohort_id=self.cohort_id
+        ):
+            if str(position["contract_id"]) != contract_id:
+                continue
+            opened_at = datetime.fromisoformat(str(position["opened_at"]))
+            if received_at < opened_at + timedelta(seconds=float(maximum_hold_seconds)):
+                continue
+            exit_result = self._exit_position(
+                position_id=str(position["position_id"]),
+                replay_sequence=replay_sequence,
+                trigger="max_hold_10_minutes",
+            )
+            transitions.append(exit_result)
         candidates = [
             signal
             for signal in self.store.political_experimental_pending_signals(
@@ -361,17 +395,18 @@ class PoliticalExperimentalPaperLedger:
             and int(signal["replay_sequence"]) < replay_sequence
         ]
         if not candidates:
-            return []
+            return transitions
         # Signal reads are sequence ordered.  Resolving more than the first
         # prior signal from one book would cherry-pick a single observation
         # for multiple pending intents and violates the causal one-transition
         # boundary.
         signal = candidates[0]
-        return [
+        transitions.append(
             self.resolve_pending_signal(
                 signal_id=str(signal["signal_id"]), replay_sequence=replay_sequence
             )
-        ]
+        )
+        return transitions
 
     def snapshot(self) -> dict[str, Any]:
         """Return the invariant-checked state needed for paper-only reporting."""
@@ -709,6 +744,18 @@ class PoliticalExperimentalPaperLedger:
         position_id: str,
         replay_sequence: int,
     ) -> dict[str, Any]:
+        """Manually exercise the sealed replay-backed exit primitive in tests."""
+        return self._exit_position(
+            position_id=position_id, replay_sequence=replay_sequence, trigger=None
+        )
+
+    def _exit_position(
+        self,
+        *,
+        position_id: str,
+        replay_sequence: int,
+        trigger: str | None,
+    ) -> dict[str, Any]:
         """Close as much of an open position as the later canonical bids allow.
 
         The replay receipt, rather than a caller clock, is the paper exit
@@ -777,5 +824,8 @@ class PoliticalExperimentalPaperLedger:
             quantity=quantity,
             credit_micros=credit_micros,
             basis_release_micros=basis_release_micros,
-            economics={"levels": levels},
+            economics={
+                "levels": levels,
+                **({"exit_trigger": trigger} if trigger is not None else {}),
+            },
         )

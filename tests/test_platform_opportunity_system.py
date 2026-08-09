@@ -740,6 +740,84 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     }
 
 
+def test_political_paper_process_observation_exits_max_hold_without_caller_choice(
+    tmp_path,
+):
+    """A later sealed token applies the frozen ten-minute exit by itself."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:max-hold")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.55, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.44, 100]], "asks": [[0.60, 100]]},
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:max-hold",
+        contract_id="kalshi:KXMAXHOLD",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:max-hold",
+        replay_sequence=first["event"]["sequence"],
+        event_id="event-1",
+        milestone_id="milestone-1",
+        contract_id="kalshi:KXMAXHOLD",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=first["state_hash"],
+        fee_hash=first["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    fill = store.record_replay_observation(
+        cohort_id="cohort:max-hold",
+        contract_id="kalshi:KXMAXHOLD",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+    assert (
+        ledger.process_observation(replay_sequence=fill["event"]["sequence"])[0][
+            "outcome"
+        ]
+        == "filled"
+    )
+    maximum_hold = store.record_replay_observation(
+        cohort_id="cohort:max-hold",
+        contract_id="kalshi:KXMAXHOLD",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=601),
+        request_started_at=NOW + timedelta(seconds=600),
+        received_at=NOW + timedelta(seconds=601),
+    )
+
+    transitions = ledger.process_observation(
+        replay_sequence=maximum_hold["event"]["sequence"]
+    )
+
+    assert transitions[0]["outcome"] == "closed"
+    assert (
+        transitions[0]["payload"]["economics"]["exit_trigger"] == "max_hold_10_minutes"
+    )
+    assert ledger.snapshot()["counts"]["open"] == 0
+
+
 @pytest.mark.parametrize(
     ("book_delay", "fee_delay", "fee_age", "expected_reason"),
     [
