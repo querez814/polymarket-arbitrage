@@ -176,6 +176,60 @@ def test_partial_catalog_replaces_ordinary_eligibility_without_losing_history(tm
     assert store.catalog_counts() == {"current": 1, "revisions": 3}
 
 
+def test_venue_scoped_coverage_retains_only_failed_venue_cohort(tmp_path):
+    """A source failure must not retire its last-good rows or stale healthy rows."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(store=store)
+    close = NOW + timedelta(minutes=30)
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p-old", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[_kalshi("k-old", "CPI above 3%", close_time=close)],
+        venue_coverage={
+            "polymarket": {"status": "complete", "reason": "complete"},
+            "kalshi": {"status": "complete", "reason": "complete"},
+        },
+        observed_at=NOW,
+    )
+
+    kalshi_replaced = system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[_kalshi("k-new", "CPI above 4%", close_time=close)],
+        venue_coverage={
+            "polymarket": {"status": "failure", "reason": "network_error"},
+            "kalshi": {"status": "complete", "reason": "complete"},
+        },
+        observed_at=NOW + timedelta(minutes=1),
+    )
+    assert set(store.current_contract_payloads_for_venue("polymarket")) == {
+        "polymarket:p-old"
+    }
+    assert set(store.current_contract_payloads_for_venue("kalshi")) == {"kalshi:k-new"}
+    assert kalshi_replaced.venue_coverage["polymarket"] == {
+        "status": "failure",
+        "reason": "network_error",
+        "incoming": 0,
+        "retained": 1,
+        "replaced": 0,
+    }
+
+    poly_replaced = system.refresh_catalog(
+        polymarket_markets=[_poly("p-new", "Will CPI be above 5%?", end_date=close)],
+        kalshi_markets=[],
+        venue_coverage={
+            "polymarket": {"status": "partial", "reason": "page_limit"},
+            "kalshi": {"status": "failure", "reason": "network_error"},
+        },
+        observed_at=NOW + timedelta(minutes=2),
+    )
+    assert set(store.current_contract_payloads_for_venue("polymarket")) == {
+        "polymarket:p-new"
+    }
+    assert set(store.current_contract_payloads_for_venue("kalshi")) == {"kalshi:k-new"}
+    assert poly_replaced.venue_coverage["polymarket"]["replaced"] == 1
+    assert poly_replaced.venue_coverage["kalshi"]["retained"] == 1
+    assert store.catalog_counts() == {"current": 2, "revisions": 4}
+
+
 def test_partial_catalog_rehydrates_active_political_lock_after_restart(tmp_path):
     path = tmp_path / "opportunities.db"
     occurrence = NOW + timedelta(hours=2)

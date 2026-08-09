@@ -455,6 +455,7 @@ class CatalogRefresh:
     catalog_contracts: int
     revisions_written: int
     monitoring: MonitoringPlan
+    venue_coverage: dict[str, dict[str, int | str]]
 
 
 @dataclass(frozen=True)
@@ -957,16 +958,48 @@ class PlatformOpportunitySystem:
         kalshi_milestones: Sequence[KalshiMilestone] = (),
         catalyst_references: Sequence[CatalystReference] = (),
         snapshot_complete: bool = True,
+        venue_coverage: Mapping[str, Mapping[str, object]] | None = None,
         observed_at: datetime,
     ) -> CatalogRefresh:
         observed_at = _aware(observed_at) or observed_at
+        coverage = self._normalize_venue_coverage(
+            venue_coverage, snapshot_complete=snapshot_complete
+        )
         contracts = [
             *(normalize_polymarket(market) for market in polymarket_markets),
             *(normalize_kalshi(market) for market in kalshi_markets),
         ]
         contracts = self._apply_kalshi_milestones(contracts, kalshi_milestones)
         contracts = self._enrich_catalysts(contracts, catalyst_references)
-        discovered = {contract.contract_id: contract for contract in contracts}
+        incoming_by_venue = {
+            venue: {
+                contract.contract_id: contract
+                for contract in contracts
+                if contract.venue == venue
+            }
+            for venue in coverage
+        }
+        discovered: dict[str, PlatformContract] = {}
+        coverage_summary: dict[str, dict[str, int | str]] = {}
+        for venue, status in coverage.items():
+            incoming = incoming_by_venue[venue]
+            failed = status["status"] == "failure"
+            retained: dict[str, PlatformContract] = {}
+            if failed:
+                retained = {
+                    contract_id: _stored_contract(payload)
+                    for contract_id, payload in self.store.current_contract_payloads_for_venue(
+                        venue
+                    ).items()
+                }
+            discovered.update(retained if failed else incoming)
+            coverage_summary[venue] = {
+                "status": str(status["status"]),
+                "reason": str(status["reason"]),
+                "incoming": len(incoming),
+                "retained": len(retained),
+                "replaced": len(incoming) if not failed else 0,
+            }
         # A bounded/partial response is a new eligibility cohort, not a delta.
         # Retaining every previously seen row turned repeated truncated pulls
         # into a 556k-row stale catalog.  The only permitted carry-over is an
@@ -997,7 +1030,9 @@ class PlatformOpportunitySystem:
                 }
             )
         self._contracts = discovered
-        self._snapshot_complete = snapshot_complete
+        self._snapshot_complete = all(
+            status["status"] == "complete" for status in coverage.values()
+        )
         revisions = self.store.upsert_contracts(
             self._contracts.values(),
             observed_at=observed_at,
@@ -1028,7 +1063,28 @@ class PlatformOpportunitySystem:
             catalog_contracts=len(self._contracts),
             revisions_written=revisions,
             monitoring=monitoring,
+            venue_coverage=coverage_summary,
         )
+
+    @staticmethod
+    def _normalize_venue_coverage(
+        venue_coverage: Mapping[str, Mapping[str, object]] | None,
+        *,
+        snapshot_complete: bool,
+    ) -> dict[str, dict[str, str]]:
+        """Normalize explicit source health without treating partial as failure."""
+        fallback = "complete" if snapshot_complete else "partial"
+        result: dict[str, dict[str, str]] = {}
+        for venue in ("polymarket", "kalshi"):
+            supplied = (venue_coverage or {}).get(venue, {})
+            status = str(supplied.get("status", fallback))
+            if status not in {"complete", "partial", "failure"}:
+                raise ValueError(f"unsupported {venue} catalog status: {status}")
+            result[venue] = {
+                "status": status,
+                "reason": str(supplied.get("reason", status)),
+            }
+        return result
 
     @staticmethod
     def _apply_kalshi_milestones(

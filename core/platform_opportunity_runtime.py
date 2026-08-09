@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.models import Market, OrderBook
@@ -92,6 +92,7 @@ class PlatformOpportunityWorker:
         kalshi_milestones: Sequence[KalshiMilestone] = (),
         catalyst_references: Sequence[CatalystReference] = (),
         snapshot_complete: bool = True,
+        venue_coverage: Mapping[str, Mapping[str, object]] | None = None,
         observed_at: datetime,
     ) -> CatalogRefresh:
         async with self._operation_lock:
@@ -102,6 +103,7 @@ class PlatformOpportunityWorker:
                 kalshi_milestones=kalshi_milestones,
                 catalyst_references=catalyst_references,
                 snapshot_complete=snapshot_complete,
+                venue_coverage=venue_coverage,
                 observed_at=observed_at,
             )
             await self._run_sync(

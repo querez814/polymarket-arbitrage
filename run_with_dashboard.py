@@ -220,8 +220,7 @@ class TradingBotWithDashboard:
     def cross_platform_discovery_enabled(self) -> bool:
         """Whether the legacy Polymarket/Kalshi discovery runtime may start."""
         return bool(
-            self.config.mode.cross_platform_enabled
-            and self.config.mode.kalshi_enabled
+            self.config.mode.cross_platform_enabled and self.config.mode.kalshi_enabled
         )
 
     def _build_semantic_pipeline(
@@ -860,15 +859,25 @@ class TradingBotWithDashboard:
             "stop_reason": "dedicated_source_unavailable",
         }
         if self._platform_poly_client is not None:
-            poly_markets = await self._platform_poly_client.list_all_markets_keyset(
-                closed=False,
-                filters={"active": "true"},
-                max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
-                max_pages=self.config.platform_opportunity.catalog_max_pages,
-                max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
-                wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
-            )
-            poly_catalog_status = dict(self._platform_poly_client.last_catalog_status)
+            try:
+                poly_markets = await self._platform_poly_client.list_all_markets_keyset(
+                    closed=False,
+                    filters={"active": "true"},
+                    max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
+                    max_pages=self.config.platform_opportunity.catalog_max_pages,
+                    max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
+                    wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
+                )
+                poly_catalog_status = dict(
+                    self._platform_poly_client.last_catalog_status
+                )
+            except Exception as exc:
+                logger.warning("polymarket platform catalog refresh failed: %s", exc)
+                poly_catalog_status = {
+                    "complete": False,
+                    "stop_reason": "fetch_failed",
+                    "failed": True,
+                }
         elif self.data_feed is not None:
             poly_markets = list(self.data_feed._markets.values())
         ordinary_kalshi = []
@@ -882,15 +891,23 @@ class TradingBotWithDashboard:
             ),
         }
         if self._platform_kalshi_client is not None:
-            ordinary_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
-                status="open",
-                mve_filter="exclude",
-                max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
-                max_pages=self.config.platform_opportunity.catalog_max_pages,
-                max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
-                wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
-            )
-            ordinary_status = dict(self._platform_kalshi_client.last_catalog_status)
+            try:
+                ordinary_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
+                    status="open",
+                    mve_filter="exclude",
+                    max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
+                    max_pages=self.config.platform_opportunity.catalog_max_pages,
+                    max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
+                    wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
+                )
+                ordinary_status = dict(self._platform_kalshi_client.last_catalog_status)
+            except Exception as exc:
+                logger.warning("kalshi platform catalog refresh failed: %s", exc)
+                ordinary_status = {
+                    "complete": False,
+                    "stop_reason": "fetch_failed",
+                    "failed": True,
+                }
         elif self._kalshi_markets:
             ordinary_kalshi = list(self._kalshi_markets)
         kalshi_by_ticker = {market.ticker: market for market in ordinary_kalshi}
@@ -909,6 +926,34 @@ class TradingBotWithDashboard:
                     ordinary_status,
                 )
             ),
+            venue_coverage={
+                "polymarket": {
+                    "status": (
+                        "failure"
+                        if poly_catalog_status.get("failed")
+                        else (
+                            "complete"
+                            if poly_catalog_status.get("complete")
+                            else "partial"
+                        )
+                    ),
+                    "reason": str(
+                        poly_catalog_status.get("stop_reason", "partial_response")
+                    ),
+                },
+                "kalshi": {
+                    "status": (
+                        "failure"
+                        if ordinary_status.get("failed")
+                        else (
+                            "complete" if ordinary_status.get("complete") else "partial"
+                        )
+                    ),
+                    "reason": str(
+                        ordinary_status.get("stop_reason", "partial_response")
+                    ),
+                },
+            },
             observed_at=now,
         )
         # Warm assignments normally are inventory-only metadata.  Locked
@@ -947,6 +992,10 @@ class TradingBotWithDashboard:
                         "kalshi_ordinary": ordinary_status,
                         "kalshi_political_milestones": milestone_status,
                     },
+                    # Transitional test doubles and external shadow workers may
+                    # not yet return the new coverage field; the real worker
+                    # always does, and no invented success state is shown here.
+                    "venue_coverage": getattr(refresh, "venue_coverage", {}),
                     "possibly_truncated": not all(
                         bool(status.get("complete"))
                         for status in (
@@ -996,7 +1045,8 @@ class TradingBotWithDashboard:
             {
                 market.event_ticker
                 for market in markets
-                if market.event_ticker and is_political_contract(normalize_kalshi(market))
+                if market.event_ticker
+                and is_political_contract(normalize_kalshi(market))
             }
         )
         event_tickers = tuple(dict.fromkeys((*pins, *automatic)))[
@@ -1010,7 +1060,11 @@ class TradingBotWithDashboard:
         async def fetch(event_ticker: str):
             nonlocal cached
             cached_value = self._platform_milestone_cache.get(event_ticker)
-            if cached_value and time.monotonic() - cached_value[0] < policy.political_milestone_cache_seconds:
+            if (
+                cached_value
+                and time.monotonic() - cached_value[0]
+                < policy.political_milestone_cache_seconds
+            ):
                 cached += 1
                 return cached_value[1]
             try:

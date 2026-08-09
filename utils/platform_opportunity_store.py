@@ -29,9 +29,9 @@ def _json(value: Any) -> str:
         value,
         sort_keys=True,
         separators=(",", ":"),
-        default=lambda item: item.isoformat()
-        if isinstance(item, datetime)
-        else str(item),
+        default=lambda item: (
+            item.isoformat() if isinstance(item, datetime) else str(item)
+        ),
     )
 
 
@@ -315,7 +315,23 @@ class PlatformOpportunityStore:
                 "AND latest.observed_at = r.observed_at",
                 ids,
             ).fetchall()
-        return {str(row["contract_id"]): json.loads(row["payload_json"]) for row in rows}
+        return {
+            str(row["contract_id"]): json.loads(row["payload_json"]) for row in rows
+        }
+
+    def current_contract_payloads_for_venue(
+        self, venue: str
+    ) -> dict[str, dict[str, Any]]:
+        """Return the bounded current cohort for one venue only."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT contract_id, payload_json FROM platform_contract_current "
+                "WHERE venue = ? ORDER BY contract_id",
+                (venue,),
+            ).fetchall()
+        return {
+            str(row["contract_id"]): json.loads(row["payload_json"]) for row in rows
+        }
 
     def upsert_political_event_lock(self, lock: Any) -> None:
         """Persist a selected event through its occurrence/cooldown window."""
@@ -544,9 +560,7 @@ class PlatformOpportunityStore:
             "marks": int(marks),
         }
 
-    def research_mark_summary(
-        self, *, cohort_id: str | None = None
-    ) -> dict[str, Any]:
+    def research_mark_summary(self, *, cohort_id: str | None = None) -> dict[str, Any]:
         """Return research-only marks split by actual exit and fixed horizon."""
         query = (
             "SELECT m.horizon_seconds, COUNT(*) AS marks, "
