@@ -15,11 +15,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-UTILS_ROOT = ROOT / "utils"
-if str(UTILS_ROOT) not in sys.path:
-    sys.path.insert(0, str(UTILS_ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from political_occurrence_ledger import attach_authoritative_occurrences
+from utils.political_occurrence_ledger import attach_authoritative_occurrences
 
 
 def _object_with_list(path: Path, key: str) -> list[dict]:
@@ -38,13 +37,20 @@ def main() -> int:
     args = parser.parse_args()
 
     candidate_payload = json.loads(args.candidates.read_text(encoding="utf-8"))
-    candidates = candidate_payload.get("candidates") if isinstance(candidate_payload, dict) else None
+    candidates = (
+        candidate_payload.get("candidates")
+        if isinstance(candidate_payload, dict)
+        else None
+    )
     if not isinstance(candidates, list):
         raise ValueError("candidate file must contain a candidates list")
     enriched = attach_authoritative_occurrences(
         candidates, _object_with_list(args.occurrence_ledger, "occurrences")
     )
-    verified_count = sum(item.get("occurrence_status") == "verified_external_authority" for item in enriched)
+    verified_count = sum(
+        item.get("occurrence_status") == "verified_external_authority"
+        for item in enriched
+    )
     output = {
         "data_quality": {
             "classification": "archive_candidates_with_external_occurrence_ledger",
@@ -58,8 +64,12 @@ def main() -> int:
         "candidates": enriched,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"Wrote {verified_count}/{len(enriched)} occurrence-verified candidates to {args.output}")
+    args.output.write_text(
+        json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        f"Wrote {verified_count}/{len(enriched)} occurrence-verified candidates to {args.output}"
+    )
     return 0
 
 

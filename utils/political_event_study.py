@@ -34,14 +34,16 @@ def _window_point(
     """Choose one non-reused point in a directionally valid bounded window."""
     if direction == "before":
         candidates = [
-            point for point in points
+            point
+            for point in points
             if point.timestamp <= target
             and target - point.timestamp <= tolerance
             and point.timestamp not in excluded_timestamps
         ]
         return max(candidates, key=lambda point: point.timestamp, default=None)
     candidates = [
-        point for point in points
+        point
+        for point in points
         if point.timestamp >= target
         and point.timestamp - target <= tolerance
         and point.timestamp not in excluded_timestamps
@@ -50,7 +52,11 @@ def _window_point(
 
 
 def _event_observation(
-    event: EventSpec, *, baseline_minutes: int, entry_minutes: int, horizon_minutes: int,
+    event: EventSpec,
+    *,
+    baseline_minutes: int,
+    entry_minutes: int,
+    horizon_minutes: int,
     point_tolerance_minutes: int,
 ) -> dict | None:
     points = sorted(event.points, key=lambda point: point.timestamp)
@@ -105,13 +111,15 @@ def _trades(observations: Iterable[dict], threshold: float, cost: float) -> list
             if direction == "YES"
             else observation["entry_price"] - observation["exit_price"]
         )
-        trades.append({
-            **observation,
-            "direction": direction,
-            "gross_probability_points": gross_probability_points,
-            "assumed_round_trip_cost": cost,
-            "net_probability_points": gross_probability_points - cost,
-        })
+        trades.append(
+            {
+                **observation,
+                "direction": direction,
+                "gross_probability_points": gross_probability_points,
+                "assumed_round_trip_cost": cost,
+                "net_probability_points": gross_probability_points - cost,
+            }
+        )
     return trades
 
 
@@ -126,7 +134,9 @@ def _summary(trades: Sequence[dict]) -> dict:
         max_drawdown = min(max_drawdown, cumulative - peak)
     return {
         "trigger_count": len(trades),
-        "mean_net_probability_points": mean(probability_points) if probability_points else None,
+        "mean_net_probability_points": (
+            mean(probability_points) if probability_points else None
+        ),
         "cumulative_net_probability_points": cumulative,
         "max_drawdown_probability_points": max_drawdown,
         "trades": list(trades),
@@ -152,7 +162,11 @@ def run_price_only_study(
     if point_tolerance_minutes < 0:
         raise ValueError("point_tolerance_minutes must be non-negative")
     ordered = sorted(events, key=lambda event: (event.occurrence_at, event.event_id))
-    split = max(1, min(len(ordered) - 1, int(len(ordered) * train_fraction))) if len(ordered) > 1 else 1
+    split = (
+        max(1, min(len(ordered) - 1, int(len(ordered) * train_fraction)))
+        if len(ordered) > 1
+        else 1
+    )
     train_events, holdout_events = ordered[:split], ordered[split:]
     observations = {
         event.event_id: _event_observation(
@@ -164,15 +178,32 @@ def run_price_only_study(
         )
         for event in ordered
     }
-    train_observations = [observations[event.event_id] for event in train_events if observations[event.event_id]]
-    holdout_observations = [observations[event.event_id] for event in holdout_events if observations[event.event_id]]
+    train_observations = [
+        observation
+        for event in train_events
+        if (observation := observations[event.event_id]) is not None
+    ]
+    holdout_observations = [
+        observation
+        for event in holdout_events
+        if (observation := observations[event.event_id]) is not None
+    ]
     selected_threshold = max(
         threshold_candidates,
-        key=lambda threshold: _summary(_trades(train_observations, threshold, assumed_round_trip_cost))["mean_net_probability_points"]
-        if _trades(train_observations, threshold, assumed_round_trip_cost) else float("-inf"),
+        key=lambda threshold: (
+            _summary(_trades(train_observations, threshold, assumed_round_trip_cost))[
+                "mean_net_probability_points"
+            ]
+            if _trades(train_observations, threshold, assumed_round_trip_cost)
+            else float("-inf")
+        ),
     )
-    train_trades = _trades(train_observations, selected_threshold, assumed_round_trip_cost)
-    holdout_trades = _trades(holdout_observations, selected_threshold, assumed_round_trip_cost)
+    train_trades = _trades(
+        train_observations, selected_threshold, assumed_round_trip_cost
+    )
+    holdout_trades = _trades(
+        holdout_observations, selected_threshold, assumed_round_trip_cost
+    )
     return {
         "data_quality": {
             "classification": "price_only_signal_research",
@@ -188,8 +219,12 @@ def run_price_only_study(
         },
         "coverage": {
             "events_requested": len(ordered),
-            "complete_events": sum(observation is not None for observation in observations.values()),
-            "missing_window_events": sum(observation is None for observation in observations.values()),
+            "complete_events": sum(
+                observation is not None for observation in observations.values()
+            ),
+            "missing_window_events": sum(
+                observation is None for observation in observations.values()
+            ),
         },
         "walk_forward": {
             "train_event_ids": [event.event_id for event in train_events],
