@@ -1,4 +1,6 @@
+import asyncio
 from datetime import datetime, timezone
+from threading import Event
 
 import pytest
 
@@ -18,6 +20,74 @@ from polymarket_client.models import (
     TokenType,
 )
 from utils.platform_opportunity_store import PlatformOpportunityStore
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("background_operation", ["catalog", "acceptance"])
+async def test_worker_processes_tokens_while_catalog_or_acceptance_runs(
+    background_operation,
+):
+    """Slow catalog/report work cannot block the canonical decision path."""
+
+    class System:
+        def __init__(self):
+            self.cohort_id = "cohort:parallel"
+            self.started = Event()
+            self.release = Event()
+            self.processed = Event()
+
+        def persist_replay_observation(self, _contract_id, _book, **_kwargs):
+            return {"event": {"sequence": 1}}
+
+        def observe_replay_token(self, _token):
+            self.processed.set()
+            return {"canonical": 1}
+
+        def refresh_catalog(self, **_kwargs):
+            self.started.set()
+            assert self.release.wait(timeout=2)
+            return {"refreshed": True}
+
+        def discover_structural_relations(self, **_kwargs):
+            return None
+
+        def acceptance_report(self, _lane):
+            self.started.set()
+            assert self.release.wait(timeout=2)
+            return {"accepted": False}
+
+        def dashboard_summary(self):
+            return {}
+
+    system = System()
+    worker = PlatformOpportunityWorker(system)
+    await worker.start()
+    if background_operation == "catalog":
+        background = asyncio.create_task(
+            worker.refresh_catalog(
+                polymarket_markets=[],
+                kalshi_markets=[],
+                observed_at=datetime.now(timezone.utc),
+            )
+        )
+    else:
+        background = asyncio.create_task(worker.acceptance_report("test"))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(system.started.wait), timeout=1)
+        schedule = VenueFeeSchedule(
+            "polymarket", "none", 0, 1, 0, datetime.now(timezone.utc), "test"
+        )
+        assert worker.submit_book(
+            "polymarket:parallel",
+            OrderBook(market_id="parallel"),
+            observed_at=datetime.now(timezone.utc),
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(system.processed.wait), timeout=1)
+    finally:
+        system.release.set()
+        await background
+        await worker.stop()
 
 
 @pytest.mark.asyncio

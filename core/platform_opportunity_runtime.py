@@ -38,7 +38,11 @@ class PlatformOpportunityWorker:
         self._queue: asyncio.Queue[ReplayObservationToken | None] = asyncio.Queue(
             queue_capacity
         )
-        self._operation_lock = asyncio.Lock()
+        # Only scoring and its completion receipt share this lock.  Catalog
+        # refresh and acceptance can be expensive and must not hold up the
+        # canonical observation path; their SQLite writes already serialize
+        # briefly at the store boundary.
+        self._decision_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._running = False
         self._on_update = on_update
@@ -150,27 +154,25 @@ class PlatformOpportunityWorker:
         venue_coverage: Mapping[str, Mapping[str, object]] | None = None,
         observed_at: datetime,
     ) -> CatalogRefresh:
-        async with self._operation_lock:
-            result = await self._run_sync(
-                self.system.refresh_catalog,
-                polymarket_markets=polymarket_markets,
-                kalshi_markets=kalshi_markets,
-                kalshi_milestones=kalshi_milestones,
-                catalyst_references=catalyst_references,
-                snapshot_complete=snapshot_complete,
-                venue_coverage=venue_coverage,
-                observed_at=observed_at,
-            )
-            await self._run_sync(
-                self.system.discover_structural_relations, observed_at=observed_at
-            )
+        result = await self._run_sync(
+            self.system.refresh_catalog,
+            polymarket_markets=polymarket_markets,
+            kalshi_markets=kalshi_markets,
+            kalshi_milestones=kalshi_milestones,
+            catalyst_references=catalyst_references,
+            snapshot_complete=snapshot_complete,
+            venue_coverage=venue_coverage,
+            observed_at=observed_at,
+        )
+        await self._run_sync(
+            self.system.discover_structural_relations, observed_at=observed_at
+        )
         self._publish()
         return result
 
     async def acceptance_report(self, lane: str):
         """Expensive clustered bootstrap always stays outside the scanner."""
-        async with self._operation_lock:
-            return await self._run_sync(self.system.acceptance_report, lane)
+        return await self._run_sync(self.system.acceptance_report, lane)
 
     async def _run(self) -> None:
         while True:
@@ -179,7 +181,7 @@ class PlatformOpportunityWorker:
                 self._queue.task_done()
                 break
             try:
-                async with self._operation_lock:
+                async with self._decision_lock:
                     result = await self._run_sync(
                         self.system.observe_replay_token, token
                     )
