@@ -29,6 +29,7 @@ from kalshi_client.models import (
     KalshiOrderBook,
     KalshiEvent,
     KalshiFeeSchedule,
+    KalshiMilestone,
     KalshiSeries,
 )
 from kalshi_client.orders import (
@@ -760,6 +761,124 @@ class KalshiClient:
             title=e.get("title", ""),
             category=e.get("category", ""),
         )
+
+    async def list_milestones(
+        self,
+        *,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+        related_event_ticker: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> tuple[list[KalshiMilestone], Optional[str]]:
+        """Read one bounded public milestone page without guessing links."""
+        if not 1 <= limit <= 500:
+            raise ValueError("milestone page limit must be between 1 and 500")
+        params: dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        if related_event_ticker:
+            params["related_event_ticker"] = related_event_ticker
+        if category:
+            params["category"] = category
+        data = await self._get("/milestones", params=params)
+        raw_milestones = data.get("milestones") if isinstance(data, Mapping) else None
+        if not isinstance(raw_milestones, list):
+            return [], None
+        milestones = [
+            milestone
+            for item in raw_milestones
+            if isinstance(item, Mapping)
+            for milestone in (self._parse_milestone(item),)
+            if milestone is not None
+        ]
+        next_cursor = data.get("cursor")
+        return milestones, (
+            next_cursor if isinstance(next_cursor, str) and next_cursor else None
+        )
+
+    async def list_all_milestones(
+        self,
+        *,
+        max_pages: int = 4,
+        max_milestones: int = 500,
+        page_size: int = 100,
+        related_event_ticker: Optional[str] = None,
+        category: Optional[str] = None,
+    ) -> list[KalshiMilestone]:
+        """Read a cursor-safe, deliberately small milestone window.
+
+        Repeated cursors terminate the read so a malformed response cannot
+        create request pressure or an unbounded catalog refresh.
+        """
+        if max_pages <= 0 or max_milestones <= 0:
+            raise ValueError("milestone page and result limits must be positive")
+        if not 1 <= page_size <= 500:
+            raise ValueError("milestone page size must be between 1 and 500")
+        milestones: list[KalshiMilestone] = []
+        seen_ids: set[str] = set()
+        seen_cursors: set[str] = set()
+        cursor: Optional[str] = None
+        for _ in range(max_pages):
+            page, next_cursor = await self.list_milestones(
+                limit=min(page_size, max_milestones - len(milestones)),
+                cursor=cursor,
+                related_event_ticker=related_event_ticker,
+                category=category,
+            )
+            for milestone in page:
+                if milestone.milestone_id in seen_ids:
+                    continue
+                seen_ids.add(milestone.milestone_id)
+                milestones.append(milestone)
+                if len(milestones) >= max_milestones:
+                    return milestones
+            if not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+            await asyncio.sleep(0.2)
+        return milestones
+
+    @staticmethod
+    def _parse_milestone(data: Mapping[str, Any]) -> Optional[KalshiMilestone]:
+        """Reject malformed milestone clocks instead of inventing one."""
+        try:
+            milestone_id = data.get("id")
+            title = data.get("title")
+            start_date = data.get("start_date")
+            related = data.get("related_event_tickers")
+            if not all(isinstance(value, str) and value.strip() for value in (milestone_id, title, start_date)):
+                return None
+            if not isinstance(related, list) or not all(isinstance(value, str) and value.strip() for value in related):
+                return None
+            start_time = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            if start_time.tzinfo is None:
+                return None
+            end_date = data.get("end_date")
+            end_time = (
+                datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+                if isinstance(end_date, str) and end_date.strip()
+                else None
+            )
+            if end_time is not None and end_time.tzinfo is None:
+                return None
+            primary = data.get("primary_event_tickers", [])
+            if not isinstance(primary, list) or not all(isinstance(value, str) for value in primary):
+                return None
+            source_id = data.get("source_id")
+            return KalshiMilestone(
+                milestone_id=milestone_id.strip(),
+                title=title.strip(),
+                category=str(data.get("category") or "").strip(),
+                milestone_type=str(data.get("type") or "").strip(),
+                start_time=start_time.astimezone(timezone.utc),
+                end_time=end_time.astimezone(timezone.utc) if end_time else None,
+                related_event_tickers=tuple(value.strip() for value in related),
+                primary_event_tickers=tuple(value.strip() for value in primary if value.strip()),
+                source_id=source_id.strip() if isinstance(source_id, str) and source_id.strip() else None,
+            )
+        except (TypeError, ValueError):
+            return None
 
     # =========================================================================
     # MARKETS ENDPOINTS

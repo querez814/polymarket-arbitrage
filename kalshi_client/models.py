@@ -170,6 +170,25 @@ class KalshiSeries:
 
 
 @dataclass(frozen=True)
+class KalshiMilestone:
+    """Venue-native occurrence metadata linked to one or more event tickers.
+
+    ``start_time`` is the occurrence clock.  It intentionally remains
+    separate from a market's settlement or expiration timestamp.
+    """
+
+    milestone_id: str
+    title: str
+    category: str
+    milestone_type: str
+    start_time: datetime
+    end_time: Optional[datetime]
+    related_event_tickers: tuple[str, ...]
+    primary_event_tickers: tuple[str, ...]
+    source_id: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class KalshiFeeSchedule:
     """Current effective fee metadata for one prediction market."""
 

@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence, cast
 from collections.abc import Mapping
 
-from kalshi_client.models import KalshiMarket
+from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.models import Market, OrderBook, PriceLevel, TokenType
 from utils.platform_opportunity_store import PlatformOpportunityStore
 
@@ -52,6 +52,9 @@ class PlatformContract:
     volume: float
     rules: str
     settlement_source: str
+    occurrence_at: datetime | None
+    occurrence_evidence: str
+    occurrence_sources: tuple[str, ...]
     catalyst_at: datetime | None
     catalyst_evidence: str
     catalyst_sources: tuple[str, ...]
@@ -105,6 +108,9 @@ def normalize_polymarket(market: Market) -> PlatformContract:
             "settlement_source": (
                 market.resolution_source.strip() or market.oracle.strip()
             ),
+            "occurrence_at": close,
+            "occurrence_evidence": "exact_venue_metadata" if close else "unknown",
+            "occurrence_sources": ("polymarket.end_date",) if close else (),
             "catalyst_at": close,
             "catalyst_evidence": "exact_venue_metadata" if close else "unknown",
             "catalyst_sources": ("polymarket.end_date",) if close else (),
@@ -136,6 +142,11 @@ def normalize_kalshi(market: KalshiMarket) -> PlatformContract:
             "volume": max(0.0, float(market.volume)),
             "rules": rules,
             "settlement_source": market.settlement_source.strip(),
+            # Kalshi expiration is often a settlement/postponement deadline,
+            # not an occurrence. Only a related venue milestone may set this.
+            "occurrence_at": None,
+            "occurrence_evidence": "unknown",
+            "occurrence_sources": (),
             "catalyst_at": catalyst,
             "catalyst_evidence": "exact_venue_metadata" if catalyst else "unknown",
             "catalyst_sources": (
@@ -613,10 +624,11 @@ class PlatformOpportunitySystem:
         for contract in self._contracts.values():
             if (
                 contract.active
-                and contract.catalyst_at is not None
-                and contract.catalyst_at >= now
+                and (contract.occurrence_at or contract.catalyst_at) is not None
+                and (contract.occurrence_at or contract.catalyst_at) >= now
                 and _is_political_contract(contract)
                 and not _is_combo_contract(contract)
+                and (contract.venue != "kalshi" or contract.occurrence_at is not None)
             ):
                 candidates[contract.event_id].append(contract)
         ranked = sorted(
@@ -638,9 +650,9 @@ class PlatformOpportunitySystem:
                 )
             )
             occurrence_at = min(
-                contract.catalyst_at
+                contract.occurrence_at or contract.catalyst_at
                 for contract in contracts
-                if contract.catalyst_at is not None
+                if (contract.occurrence_at or contract.catalyst_at) is not None
             )
             lock = PoliticalEventLock(
                 event_id=event_id,
@@ -659,6 +671,7 @@ class PlatformOpportunitySystem:
         *,
         polymarket_markets: Sequence[Market],
         kalshi_markets: Sequence[KalshiMarket],
+        kalshi_milestones: Sequence[KalshiMilestone] = (),
         catalyst_references: Sequence[CatalystReference] = (),
         snapshot_complete: bool = True,
         observed_at: datetime,
@@ -668,6 +681,7 @@ class PlatformOpportunitySystem:
             *(normalize_polymarket(market) for market in polymarket_markets),
             *(normalize_kalshi(market) for market in kalshi_markets),
         ]
+        contracts = self._apply_kalshi_milestones(contracts, kalshi_milestones)
         contracts = self._enrich_catalysts(contracts, catalyst_references)
         discovered = {contract.contract_id: contract for contract in contracts}
         if snapshot_complete:
@@ -698,6 +712,57 @@ class PlatformOpportunitySystem:
             revisions_written=revisions,
             monitoring=monitoring,
         )
+
+    @staticmethod
+    def _apply_kalshi_milestones(
+        contracts: Sequence[PlatformContract],
+        milestones: Sequence[KalshiMilestone],
+    ) -> list[PlatformContract]:
+        """Apply only exact Kalshi event-ticker occurrence evidence.
+
+        Title/category matching is deliberately absent. When several venue
+        milestones name an event, a direct primary-event link wins, then the
+        earliest occurrence makes the choice deterministic and auditable.
+        """
+        linked: dict[str, list[KalshiMilestone]] = defaultdict(list)
+        for milestone in milestones:
+            for event_ticker in milestone.related_event_tickers:
+                linked[event_ticker].append(milestone)
+        enriched: list[PlatformContract] = []
+        for contract in contracts:
+            if contract.venue != "kalshi":
+                enriched.append(contract)
+                continue
+            candidates = linked.get(contract.event_id, [])
+            if not candidates:
+                enriched.append(contract)
+                continue
+            milestone = min(
+                candidates,
+                key=lambda item: (
+                    0 if contract.event_id in item.primary_event_tickers else 1,
+                    item.start_time,
+                    item.milestone_id,
+                ),
+            )
+            source = f"kalshi.milestone:{milestone.milestone_id}:start_date"
+            enriched.append(
+                replace(
+                    contract,
+                    occurrence_at=milestone.start_time,
+                    occurrence_evidence="exact_venue_milestone",
+                    occurrence_sources=(source,),
+                    catalyst_at=milestone.start_time,
+                    catalyst_evidence="exact_venue_milestone",
+                    catalyst_sources=(source,),
+                    catalyst_conflict_seconds=(
+                        abs((contract.catalyst_at - milestone.start_time).total_seconds())
+                        if contract.catalyst_at is not None
+                        else None
+                    ),
+                )
+            )
+        return enriched
 
     @staticmethod
     def _title_tokens(value: str) -> set[str]:

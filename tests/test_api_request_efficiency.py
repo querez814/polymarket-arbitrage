@@ -1,11 +1,11 @@
 import asyncio
-from datetime import timezone
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 
 from kalshi_client.api import KalshiClient
-from kalshi_client.models import KalshiMarket
+from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.api import OrderBookNormalizationError, PolymarketClient
 from polymarket_client.models import Market, TokenType
 
@@ -567,3 +567,68 @@ def test_kalshi_event_market_list_uses_ttl_cache():
 
     assert calls == 1
     assert first[0].ticker == second[0].ticker == "KX-1"
+
+
+def test_kalshi_milestone_reader_stops_on_repeated_cursor_and_parses_utc():
+    async def exercise():
+        client = KalshiClient()
+        calls = []
+
+        async def page(**kwargs):
+            calls.append(kwargs)
+            return [
+                KalshiMilestone(
+                    milestone_id="speech",
+                    title="President speaks",
+                    category="Politics",
+                    milestone_type="political_speech",
+                    start_time=datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc),
+                    end_time=None,
+                    related_event_tickers=("KXSPEECH",),
+                    primary_event_tickers=("KXSPEECH",),
+                )
+            ], "same-cursor"
+
+        client.list_milestones = page
+        milestones = await client.list_all_milestones(
+            max_pages=4, max_milestones=10, related_event_ticker="KXSPEECH"
+        )
+        return calls, milestones
+
+    calls, milestones = asyncio.run(exercise())
+
+    assert len(calls) == 2
+    assert calls[0]["related_event_ticker"] == "KXSPEECH"
+    assert milestones[0].start_time.tzinfo == timezone.utc
+
+
+def test_kalshi_milestone_parser_rejects_naive_or_unlinked_records():
+    valid = KalshiClient._parse_milestone(
+        {
+            "id": "speech",
+            "title": "President speaks",
+            "category": "Politics",
+            "type": "political_speech",
+            "start_date": "2026-08-10T22:30:00Z",
+            "related_event_tickers": ["KXSPEECH"],
+            "primary_event_tickers": ["KXSPEECH"],
+        }
+    )
+    assert valid is not None
+    assert valid.start_time.tzinfo == timezone.utc
+    assert KalshiClient._parse_milestone(
+        {
+            "id": "bad-clock",
+            "title": "President speaks",
+            "start_date": "2026-08-10T22:30:00",
+            "related_event_tickers": ["KXSPEECH"],
+        }
+    ) is None
+    assert KalshiClient._parse_milestone(
+        {
+            "id": "unlinked",
+            "title": "President speaks",
+            "start_date": "2026-08-10T22:30:00Z",
+            "related_event_tickers": [],
+        }
+    ) is None

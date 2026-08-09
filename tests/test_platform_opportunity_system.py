@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from kalshi_client.models import KalshiMarket
+from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.models import (
     Market,
     OrderBook,
@@ -312,6 +312,87 @@ def test_kalshi_expected_expiration_drives_catalyst_not_later_legal_close(tmp_pa
     assert contract.close_time == legal_close
     assert contract.catalyst_at == expected
     assert contract.catalyst_sources == ("kalshi.expiration_time",)
+
+
+def test_kalshi_exact_milestone_sets_occurrence_not_settlement_deadline(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(max_events=1),
+    )
+    occurrence = NOW + timedelta(hours=2)
+    settlement_deadline = NOW + timedelta(days=30)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXTRUMPMENTION-26AUG10-A",
+                "Will Trump mention immigration?",
+                event_ticker="KXTRUMPMENTION-26AUG10",
+                close_time=settlement_deadline,
+            )
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="milestone-mention",
+                title="Trump remarks",
+                category="Politics",
+                milestone_type="political_speech",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=45),
+                related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                source_id="kalshi",
+            )
+        ],
+        observed_at=NOW,
+    )
+
+    contract = system.contracts[0]
+    assert contract.close_time == settlement_deadline
+    assert contract.occurrence_at == occurrence
+    assert contract.occurrence_evidence == "exact_venue_milestone"
+    assert contract.occurrence_sources == (
+        "kalshi.milestone:milestone-mention:start_date",
+    )
+    assert contract.catalyst_at == occurrence
+    assert [lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)] == [
+        "KXTRUMPMENTION-26AUG10"
+    ]
+
+
+def test_kalshi_unrelated_milestone_cannot_schedule_contract(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    expiration = NOW + timedelta(days=7)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXBNB-26-A",
+                "Will BNB be above $700?",
+                event_ticker="KXBNB-26",
+                close_time=expiration,
+            )
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="ppi",
+                title="PPI release",
+                category="Economics",
+                milestone_type="economic_release",
+                start_time=NOW + timedelta(minutes=30),
+                end_time=None,
+                related_event_tickers=("KXPPI-26AUG",),
+                primary_event_tickers=("KXPPI-26AUG",),
+            )
+        ],
+        observed_at=NOW,
+    )
+
+    contract = system.contracts[0]
+    assert contract.occurrence_at is None
+    assert contract.catalyst_at == expiration
 
 
 def test_only_machine_checkable_structure_authorizes_relative_value(tmp_path):
