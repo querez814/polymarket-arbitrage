@@ -34,6 +34,7 @@ from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.political_sizing_scenarios import required_political_sizing_scenarios
 from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
+    PoliticalSizingExitEvidence,
     PoliticalSizingOpportunity,
     evaluate_political_sizing_scenario,
 )
@@ -162,6 +163,61 @@ def test_read_only_sizing_enforces_occurrence_overlap_without_changing_evidence(
     ]
     assert report.allocations[1].saturation_reason == "occurrence_overlap"
     assert second.entry_replay_hash == "hash:second"
+
+
+def test_read_only_sizing_applies_sealed_exit_evidence_without_store_mutation(tmp_path):
+    """Every scenario uses the same exit replay and releases only its own capital."""
+    store = PlatformOpportunityStore(tmp_path / "sizing-exit.db")
+    before = store._connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+    ).fetchall()
+    entry = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:sealed",
+        signal_id="signal:sealed",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:entry",
+        event_id="event-a",
+        milestone_id="milestone-a",
+        contract_id="contract-a",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+    )
+    exit_evidence = PoliticalSizingExitEvidence(
+        evidence_cohort_id="evidence:sealed",
+        contract_id="contract-a",
+        exit_replay_sequence=3,
+        exit_replay_hash="hash:exit",
+        trigger="event_boundary",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.55", Decimal("100")),),
+    )
+
+    reports = [
+        evaluate_political_sizing_scenario(
+            scenario=scenario,
+            opportunities=(entry,),
+            exit_evidence=(exit_evidence,),
+            starting_cash_micros=1_000_000_000,
+        )
+        for scenario in required_political_sizing_scenarios()
+    ]
+
+    assert all(report.capital_used_micros == 0 for report in reports)
+    assert all(report.realized_pnl_micros == 950_000 for report in reports)
+    assert all(
+        report.exits[0].exit_replay_hash == "hash:exit"
+        and report.exits[0].trigger == "event_boundary"
+        and report.exits[0].executable_quantity == 10
+        for report in reports
+    )
+    assert (
+        store._connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+        == before
+    )
 
 
 def _authoritative_kalshi_fee() -> dict[str, str | int]:

@@ -68,6 +68,40 @@ class PoliticalSizingOpportunity:
 
 
 @dataclass(frozen=True)
+class PoliticalSizingExitEvidence:
+    """Sealed exit evidence shared verbatim by every sizing scenario.
+
+    It deliberately contains the canonical replay identity and the frozen
+    trigger.  Scenario policies may change quantity, but never exit timing,
+    trigger, fee evidence, or displayed depth.
+    """
+
+    evidence_cohort_id: str
+    contract_id: str
+    exit_replay_sequence: int
+    exit_replay_hash: str
+    trigger: str
+    fee_schedule: Mapping[str, Any]
+    levels: tuple[PoliticalSizingDepthLevel, ...]
+
+    def __post_init__(self) -> None:
+        if not all(
+            value
+            for value in (
+                self.evidence_cohort_id,
+                self.contract_id,
+                self.exit_replay_hash,
+                self.trigger,
+            )
+        ):
+            raise ValueError("sealed political sizing exit identity is required")
+        if self.exit_replay_sequence < 1:
+            raise ValueError("political sizing exit replay sequence must be positive")
+        if not self.levels:
+            raise ValueError("political sizing exit requires persisted levels")
+
+
+@dataclass(frozen=True)
 class PoliticalSizingAllocation:
     """One non-mutating scenario allocation or exact rejection."""
 
@@ -83,6 +117,23 @@ class PoliticalSizingAllocation:
 
 
 @dataclass(frozen=True)
+class PoliticalSizingExit:
+    """One hypothetical exit, calculated only from sealed exit evidence."""
+
+    contract_id: str
+    exit_replay_sequence: int
+    exit_replay_hash: str
+    trigger: str
+    requested_quantity: int
+    executable_quantity: int
+    credit_micros: int
+    released_basis_micros: int
+    realized_pnl_micros: int | None
+    remaining_quantity: int
+    saturation_reason: str | None
+
+
+@dataclass(frozen=True)
 class PoliticalSizingScenarioReport:
     """Chronological read-only scenario outcome with no account side effects."""
 
@@ -92,20 +143,23 @@ class PoliticalSizingScenarioReport:
     capital_used_micros: int
     capital_rejected_micros: int
     allocations: tuple[PoliticalSizingAllocation, ...]
+    exits: tuple[PoliticalSizingExit, ...]
+    realized_pnl_micros: int | None
 
 
 def evaluate_political_sizing_scenario(
     *,
     scenario: PoliticalSizingScenario,
     opportunities: Sequence[PoliticalSizingOpportunity],
+    exit_evidence: Sequence[PoliticalSizingExitEvidence] = (),
     starting_cash_micros: int,
     displayed_depth_fraction: Decimal = Decimal("0.10"),
 ) -> PoliticalSizingScenarioReport:
     """Allocate immutable entry evidence chronologically without mutations.
 
-    Positions stay hypothetically open in this entry-only slice.  Consequently
-    the reserve and open-position caps remain consumed until the later
-    exit-evidence fan-out is added; this is conservative and deterministic.
+    Entry and exit evidence are consumed in canonical replay order.  The
+    evaluator is intentionally store-free: it releases hypothetical reserve
+    and reports PnL, but cannot create a control-ledger row or venue request.
     """
     if starting_cash_micros < 0:
         raise ValueError("political sizing starting cash cannot be negative")
@@ -118,13 +172,125 @@ def evaluate_political_sizing_scenario(
     cohort_id = opportunities[0].evidence_cohort_id
     if any(item.evidence_cohort_id != cohort_id for item in opportunities):
         raise ValueError("a scenario cannot combine evidence cohorts")
+    if any(item.evidence_cohort_id != cohort_id for item in exit_evidence):
+        raise ValueError("a scenario cannot combine evidence cohorts")
 
     scenario_id = scenario.scenario_id(evidence_cohort_id=cohort_id)
     reserved_micros = 0
     open_contracts: set[str] = set()
     open_occurrences: set[tuple[str, str]] = set()
+    open_positions: dict[str, dict[str, int | str]] = {}
     allocations: list[PoliticalSizingAllocation] = []
-    for evidence in sorted(opportunities, key=lambda item: item.entry_replay_sequence):
+    exits: list[PoliticalSizingExit] = []
+    realized_pnl_micros = 0
+    timeline = sorted(
+        (
+            *((item.entry_replay_sequence, "entry", item) for item in opportunities),
+            *((item.exit_replay_sequence, "exit", item) for item in exit_evidence),
+        ),
+        key=lambda item: (item[0], item[1]),
+    )
+    for _, kind, evidence in timeline:
+        if kind == "exit":
+            assert isinstance(evidence, PoliticalSizingExitEvidence)
+            position = open_positions.get(evidence.contract_id)
+            requested = sum(
+                int(level.displayed_size * displayed_depth_fraction)
+                for level in evidence.levels
+            )
+            if position is None:
+                exits.append(
+                    PoliticalSizingExit(
+                        contract_id=evidence.contract_id,
+                        exit_replay_sequence=evidence.exit_replay_sequence,
+                        exit_replay_hash=evidence.exit_replay_hash,
+                        trigger=evidence.trigger,
+                        requested_quantity=requested,
+                        executable_quantity=0,
+                        credit_micros=0,
+                        released_basis_micros=0,
+                        realized_pnl_micros=None,
+                        remaining_quantity=0,
+                        saturation_reason="no_open_position",
+                    )
+                )
+                continue
+            remaining_quantity = int(position["quantity"])
+            level_economics = []
+            for level in evidence.levels:
+                eligible = min(
+                    int(level.displayed_size * displayed_depth_fraction),
+                    remaining_quantity,
+                )
+                if eligible <= 0:
+                    continue
+                economics = PoliticalExperimentalPaperLedger.exit_economics(
+                    quantity=eligible,
+                    displayed_bid=level.displayed_ask,
+                    fee_schedule=dict(evidence.fee_schedule),
+                )
+                level_economics.append((level.displayed_ask, economics))
+                remaining_quantity -= eligible
+                if remaining_quantity == 0:
+                    break
+            executable = sum(item.quantity for _, item in level_economics)
+            if executable:
+                _, balance_change = (
+                    PoliticalExperimentalPaperLedger._order_level_payloads(
+                        levels=level_economics, direction="exit"
+                    )
+                )
+                basis = int(position["basis_micros"])
+                quantity = int(position["quantity"])
+                released = basis * executable // quantity
+                pnl = balance_change - released
+                position["quantity"] = quantity - executable
+                position["basis_micros"] = basis - released
+                reserved_micros -= released
+                realized_pnl_micros += pnl
+                if int(position["quantity"]) == 0:
+                    open_contracts.remove(evidence.contract_id)
+                    open_occurrences.remove(
+                        (str(position["milestone_id"]), str(position["base_lane"]))
+                    )
+                    del open_positions[evidence.contract_id]
+                exits.append(
+                    PoliticalSizingExit(
+                        contract_id=evidence.contract_id,
+                        exit_replay_sequence=evidence.exit_replay_sequence,
+                        exit_replay_hash=evidence.exit_replay_hash,
+                        trigger=evidence.trigger,
+                        requested_quantity=requested,
+                        executable_quantity=executable,
+                        credit_micros=balance_change,
+                        released_basis_micros=released,
+                        realized_pnl_micros=pnl,
+                        remaining_quantity=remaining_quantity,
+                        saturation_reason=(
+                            None
+                            if executable == requested
+                            else "insufficient_exit_depth"
+                        ),
+                    )
+                )
+            else:
+                exits.append(
+                    PoliticalSizingExit(
+                        contract_id=evidence.contract_id,
+                        exit_replay_sequence=evidence.exit_replay_sequence,
+                        exit_replay_hash=evidence.exit_replay_hash,
+                        trigger=evidence.trigger,
+                        requested_quantity=requested,
+                        executable_quantity=0,
+                        credit_micros=0,
+                        released_basis_micros=0,
+                        realized_pnl_micros=None,
+                        remaining_quantity=remaining_quantity,
+                        saturation_reason="insufficient_exit_depth",
+                    )
+                )
+            continue
+        assert isinstance(evidence, PoliticalSizingOpportunity)
         requested = sum(
             int(level.displayed_size * displayed_depth_fraction)
             for level in evidence.levels
@@ -222,6 +388,12 @@ def evaluate_political_sizing_scenario(
             reserved_micros += debit
             open_contracts.add(evidence.contract_id)
             open_occurrences.add(occurrence)
+            open_positions[evidence.contract_id] = {
+                "quantity": executable,
+                "basis_micros": debit,
+                "milestone_id": evidence.milestone_id,
+                "base_lane": evidence.base_lane,
+            }
             allocations.append(
                 _allocation(
                     scenario_id,
@@ -252,6 +424,8 @@ def evaluate_political_sizing_scenario(
         capital_used_micros=reserved_micros,
         capital_rejected_micros=0,
         allocations=tuple(allocations),
+        exits=tuple(exits),
+        realized_pnl_micros=(realized_pnl_micros if exits else None),
     )
 
 
