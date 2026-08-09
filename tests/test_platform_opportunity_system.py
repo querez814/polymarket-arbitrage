@@ -1178,6 +1178,100 @@ def test_political_paper_partial_forced_exit_latches_liquidation_until_closed(tm
     assert ledger.snapshot()["counts"]["open"] == 0
 
 
+def test_forced_exit_inside_minimum_hold_is_durable_and_retries_later(tmp_path):
+    """A forced trigger before two seconds is evidence, not a worker exception."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:hold")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    entry_book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.39, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    signal = store.record_replay_observation(
+        cohort_id="cohort:hold",
+        contract_id="kalshi:KXHOLD",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:hold",
+        replay_sequence=signal["event"]["sequence"],
+        event_id="event-hold",
+        milestone_id="milestone-hold",
+        contract_id="kalshi:KXHOLD",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=signal["state_hash"],
+        fee_hash=signal["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    fill = store.record_replay_observation(
+        cohort_id="cohort:hold",
+        contract_id="kalshi:KXHOLD",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+    assert (
+        ledger.process_observation(replay_sequence=fill["event"]["sequence"])[0][
+            "outcome"
+        ]
+        == "filled"
+    )
+
+    forced_book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.30, 100]], "asks": [[0.32, 1_000]]},
+        "no": {"bids": [[0.67, 100]], "asks": [[0.69, 10]]},
+    }
+    early = store.record_replay_observation(
+        cohort_id="cohort:hold",
+        contract_id="kalshi:KXHOLD",
+        normalized_book=forced_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=2),
+        request_started_at=NOW + timedelta(seconds=1, milliseconds=500),
+        received_at=NOW + timedelta(seconds=2),
+    )
+    [no_exit] = ledger.process_observation(replay_sequence=early["event"]["sequence"])
+    assert no_exit["outcome"] == "no_exit"
+    assert no_exit["reason"] == "minimum_hold_not_elapsed"
+    assert no_exit["payload"]["exit_trigger"] == "hard_stop_net_return_minus_0.05"
+    [position] = ledger.snapshot()["open_positions"]
+    assert position["liquidation_trigger"] == "hard_stop_net_return_minus_0.05"
+
+    later = store.record_replay_observation(
+        cohort_id="cohort:hold",
+        contract_id="kalshi:KXHOLD",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=4),
+        request_started_at=NOW + timedelta(seconds=3),
+        received_at=NOW + timedelta(seconds=4),
+    )
+    [closed] = ledger.process_observation(replay_sequence=later["event"]["sequence"])
+    assert closed["outcome"] == "closed"
+    assert closed["payload"]["economics"]["exit_trigger"] == (
+        "hard_stop_net_return_minus_0.05"
+    )
+
+
 def test_forced_exit_with_stale_evidence_is_durable_no_exit_and_stays_latched(tmp_path):
     """A failed forced valuation cannot hide an open position or clear its trigger."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")

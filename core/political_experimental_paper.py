@@ -889,7 +889,18 @@ class PoliticalExperimentalPaperLedger:
         received_at = datetime.fromisoformat(str(event["received_at"]))
         opened_at = datetime.fromisoformat(str(position["opened_at"]))
         if received_at < opened_at + timedelta(seconds=float(minimum_hold_seconds)):
-            raise ValueError("political paper minimum hold has not elapsed")
+            # A frozen forced-exit condition can arrive before the model's
+            # minimum hold window.  That is ordinary, replay-backed evidence
+            # rather than a worker failure: preserve the liquidation trigger
+            # and let the next canonical observation retry it after the hold.
+            return self.store._record_political_experimental_no_exit(
+                cohort_id=self.cohort_id,
+                position_id=position_id,
+                replay_sequence=replay_sequence,
+                attempted_at=received_at,
+                reason="minimum_hold_not_elapsed",
+                trigger=trigger,
+            )
         try:
             book = self.store.replay_book_state(str(event["state_hash"]))
             fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
