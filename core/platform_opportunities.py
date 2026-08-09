@@ -672,6 +672,22 @@ class _BookFeatures:
     seconds_to_catalyst: float = 0.0
 
 
+@dataclass(frozen=True)
+class ReplayObservationToken:
+    """Opaque, cohort-scoped authority to make one replay-backed decision.
+
+    It intentionally carries no book, fee, clock, contract, or lock facts.
+    The decision boundary reloads those facts from its durable observation.
+    """
+
+    cohort_id: str
+    sequence: int
+
+    def __post_init__(self) -> None:
+        if not self.cohort_id.strip() or self.sequence <= 0:
+            raise ValueError("replay observation token is invalid")
+
+
 LaneAuthority = Literal["disabled", "forward_only_unvalidated"]
 _LANE_AUTHORITIES = frozenset(("disabled", "forward_only_unvalidated"))
 _DEPTH_IMBALANCE_REACTION_LANE = "depth_imbalance_reaction_experimental_v1"
@@ -907,6 +923,36 @@ class PlatformOpportunitySystem:
         return OrderBook(
             market_id=market_id, yes=token(TokenType.YES), no=token(TokenType.NO)
         )
+
+    def observe_replay_token(self, token: ReplayObservationToken) -> ObservationResult:
+        """Score only the canonical book and fee named by a durable token."""
+        if token.cohort_id != self.cohort_id:
+            raise ValueError("replay token belongs to another cohort")
+        event = self.store.replay_observation_event(
+            cohort_id=token.cohort_id, sequence=token.sequence
+        )
+        contract_id = str(event["contract_id"])
+        book = self.replay_book_for_state_hash(
+            str(event["state_hash"]), market_id=contract_id
+        )
+        fee = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        try:
+            schedule = VenueFeeSchedule(
+                venue=str(fee["venue"]),
+                fee_type=str(fee["fee_type"]),
+                rate=float(fee["rate"]),
+                exponent=float(fee["exponent"]),
+                multiplier=float(fee["multiplier"]),
+                observed_at=datetime.fromisoformat(str(fee["observed_at"])),
+                source=str(fee["source"]),
+            )
+            received_at = datetime.fromisoformat(str(event["received_at"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "canonical replay token has invalid fee or timing"
+            ) from exc
+        self.set_fee_schedule(contract_id, schedule)
+        return self.observe_book(contract_id, book, observed_at=received_at)
 
     def record_successful_observation(
         self,

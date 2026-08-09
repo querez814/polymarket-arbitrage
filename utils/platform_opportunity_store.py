@@ -1854,6 +1854,25 @@ class PlatformOpportunityStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def replay_observation_event(
+        self, *, cohort_id: str, sequence: int
+    ) -> dict[str, Any]:
+        """Load one durable replay row by its cohort-local decision sequence."""
+        if sequence <= 0:
+            raise ValueError("replay sequence must be positive")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
+                "request_started_at, received_at, book_received_at, book_latency_ms, "
+                "fee_request_started_at, fee_received_at, fee_latency_ms, venue_timestamp, "
+                "timestamp_provenance FROM platform_replay_observation_events "
+                "WHERE cohort_id = ? AND sequence = ?",
+                (cohort_id, sequence),
+            ).fetchone()
+        if row is None:
+            raise ValueError("replay observation token does not exist")
+        return dict(row)
+
     def upsert_contracts(
         self,
         contracts: Iterable[Any],

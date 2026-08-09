@@ -25,12 +25,13 @@ async def test_worker_drains_queued_observations_before_shutdown():
     class System:
         def __init__(self):
             self.processed = []
+            self.cohort_id = "cohort:test"
 
-        def set_fee_schedule(self, contract_id, schedule):
-            pass
+        def persist_replay_observation(self, contract_id, book, **kwargs):
+            return {"event": {"sequence": len(self.processed) + 1}}
 
-        def observe_book(self, contract_id, book, *, observed_at):
-            self.processed.append(contract_id)
+        def observe_replay_token(self, token):
+            self.processed.append(token.sequence)
 
         def dashboard_summary(self):
             return {}
@@ -57,7 +58,7 @@ async def test_worker_drains_queued_observations_before_shutdown():
 
     await worker.stop()
 
-    assert system.processed == ["polymarket:0", "polymarket:1", "polymarket:2"]
+    assert system.processed == [1, 2, 3]
     assert worker.processed == 3
 
 

@@ -15,6 +15,7 @@ from core.platform_opportunities import (
     CatalogRefresh,
     CatalystReference,
     PlatformOpportunitySystem,
+    ReplayObservationToken,
     VenueFeeSchedule,
 )
 
@@ -145,50 +146,23 @@ class PlatformOpportunityWorker:
                 break
             try:
                 async with self._operation_lock:
-                    self.system.set_fee_schedule(
-                        envelope.contract_id, envelope.fee_schedule
-                    )
-                    persist_replay = getattr(
-                        self.system, "persist_replay_observation", None
-                    )
-                    scored_book = envelope.book
-                    if persist_replay is not None:
-                        replay_evidence = await self._run_sync(
-                            persist_replay,
-                            envelope.contract_id,
-                            envelope.book,
-                            observed_at=envelope.observed_at,
-                            request_started_at=envelope.request_started_at,
-                            received_at=envelope.received_at,
-                            fee_schedule=envelope.fee_schedule,
-                            book_received_at=envelope.book_received_at,
-                            fee_request_started_at=envelope.fee_request_started_at,
-                            fee_received_at=envelope.fee_received_at,
-                        )
-                        replay_book = getattr(
-                            self.system, "replay_book_for_state_hash", None
-                        )
-                        if replay_book is not None:
-                            scored_book = await self._run_sync(
-                                replay_book,
-                                replay_evidence["state_hash"],
-                                market_id=envelope.book.market_id,
-                            )
-                    await self._run_sync(
-                        self.system.observe_book,
+                    replay_evidence = await self._run_sync(
+                        self.system.persist_replay_observation,
                         envelope.contract_id,
-                        scored_book,
+                        envelope.book,
                         observed_at=envelope.observed_at,
+                        request_started_at=envelope.request_started_at,
+                        received_at=envelope.received_at,
+                        fee_schedule=envelope.fee_schedule,
+                        book_received_at=envelope.book_received_at,
+                        fee_request_started_at=envelope.fee_request_started_at,
+                        fee_received_at=envelope.fee_received_at,
                     )
-                    record = getattr(self.system, "record_successful_observation", None)
-                    if record is not None and persist_replay is None:
-                        await self._run_sync(
-                            record,
-                            envelope.contract_id,
-                            observed_at=envelope.observed_at,
-                            request_started_at=envelope.request_started_at,
-                            received_at=envelope.received_at,
-                        )
+                    token = ReplayObservationToken(
+                        cohort_id=self.system.cohort_id,
+                        sequence=int(replay_evidence["event"]["sequence"]),
+                    )
+                    await self._run_sync(self.system.observe_replay_token, token)
                 self.processed += 1
             except asyncio.CancelledError:
                 raise
