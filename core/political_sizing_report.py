@@ -142,9 +142,15 @@ class PoliticalSizingScenarioReport:
     evidence_cohort_id: str
     capital_used_micros: int
     capital_rejected_micros: int
+    unused_eligible_quantity: int
+    peak_capital_used_micros: int
+    capital_utilization_ratio: Decimal | None
     allocations: tuple[PoliticalSizingAllocation, ...]
     exits: tuple[PoliticalSizingExit, ...]
     realized_pnl_micros: int | None
+    open_unrealized_pnl_micros: int | None
+    open_valuation_complete: bool
+    maximum_drawdown_micros: int | None
 
 
 def evaluate_political_sizing_scenario(
@@ -183,6 +189,12 @@ def evaluate_political_sizing_scenario(
     allocations: list[PoliticalSizingAllocation] = []
     exits: list[PoliticalSizingExit] = []
     realized_pnl_micros = 0
+    peak_capital_used_micros = 0
+    capital_rejected_micros = 0
+    unused_eligible_quantity = 0
+    peak_realized_pnl_micros = 0
+    maximum_drawdown_micros = 0
+    completed_exit = False
     timeline = sorted(
         (
             *((item.entry_replay_sequence, "entry", item) for item in opportunities),
@@ -248,6 +260,14 @@ def evaluate_political_sizing_scenario(
                 position["basis_micros"] = basis - released
                 reserved_micros -= released
                 realized_pnl_micros += pnl
+                completed_exit = True
+                peak_realized_pnl_micros = max(
+                    peak_realized_pnl_micros, realized_pnl_micros
+                )
+                maximum_drawdown_micros = max(
+                    maximum_drawdown_micros,
+                    peak_realized_pnl_micros - realized_pnl_micros,
+                )
                 if int(position["quantity"]) == 0:
                     open_contracts.remove(evidence.contract_id)
                     open_occurrences.remove(
@@ -386,6 +406,7 @@ def evaluate_political_sizing_scenario(
             debit = -balance_change
             executable = sum(item.quantity for _, item in level_economics)
             reserved_micros += debit
+            peak_capital_used_micros = max(peak_capital_used_micros, reserved_micros)
             open_contracts.add(evidence.contract_id)
             open_occurrences.add(occurrence)
             open_positions[evidence.contract_id] = {
@@ -417,16 +438,80 @@ def evaluate_political_sizing_scenario(
                     "capital_or_position_cap",
                 )
             )
+    unused_eligible_quantity = sum(
+        allocation.unused_eligible_quantity for allocation in allocations
+    )
+    capital_rejected_micros = sum(
+        max(
+            0,
+            _requested_entry_debit(
+                evidence=next(
+                    item
+                    for item in opportunities
+                    if item.signal_id == allocation.signal_id
+                ),
+                displayed_depth_fraction=displayed_depth_fraction,
+            )
+            - allocation.capital_used_micros,
+        )
+        for allocation in allocations
+    )
+    utilization_cap = (
+        starting_cash_micros
+        if scenario.total_reserved_cap is None
+        else min(
+            starting_cash_micros,
+            int(scenario.total_reserved_cap * Decimal("1000000")),
+        )
+    )
     return PoliticalSizingScenarioReport(
         scenario_id=scenario_id,
         scenario_name=scenario.name,
         evidence_cohort_id=cohort_id,
         capital_used_micros=reserved_micros,
-        capital_rejected_micros=0,
+        capital_rejected_micros=capital_rejected_micros,
+        unused_eligible_quantity=unused_eligible_quantity,
+        peak_capital_used_micros=peak_capital_used_micros,
+        capital_utilization_ratio=(
+            None
+            if utilization_cap == 0
+            else Decimal(peak_capital_used_micros) / Decimal(utilization_cap)
+        ),
         allocations=tuple(allocations),
         exits=tuple(exits),
-        realized_pnl_micros=(realized_pnl_micros if exits else None),
+        realized_pnl_micros=(realized_pnl_micros if completed_exit else None),
+        open_unrealized_pnl_micros=None,
+        open_valuation_complete=not open_positions,
+        maximum_drawdown_micros=(maximum_drawdown_micros if completed_exit else None),
     )
+
+
+def _requested_entry_debit(
+    *,
+    evidence: PoliticalSizingOpportunity,
+    displayed_depth_fraction: Decimal,
+) -> int:
+    """Quote all eligible persisted depth with the ledger's order rounding."""
+    economics = []
+    for level in evidence.levels:
+        quantity = int(level.displayed_size * displayed_depth_fraction)
+        if quantity > 0:
+            economics.append(
+                (
+                    level.displayed_ask,
+                    PoliticalExperimentalPaperLedger.entry_economics(
+                        quantity=quantity,
+                        displayed_ask=level.displayed_ask,
+                        fee_schedule=dict(evidence.fee_schedule),
+                    ),
+                )
+            )
+    if not economics:
+        return 0
+    _, balance_change = PoliticalExperimentalPaperLedger._order_level_payloads(
+        levels=economics, direction="entry"
+    )
+    return -balance_change
 
 
 def _largest_affordable_quantity(

@@ -114,6 +114,12 @@ def test_read_only_sizing_fans_identical_sealed_evidence_without_store_mutation(
     )
     assert reports[0].allocations[0].executable_quantity == 10
     assert reports[-1].allocations[0].executable_quantity == 10
+    assert reports[0].realized_pnl_micros is None
+    assert reports[0].open_unrealized_pnl_micros is None
+    assert reports[0].open_valuation_complete is False
+    assert reports[0].maximum_drawdown_micros is None
+    assert reports[0].peak_capital_used_micros == 4_270_000
+    assert reports[0].capital_utilization_ratio == Decimal("0.0427")
     assert (
         store._connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
@@ -206,6 +212,9 @@ def test_read_only_sizing_applies_sealed_exit_evidence_without_store_mutation(tm
 
     assert all(report.capital_used_micros == 0 for report in reports)
     assert all(report.realized_pnl_micros == 950_000 for report in reports)
+    assert all(report.open_valuation_complete for report in reports)
+    assert all(report.open_unrealized_pnl_micros is None for report in reports)
+    assert all(report.maximum_drawdown_micros == 0 for report in reports)
     assert all(
         report.exits[0].exit_replay_hash == "hash:exit"
         and report.exits[0].trigger == "event_boundary"
@@ -218,6 +227,36 @@ def test_read_only_sizing_applies_sealed_exit_evidence_without_store_mutation(tm
         ).fetchall()
         == before
     )
+
+
+def test_read_only_sizing_reports_cap_rejection_and_unused_eligible_depth():
+    """A cap-limited scenario distinguishes unallocated depth from used capital."""
+    opportunity = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:sealed",
+        signal_id="signal:cap-limited",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:cap-limited",
+        event_id="event-a",
+        milestone_id="milestone-a",
+        contract_id="contract-a",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("1000")),),
+    )
+
+    report = evaluate_political_sizing_scenario(
+        scenario=required_political_sizing_scenarios()[0],
+        opportunities=(opportunity,),
+        starting_cash_micros=1_000_000_000,
+    )
+
+    allocation = report.allocations[0]
+    assert allocation.requested_quantity == 100
+    assert 0 < allocation.executable_quantity < allocation.requested_quantity
+    assert report.unused_eligible_quantity == allocation.unused_eligible_quantity
+    assert report.capital_rejected_micros > 0
+    assert report.peak_capital_used_micros == report.capital_used_micros
 
 
 def _authoritative_kalshi_fee() -> dict[str, str | int]:
