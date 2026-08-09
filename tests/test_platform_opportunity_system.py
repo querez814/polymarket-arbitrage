@@ -1112,6 +1112,38 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     assert counts["store_bytes"] >= counts["captured_bytes"]
 
 
+@pytest.mark.parametrize(
+    "level",
+    (
+        [True, 1],
+        [0.40, True],
+        [0.0, 1],
+        [1.0, 1],
+        [-0.01, 1],
+        [0.40, 0],
+        [0.40, -1],
+        [float("inf"), 1],
+        [0.40, float("nan")],
+        ["0.40", 1],
+    ),
+)
+def test_replay_book_validation_rejects_malformed_binary_levels_before_hashing(
+    tmp_path, level
+):
+    """Only finite, non-boolean binary prices and positive numeric sizes hash."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [level], "asks": [[0.60, 1]]},
+        "no": {"bids": [[0.40, 1]], "asks": [[0.60, 1]]},
+    }
+
+    with pytest.raises(ValueError):
+        store.record_normalized_book_state(normalized_book=book)
+
+    assert store.replay_evidence_counts()["book_states"] == 0
+
+
 def test_replay_payload_decode_rejects_a_tampered_hash_addressed_book(tmp_path):
     """A row addressed by a digest cannot replay altered normalized depth."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")

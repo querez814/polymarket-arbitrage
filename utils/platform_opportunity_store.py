@@ -1460,17 +1460,24 @@ class PlatformOpportunityStore:
                         if (
                             not isinstance(level, list)
                             or len(level) != 2
-                            or not all(isinstance(item, (int, float)) for item in level)
+                            or not all(
+                                isinstance(item, (int, float))
+                                and not isinstance(item, bool)
+                                for item in level
+                            )
                         ):
                             raise ValueError(
                                 "normalized book levels must be numeric pairs"
                             )
                         price, size = float(level[0]), float(level[1])
-                        if not all(
-                            math.isfinite(item) and item > 0 for item in (price, size)
+                        if not (
+                            math.isfinite(price)
+                            and 0 < price < 1
+                            and math.isfinite(size)
+                            and size > 0
                         ):
                             raise ValueError(
-                                "normalized book levels must be finite positive"
+                                "normalized book levels require binary prices and positive sizes"
                             )
                         if prior is not None and (
                             price > prior if descending else price < prior
