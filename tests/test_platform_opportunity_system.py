@@ -402,6 +402,82 @@ def test_political_pending_signal_rejects_unproven_provenance_and_id_collision(
         )
 
 
+def test_political_paper_ttl_sweeper_durably_consumes_expired_signal_on_restart(
+    tmp_path,
+):
+    """A missing later book becomes one durable terminal no-fill at TTL."""
+    path = tmp_path / "opportunities.db"
+    store = PlatformOpportunityStore(path)
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:ttl")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    replay = store.record_replay_observation(
+        cohort_id="cohort:ttl",
+        contract_id="kalshi:KXTTL",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.51, 10]], "asks": [[0.52, 10]]},
+            "no": {"bids": [[0.48, 10]], "asks": [[0.49, 10]]},
+        },
+        fee_schedule={"schema_version": 1, "venue": "kalshi", "fee_type": "none"},
+        lock_phase="hot",
+        observed_at=NOW + timedelta(milliseconds=100),
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    expires_at = NOW + timedelta(seconds=10)
+    assert ledger.record_pending_signal(
+        signal_id="signal:ttl",
+        replay_sequence=replay["event"]["sequence"],
+        event_id="event-1",
+        milestone_id="milestone-1",
+        contract_id="kalshi:KXTTL",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=expires_at,
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=replay["state_hash"],
+        fee_hash=replay["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+
+    assert ledger.expire_pending(as_of=expires_at - timedelta(microseconds=1)) == []
+    expired = ledger.expire_pending(as_of=expires_at)
+    assert expired == [
+        {
+            "signal_id": "signal:ttl",
+            "replay_sequence": 1,
+            "reason": "ttl_expired_without_later_book",
+            "payload": {
+                "replay_sequence": 1,
+                "expires_at": expires_at.isoformat(),
+                "expired_as_of": expires_at.isoformat(),
+            },
+        }
+    ]
+    restarted = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(path), cohort_id="cohort:ttl"
+    )
+    assert restarted.expire_pending(as_of=expires_at + timedelta(minutes=1)) == []
+    assert (
+        restarted.store.political_experimental_pending_signals(cohort_id="cohort:ttl")
+        == []
+    )
+    assert restarted.resolve_pending_signal(
+        signal_id="signal:ttl",
+        replay_sequence=1,
+        attempted_at=expires_at + timedelta(minutes=1),
+    ) == {
+        "outcome": "no_fill",
+        "reason": "ttl_expired_without_later_book",
+        "idempotent": True,
+        "payload": expired[0]["payload"],
+    }
+
+
 def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp_path):
     """The signal book cannot fund a fill; the next causal book can."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")

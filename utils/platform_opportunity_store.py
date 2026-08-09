@@ -678,14 +678,18 @@ class PlatformOpportunityStore:
     def political_experimental_pending_signals(
         self, *, cohort_id: str
     ) -> list[dict[str, Any]]:
-        """Read pending causal signals in durable signal-sequence order."""
+        """Read only unconsumed causal signals in durable sequence order."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT signal_id, replay_sequence, event_id, milestone_id, contract_id, side, "
-                "base_lane, phase, signal_request_started_at, signal_received_at, expires_at, "
-                "model_version, config_hash, state_hash, fee_hash, features_json "
-                "FROM political_experimental_pending_signals WHERE cohort_id = ? "
-                "ORDER BY replay_sequence, signal_id",
+                "SELECT p.signal_id, p.replay_sequence, p.event_id, p.milestone_id, "
+                "p.contract_id, p.side, p.base_lane, p.phase, p.signal_request_started_at, "
+                "p.signal_received_at, p.expires_at, p.model_version, p.config_hash, "
+                "p.state_hash, p.fee_hash, p.features_json "
+                "FROM political_experimental_pending_signals AS p "
+                "LEFT JOIN political_experimental_fill_attempts AS f "
+                "ON f.signal_id = p.signal_id "
+                "WHERE p.cohort_id = ? AND f.signal_id IS NULL "
+                "ORDER BY p.replay_sequence, p.signal_id",
                 (cohort_id,),
             ).fetchall()
         return [
@@ -696,6 +700,67 @@ class PlatformOpportunityStore:
             }
             for row in rows
         ]
+
+    def expire_political_experimental_pending_signals(
+        self, *, cohort_id: str, as_of: datetime
+    ) -> list[dict[str, Any]]:
+        """Terminally no-fill every due signal without requiring a later book.
+
+        A signal's replay sequence remains its immutable provenance when no
+        later observation exists.  The expiry attempt itself is timestamped by
+        the sweeper clock and consumes the signal in the same immediate
+        transaction, making retries and restarts idempotent.
+        """
+        as_of_iso = _utc_iso(as_of)
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                rows = connection.execute(
+                    "SELECT p.signal_id, p.replay_sequence, p.expires_at "
+                    "FROM political_experimental_pending_signals AS p "
+                    "LEFT JOIN political_experimental_fill_attempts AS f "
+                    "ON f.signal_id = p.signal_id "
+                    "WHERE p.cohort_id = ? AND f.signal_id IS NULL "
+                    "AND p.expires_at <= ? "
+                    "ORDER BY p.replay_sequence, p.signal_id",
+                    (cohort_id, as_of_iso),
+                ).fetchall()
+                expired: list[dict[str, Any]] = []
+                for row in rows:
+                    signal_id = str(row["signal_id"])
+                    replay_sequence = int(row["replay_sequence"])
+                    payload = {
+                        "replay_sequence": replay_sequence,
+                        "expires_at": str(row["expires_at"]),
+                        "expired_as_of": as_of_iso,
+                    }
+                    connection.execute(
+                        "INSERT INTO political_experimental_fill_attempts "
+                        "(signal_id, cohort_id, replay_sequence, outcome, reason, "
+                        "attempted_at, payload_json) VALUES (?, ?, ?, 'no_fill', ?, ?, ?)",
+                        (
+                            signal_id,
+                            cohort_id,
+                            replay_sequence,
+                            "ttl_expired_without_later_book",
+                            as_of_iso,
+                            _json(payload),
+                        ),
+                    )
+                    expired.append(
+                        {
+                            "signal_id": signal_id,
+                            "replay_sequence": replay_sequence,
+                            "reason": "ttl_expired_without_later_book",
+                            "payload": payload,
+                        }
+                    )
+                connection.commit()
+                return expired
+            except Exception:
+                connection.rollback()
+                raise
 
     def political_experimental_orphan_fill_attempts(
         self, *, cohort_id: str

@@ -258,6 +258,13 @@ class PoliticalExperimentalPaperLedger:
             features=features,
         )
 
+    def expire_pending(self, *, as_of: datetime) -> list[dict[str, Any]]:
+        """Durably expire causal signals whose later-book window has elapsed."""
+        return self.store.expire_political_experimental_pending_signals(
+            cohort_id=self.cohort_id,
+            as_of=as_of,
+        )
+
     def resolve_pending_signal(
         self,
         *,
