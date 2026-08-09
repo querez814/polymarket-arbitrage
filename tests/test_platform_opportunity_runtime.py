@@ -2,9 +2,16 @@ from datetime import datetime, timezone
 
 import pytest
 
-from core.platform_opportunities import VenueFeeSchedule
+from kalshi_client.models import KalshiMarket, KalshiMilestone
+
+from core.platform_opportunities import (
+    PoliticalWatchPolicy,
+    PlatformOpportunitySystem,
+    VenueFeeSchedule,
+)
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
 from polymarket_client.models import OrderBook
+from utils.platform_opportunity_store import PlatformOpportunityStore
 
 
 @pytest.mark.asyncio
@@ -46,3 +53,54 @@ async def test_worker_drains_queued_observations_before_shutdown():
 
     assert system.processed == ["polymarket:0", "polymarket:1", "polymarket:2"]
     assert worker.processed == 3
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_exact_kalshi_milestone_window_in_political_lock(tmp_path):
+    """The real dashboard worker must carry exact milestone evidence to the store."""
+    start = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 10, 23, 15, tzinfo=timezone.utc)
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=1,
+            reviewed_pinned_event_ids=("kalshi:KXTRUMPMENTION-26AUG10",),
+        ),
+    )
+    worker = PlatformOpportunityWorker(system)
+
+    await worker.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            KalshiMarket(
+                ticker="KXTRUMPMENTION-26AUG10-T1",
+                event_ticker="KXTRUMPMENTION-26AUG10",
+                series_ticker="KXTRUMPMENTION",
+                title="Will Trump mention tariffs?",
+                event_title="Trump remarks",
+                category="Politics",
+                volume=1_000,
+                open_interest=500,
+            )
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="trump-remarks",
+                title="Trump remarks",
+                category="Politics",
+                milestone_type="speech",
+                start_time=start,
+                end_time=end,
+                related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                source_id="official-schedule",
+            )
+        ],
+        observed_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+    )
+
+    [lock] = system.store.active_political_event_locks(
+        now=datetime(2026, 8, 9, tzinfo=timezone.utc)
+    )
+    assert lock["event_start_at"] == "2026-08-10T22:30:00+00:00"
+    assert lock["event_end_at"] == "2026-08-10T23:15:00+00:00"

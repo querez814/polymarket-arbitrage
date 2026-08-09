@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Sequence
 
-from kalshi_client.models import KalshiMarket
+from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.models import Market, OrderBook
 
 from core.platform_opportunities import (
@@ -89,6 +89,7 @@ class PlatformOpportunityWorker:
         *,
         polymarket_markets: Sequence[Market],
         kalshi_markets: Sequence[KalshiMarket],
+        kalshi_milestones: Sequence[KalshiMilestone] = (),
         catalyst_references: Sequence[CatalystReference] = (),
         snapshot_complete: bool = True,
         observed_at: datetime,
@@ -98,6 +99,7 @@ class PlatformOpportunityWorker:
                 self.system.refresh_catalog,
                 polymarket_markets=polymarket_markets,
                 kalshi_markets=kalshi_markets,
+                kalshi_milestones=kalshi_milestones,
                 catalyst_references=catalyst_references,
                 snapshot_complete=snapshot_complete,
                 observed_at=observed_at,
