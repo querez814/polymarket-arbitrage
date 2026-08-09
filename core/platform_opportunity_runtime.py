@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Callable, Mapping, Sequence
 
@@ -44,6 +45,11 @@ class PlatformOpportunityWorker:
         self._task: asyncio.Task | None = None
         self._event_queues: dict[str, asyncio.Queue[ReplayObservationToken | None]] = {}
         self._event_tasks: dict[str, asyncio.Task] = {}
+        # These values intentionally describe only the in-process wake-up
+        # queues.  Durable backlog/restart coverage remains the store's
+        # responsibility, so the dashboard never mistakes this for a replay
+        # completeness measurement.
+        self._event_metrics: dict[str, dict[str, object]] = {}
         self._max_event_lanes = max_event_lanes
         self._running = False
         self._on_update = on_update
@@ -187,19 +193,28 @@ class PlatformOpportunityWorker:
         await self._run_queue(self._queue)
 
     async def _run_event_lane(
-        self, queue: asyncio.Queue[ReplayObservationToken | None]
+        self,
+        route_key: str,
+        queue: asyncio.Queue[ReplayObservationToken | None],
     ) -> None:
         """Drain one sealed occurrence in strict local sequence order."""
-        await self._run_queue(queue)
+        await self._run_queue(queue, route_key=route_key)
 
     async def _run_queue(
-        self, queue: asyncio.Queue[ReplayObservationToken | None]
+        self,
+        queue: asyncio.Queue[ReplayObservationToken | None],
+        *,
+        route_key: str | None = None,
     ) -> None:
         while True:
             token = await queue.get()
             if token is None:
                 queue.task_done()
                 break
+            if route_key is not None:
+                self._lane_metric(route_key)["queued_at"].pop(token.sequence, None)
+            started = time.perf_counter()
+            succeeded = False
             try:
                 result = await self._run_sync(self.system.observe_replay_token, token)
                 if self._on_observation is not None:
@@ -213,10 +228,13 @@ class PlatformOpportunityWorker:
                         completed_at=datetime.now(timezone.utc),
                     )
                 self.processed += 1
+                succeeded = True
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.failures += 1
+                if route_key is not None:
+                    self._lane_metric(route_key)["failures"] += 1
                 store = getattr(self.system, "store", None)
                 if store is None:
                     logger.exception(
@@ -243,6 +261,14 @@ class PlatformOpportunityWorker:
                     token.sequence,
                 )
             finally:
+                if route_key is not None:
+                    metric = self._lane_metric(route_key)
+                    elapsed = time.perf_counter() - started
+                    metric["latest_service_seconds"] = elapsed
+                    metric["total_service_seconds"] += elapsed
+                    metric["last_completed_at"] = datetime.now(timezone.utc)
+                    if succeeded:
+                        metric["completed"] += 1
                 queue.task_done()
                 self._publish()
 
@@ -256,36 +282,101 @@ class PlatformOpportunityWorker:
 
     def _event_queue_for(
         self, token: ReplayObservationToken
-    ) -> asyncio.Queue[ReplayObservationToken | None] | None:
+    ) -> tuple[str | None, asyncio.Queue[ReplayObservationToken | None]]:
         route_key = self._route_key(token)
         if route_key is None:
-            return None
+            return None, self._queue
         queue = self._event_queues.get(route_key)
         if queue is not None:
-            return queue
+            return route_key, queue
         if len(self._event_queues) >= self._max_event_lanes:
             raise asyncio.QueueFull("political event-lane capacity exhausted")
         queue = asyncio.Queue(self._queue.maxsize)
         self._event_queues[route_key] = queue
         if self._running:
             self._start_event_task(route_key, queue)
-        return queue
+        return route_key, queue
 
     def _start_event_task(
         self, route_key: str, queue: asyncio.Queue[ReplayObservationToken | None]
     ) -> None:
         if route_key not in self._event_tasks:
             self._event_tasks[route_key] = asyncio.create_task(
-                self._run_event_lane(queue), name=f"platform_opportunity_{route_key}"
+                self._run_event_lane(route_key, queue),
+                name=f"platform_opportunity_{route_key}",
             )
 
     def _enqueue_nowait(self, token: ReplayObservationToken) -> None:
-        queue = self._event_queue_for(token)
-        (self._queue if queue is None else queue).put_nowait(token)
+        route_key, queue = self._event_queue_for(token)
+        try:
+            queue.put_nowait(token)
+        except asyncio.QueueFull:
+            if route_key is not None:
+                self._lane_metric(route_key)["dropped"] += 1
+            raise
+        self._record_lane_assignment(route_key, token)
 
     async def _enqueue(self, token: ReplayObservationToken) -> None:
-        queue = self._event_queue_for(token)
-        await (self._queue if queue is None else queue).put(token)
+        route_key, queue = self._event_queue_for(token)
+        await queue.put(token)
+        self._record_lane_assignment(route_key, token)
+
+    def _lane_metric(self, route_key: str) -> dict[str, object]:
+        return self._event_metrics.setdefault(
+            route_key,
+            {
+                "assigned": 0,
+                "completed": 0,
+                "dropped": 0,
+                "failures": 0,
+                "total_service_seconds": 0.0,
+                "latest_service_seconds": None,
+                "first_assigned_at": None,
+                "last_assigned_at": None,
+                "last_completed_at": None,
+                "queued_at": {},
+            },
+        )
+
+    def _record_lane_assignment(
+        self, route_key: str | None, token: ReplayObservationToken
+    ) -> None:
+        if route_key is None:
+            return
+        now = datetime.now(timezone.utc)
+        metric = self._lane_metric(route_key)
+        metric["assigned"] += 1
+        metric["first_assigned_at"] = metric["first_assigned_at"] or now
+        metric["last_assigned_at"] = now
+        metric["queued_at"][token.sequence] = now
+
+    def _event_lane_telemetry(self) -> dict[str, dict[str, object]]:
+        now = datetime.now(timezone.utc)
+        telemetry: dict[str, dict[str, object]] = {}
+        for route_key, metric in self._event_metrics.items():
+            queued_at = metric["queued_at"]
+            assert isinstance(queued_at, dict)
+            oldest = min(queued_at.values(), default=None)
+            telemetry[route_key] = {
+                "queue_depth": len(queued_at),
+                "oldest_queue_age_seconds": (
+                    None if oldest is None else (now - oldest).total_seconds()
+                ),
+                "assigned": metric["assigned"],
+                "completed": metric["completed"],
+                "dropped": metric["dropped"],
+                "failures": metric["failures"],
+                "total_service_seconds": metric["total_service_seconds"],
+                "latest_service_seconds": metric["latest_service_seconds"],
+                "first_assigned_at": self._iso(metric["first_assigned_at"]),
+                "last_assigned_at": self._iso(metric["last_assigned_at"]),
+                "last_completed_at": self._iso(metric["last_completed_at"]),
+            }
+        return telemetry
+
+    @staticmethod
+    def _iso(value: object) -> str | None:
+        return value.isoformat() if isinstance(value, datetime) else None
 
     @staticmethod
     async def _run_sync(function, /, *args, **kwargs):
@@ -306,5 +397,6 @@ class PlatformOpportunityWorker:
             "processed": self.processed,
             "dropped": self.dropped,
             "failures": self.failures,
+            "event_lanes": self._event_lane_telemetry(),
         }
         self._on_update(payload)

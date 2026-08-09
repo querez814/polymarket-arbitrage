@@ -176,7 +176,10 @@ async def test_worker_occurrence_lane_does_not_starve_another_occurrence():
             return {}
 
     system = System()
-    worker = PlatformOpportunityWorker(system, max_event_lanes=2)
+    updates = []
+    worker = PlatformOpportunityWorker(
+        system, max_event_lanes=2, on_update=updates.append
+    )
     schedule = VenueFeeSchedule(
         "polymarket", "none", 0, 1, 0, datetime.now(timezone.utc), "test"
     )
@@ -199,6 +202,16 @@ async def test_worker_occurrence_lane_does_not_starve_another_occurrence():
     finally:
         system.release_slow.set()
         await worker.stop()
+
+    lanes = updates[-1]["worker"]["event_lanes"]
+    assert set(lanes) == {"occurrence:1", "occurrence:2"}
+    assert all(lane["queue_depth"] == 0 for lane in lanes.values())
+    assert all(lane["assigned"] == 1 for lane in lanes.values())
+    assert all(lane["completed"] == 1 for lane in lanes.values())
+    assert all(lane["dropped"] == 0 for lane in lanes.values())
+    assert all(lane["failures"] == 0 for lane in lanes.values())
+    assert all(lane["latest_service_seconds"] is not None for lane in lanes.values())
+    assert all(lane["last_completed_at"] is not None for lane in lanes.values())
 
 
 @pytest.mark.asyncio
