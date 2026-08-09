@@ -184,15 +184,27 @@ def test_partial_catalog_rehydrates_active_political_lock_after_restart(tmp_path
         political_watch_policy=PoliticalWatchPolicy(max_events=1),
     )
     original.refresh_catalog(
-        polymarket_markets=[
-            _poly(
-                "election",
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXELECTION-26AUG-T1",
                 "Will the President win the election?",
-                event_id="election-2026",
-                end_date=occurrence,
+                event_ticker="KXELECTION-26AUG",
             )
         ],
-        kalshi_markets=[],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="election-primary",
+                title="President election",
+                category="Politics",
+                milestone_type="election",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=45),
+                related_event_tickers=("KXELECTION-26AUG",),
+                primary_event_tickers=("KXELECTION-26AUG",),
+                source_id="reviewed-calendar",
+            )
+        ],
         observed_at=NOW,
     )
     original.store.close()
@@ -211,14 +223,16 @@ def test_partial_catalog_rehydrates_active_political_lock_after_restart(tmp_path
 
     assert partial.catalog_contracts == 1
     assert [item.contract_id for item in partial.monitoring.warm] == [
-        "polymarket:election"
+        "kalshi:KXELECTION-26AUG-T1"
     ]
     # A restored active lock is part of the effective monitoring cohort.  The
     # durable catalog must agree with the returned catalog/monitoring plan.
     assert resumed_store.catalog_counts() == {"current": 1, "revisions": 1}
 
 
-def test_selected_political_event_survives_refresh_volume_displacement_until_cooldown(tmp_path):
+def test_selected_political_event_survives_refresh_volume_displacement_until_cooldown(
+    tmp_path,
+):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(
         max_events=1,
@@ -226,61 +240,102 @@ def test_selected_political_event_survives_refresh_volume_displacement_until_coo
         cooldown_after=timedelta(hours=2),
     )
     system = PlatformOpportunitySystem(store=store, political_watch_policy=policy)
-    close = NOW + timedelta(minutes=30)
+    occurrence = NOW + timedelta(minutes=30)
 
     first = system.refresh_catalog(
-        polymarket_markets=[
-            _poly(
-                "election",
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXELECTION-26AUG-T1",
                 "Will the President win the election?",
-                event_id="election-2026",
-                end_date=close,
+                event_ticker="KXELECTION-26AUG",
                 volume=100,
             ),
-            _poly(
-                "approval",
+            _kalshi(
+                "KXAPPROVAL-26AUG-T1",
                 "Will presidential approval exceed 50%?",
-                event_id="approval-2026",
-                end_date=close,
+                event_ticker="KXAPPROVAL-26AUG",
                 volume=50,
             ),
         ],
-        kalshi_markets=[],
-        observed_at=NOW,
-    )
-    assert [item.contract_id for item in first.monitoring.hot] == ["polymarket:election"]
-
-    displaced = system.refresh_catalog(
-        polymarket_markets=[
-            _poly(
+        kalshi_milestones=[
+            KalshiMilestone(
+                "election-primary",
+                "President election",
+                "Politics",
                 "election",
-                "Will the President win the election?",
-                event_id="election-2026",
-                end_date=close,
-                volume=1,
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXELECTION-26AUG",),
+                ("KXELECTION-26AUG",),
+                "reviewed-calendar",
             ),
-            _poly(
+            KalshiMilestone(
+                "approval-primary",
+                "President approval",
+                "Politics",
                 "approval",
-                "Will presidential approval exceed 50%?",
-                event_id="approval-2026",
-                end_date=close,
-                volume=100_000,
-            ),
-            _poly(
-                "mve",
-                "MVE: President election and BTC above $100k",
-                event_id="combo",
-                end_date=close,
-                volume=1_000_000,
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXAPPROVAL-26AUG",),
+                ("KXAPPROVAL-26AUG",),
+                "reviewed-calendar",
             ),
         ],
-        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    assert [item.contract_id for item in first.monitoring.hot] == [
+        "kalshi:KXELECTION-26AUG-T1"
+    ]
+
+    displaced = system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXELECTION-26AUG-T1",
+                "Will the President win the election?",
+                event_ticker="KXELECTION-26AUG",
+                volume=1,
+            ),
+            _kalshi(
+                "KXAPPROVAL-26AUG-T1",
+                "Will presidential approval exceed 50%?",
+                event_ticker="KXAPPROVAL-26AUG",
+                volume=100_000,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "election-primary",
+                "President election",
+                "Politics",
+                "election",
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXELECTION-26AUG",),
+                ("KXELECTION-26AUG",),
+                "reviewed-calendar",
+            ),
+            KalshiMilestone(
+                "approval-primary",
+                "President approval",
+                "Politics",
+                "approval",
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXAPPROVAL-26AUG",),
+                ("KXAPPROVAL-26AUG",),
+                "reviewed-calendar",
+            ),
+        ],
         observed_at=NOW + timedelta(minutes=1),
     )
 
-    assert [item.contract_id for item in displaced.monitoring.hot] == ["polymarket:election"]
+    assert [item.contract_id for item in displaced.monitoring.hot] == [
+        "kalshi:KXELECTION-26AUG-T1"
+    ]
     locks = store.active_political_event_locks(now=NOW + timedelta(minutes=1))
-    assert [lock["event_id"] for lock in locks] == ["election-2026"]
+    assert [lock["event_id"] for lock in locks] == ["KXELECTION-26AUG"]
 
 
 def test_reviewed_pinned_kalshi_event_beats_automatic_volume_ranking(tmp_path):
@@ -340,15 +395,13 @@ def test_reviewed_pinned_kalshi_event_beats_automatic_volume_ranking(tmp_path):
         item.contract_id
         for item in refresh.monitoring.warm
         if item.reason == "political_event_lock"
-    ] == [
-        "kalshi:KXTRUMPMENTION-26AUG10-T1"
-    ]
-    assert [lock["event_id"] for lock in store.active_political_event_locks(now=NOW)] == [
-        "KXTRUMPMENTION-26AUG10"
-    ]
+    ] == ["kalshi:KXTRUMPMENTION-26AUG10-T1"]
+    assert [
+        lock["event_id"] for lock in store.active_political_event_locks(now=NOW)
+    ] == ["KXTRUMPMENTION-26AUG10"]
 
 
-def test_locked_political_event_is_sampled_at_warm_hot_and_cooldown_cadences(tmp_path):
+def test_polymarket_settlement_metadata_never_creates_a_political_lock(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(
         max_events=1,
@@ -364,46 +417,16 @@ def test_locked_political_event_is_sampled_at_warm_hot_and_cooldown_cadences(tmp
         end_date=occurrence,
     )
 
-    warm = system.refresh_catalog(
+    refresh = system.refresh_catalog(
         polymarket_markets=[market], kalshi_markets=[], observed_at=NOW
-    ).monitoring
-    assert [
-        (item.reason, item.cadence, item.interval_seconds) for item in warm.warm
-    ] == [("political_event_lock", "warm", 60.0)]
+    )
 
-    hot = system.refresh_catalog(
-        polymarket_markets=[market],
-        kalshi_markets=[],
-        observed_at=occurrence - timedelta(minutes=30),
-    ).monitoring
-    assert [
-        (item.reason, item.cadence, item.interval_seconds) for item in hot.hot
-    ] == [("political_event_lock", "hot", 2.0)]
-
-    cooldown = system.refresh_catalog(
-        polymarket_markets=[market],
-        kalshi_markets=[],
-        observed_at=occurrence + timedelta(minutes=1),
-    ).monitoring
-    assert [
-        (item.reason, item.cadence, item.interval_seconds)
-        for item in cooldown.hot
-    ] == [("political_event_lock", "cooldown", 10.0)]
-
-    dashboard = system.dashboard_summary()
-    assert dashboard["political_event_locks"][0]["event_id"] == "election-2026"
-    assert dashboard["political_event_locks"][0]["contract_ids"] == [
-        "polymarket:election"
-    ]
-    assert dashboard["political_event_locks"][0]["sampled_contract_ids"] == [
-        "polymarket:election"
-    ]
-    assert dashboard["sampled_contract_ids"] == ["polymarket:election"]
-    assert dashboard["research_pnl"] == {
-        "authority": "shadow_research_only",
-        "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
-        "horizons": {},
-    }
+    assert system.store.active_political_event_locks(now=NOW) == []
+    assert system.dashboard_summary()["political_event_locks"] == []
+    assert (
+        any(item.reason == "political_event_lock" for item in refresh.monitoring.warm)
+        is False
+    )
 
 
 def test_polymarket_end_date_is_close_metadata_not_occurrence_evidence(tmp_path):
@@ -526,7 +549,10 @@ def test_kalshi_exact_milestone_sets_occurrence_not_settlement_deadline(tmp_path
     assert [lock["event_id"] for lock in locks] == ["KXTRUMPMENTION-26AUG10"]
     assert locks[0]["event_start_at"] == occurrence.isoformat()
     assert locks[0]["event_end_at"] == (occurrence + timedelta(minutes=45)).isoformat()
-    assert locks[0]["locked_until"] == (occurrence + timedelta(hours=2, minutes=45)).isoformat()
+    assert (
+        locks[0]["locked_until"]
+        == (occurrence + timedelta(hours=2, minutes=45)).isoformat()
+    )
 
 
 def test_political_locks_require_token_bound_political_venue_provenance(tmp_path):
@@ -629,7 +655,9 @@ def test_political_locks_require_token_bound_political_venue_provenance(tmp_path
         observed_at=NOW,
     )
 
-    assert [lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)] == [
+    assert [
+        lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)
+    ] == [
         "KXPRES-APPROVAL",
         "KXSERIES-GENERIC",
     ]
@@ -638,7 +666,9 @@ def test_political_locks_require_token_bound_political_venue_provenance(tmp_path
 def test_political_lock_uses_milestone_end_for_live_event_cadence(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
-        political_watch_policy=PoliticalWatchPolicy(max_events=1, max_contracts_per_event=1),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=1, max_contracts_per_event=1
+        ),
     )
     start = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)
     end = datetime(2026, 8, 10, 23, 15, tzinfo=timezone.utc)
@@ -661,12 +691,20 @@ def test_political_lock_uses_milestone_end_for_live_event_cadence(tmp_path):
     )
 
     system.refresh_catalog(
-        polymarket_markets=[], kalshi_markets=[market], kalshi_milestones=[milestone], observed_at=observed
+        polymarket_markets=[],
+        kalshi_markets=[market],
+        kalshi_milestones=[milestone],
+        observed_at=observed,
     )
     live = system.refresh_catalog(
-        polymarket_markets=[], kalshi_markets=[market], kalshi_milestones=[milestone], observed_at=start + timedelta(minutes=30)
+        polymarket_markets=[],
+        kalshi_markets=[market],
+        kalshi_milestones=[milestone],
+        observed_at=start + timedelta(minutes=30),
     ).monitoring
-    assert [(item.cadence, item.interval_seconds) for item in live.hot] == [("event", 2.0)]
+    assert [(item.cadence, item.interval_seconds) for item in live.hot] == [
+        ("event", 2.0)
+    ]
     locks = system.store.active_political_event_locks(now=observed)
     assert locks[0]["event_start_at"] == "2026-08-10T22:30:00+00:00"
     assert locks[0]["event_end_at"] == "2026-08-10T23:15:00+00:00"
@@ -759,9 +797,7 @@ def test_kalshi_duplicate_primary_milestone_windows_deduplicate(tmp_path):
 
     contract = system.contracts[0]
     assert contract.occurrence_at == occurrence
-    assert contract.occurrence_sources == (
-        "kalshi.milestone:speech-a:start_date",
-    )
+    assert contract.occurrence_sources == ("kalshi.milestone:speech-a:start_date",)
 
 
 def test_kalshi_unrelated_milestone_cannot_schedule_contract(tmp_path):
@@ -861,15 +897,15 @@ def test_kalshi_political_lock_requires_valid_primary_end_bounded_milestone(tmp_
     )
 
     related = next(
-        contract
-        for contract in system.contracts
-        if contract.event_id == "KXRELATED-26"
+        contract for contract in system.contracts if contract.event_id == "KXRELATED-26"
     )
     assert related.milestone_relationship_role == "related"
     assert system.store.active_political_event_locks(now=NOW) == []
 
 
-def test_exact_primary_milestone_already_live_locks_and_restores_after_restart(tmp_path):
+def test_exact_primary_milestone_already_live_locks_and_restores_after_restart(
+    tmp_path,
+):
     db_path = tmp_path / "opportunities.db"
     policy = PoliticalWatchPolicy(
         max_events=1,
@@ -944,7 +980,9 @@ def test_only_machine_checkable_structure_authorizes_relative_value(tmp_path):
     assert "vague" not in relation.relation_id
 
 
-def test_structural_relation_is_retained_when_sampling_capacity_excludes_a_leg(tmp_path):
+def test_structural_relation_is_retained_when_sampling_capacity_excludes_a_leg(
+    tmp_path,
+):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(
         store=store,
@@ -1304,13 +1342,16 @@ def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
             _book(market_id, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
             observed_at=NOW,
         )
-        assert len(
-            system.observe_book(
-                contract_id,
-                _book(market_id, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
-                observed_at=NOW + timedelta(seconds=5),
-            ).intents
-        ) == 1
+        assert (
+            len(
+                system.observe_book(
+                    contract_id,
+                    _book(market_id, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+                    observed_at=NOW + timedelta(seconds=5),
+                ).intents
+            )
+            == 1
+        )
 
     first.observe_book(
         "polymarket:first",

@@ -367,26 +367,26 @@ def is_political_contract(contract: PlatformContract) -> bool:
 def _is_political_lock_candidate(
     contract: PlatformContract, *, now: datetime, policy: PoliticalWatchPolicy
 ) -> bool:
-    """Admit only bounded, venue-proven event windows to political locks."""
+    """Admit only explicit, reviewed, end-bounded event windows to locks.
+
+    Settlement and close timestamps belong to ordinary catalog monitoring, not
+    political-event timing.  This invariant is venue-neutral: a lock may only
+    be created from a reviewed occurrence link with an exact start/end window.
+    """
     if (
         not contract.active
         or not is_political_contract(contract)
         or _is_combo_contract(contract)
     ):
         return False
-    if contract.venue == "kalshi":
-        return bool(
-            contract.occurrence_evidence == "exact_venue_milestone"
-            and contract.milestone_relationship_role == "primary"
-            and contract.event_start_at is not None
-            and contract.event_end_at is not None
-            and contract.event_end_at > contract.event_start_at
-            and contract.event_start_at <= now + policy.lookahead
-            and contract.event_end_at > now
-        )
-    scheduled_at = contract.occurrence_at or contract.catalyst_at
     return bool(
-        scheduled_at is not None and now <= scheduled_at <= now + policy.lookahead
+        contract.occurrence_evidence == "exact_venue_milestone"
+        and contract.milestone_relationship_role == "primary"
+        and contract.event_start_at is not None
+        and contract.event_end_at is not None
+        and contract.event_end_at > contract.event_start_at
+        and contract.event_start_at <= now + policy.lookahead
+        and contract.event_end_at > now
     )
 
 
@@ -395,9 +395,7 @@ def _is_combo_contract(contract: PlatformContract) -> bool:
     text = " ".join(
         (contract.native_id, contract.title, contract.event_title)
     ).casefold()
-    return any(
-        marker in text for marker in ("mve", "multivariate", "combo", "parlay")
-    )
+    return any(marker in text for marker in ("mve", "multivariate", "combo", "parlay"))
 
 
 @dataclass(frozen=True)
@@ -781,13 +779,15 @@ class PlatformOpportunitySystem:
                 event_id=str(payload["event_id"]),
                 event_title=str(payload["event_title"]),
                 occurrence_at=(
-                    _aware(datetime.fromisoformat(str(payload["occurrence_at"])))
-                    or now
+                    _aware(datetime.fromisoformat(str(payload["occurrence_at"]))) or now
                 ),
                 event_start_at=(
                     _aware(
                         datetime.fromisoformat(
-                            str(payload.get("event_start_at") or payload["occurrence_at"])
+                            str(
+                                payload.get("event_start_at")
+                                or payload["occurrence_at"]
+                            )
                         )
                     )
                     or now
@@ -801,12 +801,10 @@ class PlatformOpportunitySystem:
                     or now
                 ),
                 locked_until=(
-                    _aware(datetime.fromisoformat(str(payload["locked_until"])))
-                    or now
+                    _aware(datetime.fromisoformat(str(payload["locked_until"]))) or now
                 ),
                 selected_at=(
-                    _aware(datetime.fromisoformat(str(payload["selected_at"])))
-                    or now
+                    _aware(datetime.fromisoformat(str(payload["selected_at"]))) or now
                 ),
                 contract_ids=tuple(str(item) for item in payload["contract_ids"]),
             )
@@ -859,21 +857,20 @@ class PlatformOpportunitySystem:
                 )
             )
             occurrence_candidates = [
-                candidate
+                contract.event_start_at
                 for contract in contracts
-                if (candidate := contract.occurrence_at or contract.catalyst_at)
-                is not None
+                if contract.event_start_at is not None
             ]
             # Candidate admission already requires an exact bounded window;
             # keep this explicit for both runtime safety and type clarity.
             if not occurrence_candidates:
                 continue
             occurrence_at = min(occurrence_candidates)
-            event_start_at = min(
-                contract.event_start_at or occurrence_at for contract in contracts
-            )
+            event_start_at = min(occurrence_candidates)
             event_end_at = min(
-                contract.event_end_at or occurrence_at for contract in contracts
+                contract.event_end_at
+                for contract in contracts
+                if contract.event_end_at is not None
             )
             lock = PoliticalEventLock(
                 event_id=event_id,
@@ -883,7 +880,10 @@ class PlatformOpportunitySystem:
                 event_end_at=event_end_at,
                 locked_until=event_end_at + policy.cooldown_after,
                 selected_at=now,
-                contract_ids=tuple(contract.contract_id for contract in contracts[: policy.max_contracts_per_event]),
+                contract_ids=tuple(
+                    contract.contract_id
+                    for contract in contracts[: policy.max_contracts_per_event]
+                ),
             )
             retained[event_id] = lock
             self.store.upsert_political_event_lock(lock)
@@ -1037,7 +1037,11 @@ class PlatformOpportunitySystem:
                     catalyst_evidence="exact_venue_milestone",
                     catalyst_sources=(source,),
                     catalyst_conflict_seconds=(
-                        abs((contract.catalyst_at - milestone.start_time).total_seconds())
+                        abs(
+                            (
+                                contract.catalyst_at - milestone.start_time
+                            ).total_seconds()
+                        )
                         if contract.catalyst_at is not None
                         else None
                     ),
@@ -2111,13 +2115,15 @@ class PlatformOpportunitySystem:
                 "warm"
                 if political_policy is not None
                 and now < lock.event_start_at - political_policy.hot_before
-                else "hot"
-                if now < lock.event_start_at
-                else "event"
-                if now < lock.event_end_at
-                else "cooldown"
-                if now <= lock.locked_until
-                else "expired"
+                else (
+                    "hot"
+                    if now < lock.event_start_at
+                    else (
+                        "event"
+                        if now < lock.event_end_at
+                        else "cooldown" if now <= lock.locked_until else "expired"
+                    )
+                )
             )
             locks.append(
                 {
