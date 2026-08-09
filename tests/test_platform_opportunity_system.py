@@ -32,6 +32,11 @@ from core.platform_opportunities import (
 )
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.political_sizing_scenarios import required_political_sizing_scenarios
+from core.political_sizing_report import (
+    PoliticalSizingDepthLevel,
+    PoliticalSizingOpportunity,
+    evaluate_political_sizing_scenario,
+)
 from utils.platform_opportunity_store import (
     PlatformOpportunityStore,
     ReplayEvidenceCapacityError,
@@ -67,6 +72,96 @@ def test_required_political_sizing_scenarios_are_immutable_and_evidence_scoped()
     ].scenario_id(evidence_cohort_id="evidence:a")
     assert scenarios[-1].position_cap is None
     assert scenarios[-1].total_reserved_cap is None
+
+
+def test_read_only_sizing_fans_identical_sealed_evidence_without_store_mutation(
+    tmp_path,
+):
+    """Each policy allocates the same evidence and cannot create a paper row."""
+    store = PlatformOpportunityStore(tmp_path / "sizing.db")
+    before = store._connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+    ).fetchall()
+    evidence = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:sealed",
+        signal_id="signal:sealed",
+        entry_replay_sequence=7,
+        entry_replay_hash="hash:sealed",
+        event_id="event-a",
+        milestone_id="milestone-a",
+        contract_id="contract-a",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+    )
+
+    reports = [
+        evaluate_political_sizing_scenario(
+            scenario=scenario,
+            opportunities=(evidence,),
+            starting_cash_micros=1_000_000_000,
+        )
+        for scenario in required_political_sizing_scenarios()
+    ]
+
+    assert all(report.evidence_cohort_id == "evidence:sealed" for report in reports)
+    assert all(
+        report.allocations[0].signal_id == "signal:sealed"
+        and report.allocations[0].entry_replay_hash == "hash:sealed"
+        for report in reports
+    )
+    assert reports[0].allocations[0].executable_quantity == 10
+    assert reports[-1].allocations[0].executable_quantity == 10
+    assert (
+        store._connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+        ).fetchall()
+        == before
+    )
+
+
+def test_read_only_sizing_enforces_occurrence_overlap_without_changing_evidence():
+    """One scenario cannot count two open entries from the same occurrence."""
+    first = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:sealed",
+        signal_id="signal:first",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:first",
+        event_id="event-a",
+        milestone_id="milestone-a",
+        contract_id="contract-a",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+    )
+    second = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:sealed",
+        signal_id="signal:second",
+        entry_replay_sequence=2,
+        entry_replay_hash="hash:second",
+        event_id="event-a",
+        milestone_id="milestone-a",
+        contract_id="contract-b",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+    )
+
+    report = evaluate_political_sizing_scenario(
+        scenario=required_political_sizing_scenarios()[0],
+        opportunities=(second, first),
+        starting_cash_micros=1_000_000_000,
+    )
+
+    assert [item.signal_id for item in report.allocations] == [
+        "signal:first",
+        "signal:second",
+    ]
+    assert report.allocations[1].saturation_reason == "occurrence_overlap"
+    assert second.entry_replay_hash == "hash:second"
 
 
 def _authoritative_kalshi_fee() -> dict[str, str | int]:
