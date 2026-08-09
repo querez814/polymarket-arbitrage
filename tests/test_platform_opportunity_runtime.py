@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
@@ -142,6 +143,62 @@ async def test_worker_drains_queued_observations_before_shutdown():
     assert system.processed == [1, 2, 3]
     assert observed == [(1, 1), (2, 2), (3, 3)]
     assert worker.processed == 3
+
+
+@pytest.mark.asyncio
+async def test_worker_occurrence_lane_does_not_starve_another_occurrence():
+    """A slow sealed occurrence may not hold another route behind one worker lock."""
+
+    class System:
+        def __init__(self):
+            self.cohort_id = "cohort:lanes"
+            self.persisted = 0
+            self.slow_started = Event()
+            self.release_slow = Event()
+            self.fast_processed = Event()
+
+        def persist_replay_observation(self, _contract_id, _book, **_kwargs):
+            self.persisted += 1
+            return {"event": {"sequence": self.persisted}}
+
+        def political_replay_route(self, token):
+            return SimpleNamespace(lane_key=f"occurrence:{token.sequence}")
+
+        def observe_replay_token(self, token):
+            if token.sequence == 1:
+                self.slow_started.set()
+                assert self.release_slow.wait(timeout=2)
+            else:
+                self.fast_processed.set()
+            return {"canonical": token.sequence}
+
+        def dashboard_summary(self):
+            return {}
+
+    system = System()
+    worker = PlatformOpportunityWorker(system, max_event_lanes=2)
+    schedule = VenueFeeSchedule(
+        "polymarket", "none", 0, 1, 0, datetime.now(timezone.utc), "test"
+    )
+    await worker.start()
+    try:
+        assert worker.submit_book(
+            "polymarket:slow",
+            OrderBook(market_id="slow"),
+            observed_at=datetime.now(timezone.utc),
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(system.slow_started.wait), timeout=1)
+        assert worker.submit_book(
+            "polymarket:fast",
+            OrderBook(market_id="fast"),
+            observed_at=datetime.now(timezone.utc),
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(system.fast_processed.wait), timeout=1)
+    finally:
+        system.release_slow.set()
+        await worker.stop()
 
 
 @pytest.mark.asyncio

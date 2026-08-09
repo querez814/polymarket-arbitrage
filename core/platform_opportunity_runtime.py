@@ -29,21 +29,22 @@ class PlatformOpportunityWorker:
         system: PlatformOpportunitySystem,
         *,
         queue_capacity: int = 10_000,
+        max_event_lanes: int = 4,
         on_update: Callable[[dict], None] | None = None,
         on_observation: Callable[[ReplayObservationToken, object], None] | None = None,
     ):
         if queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
+        if max_event_lanes <= 0:
+            raise ValueError("max_event_lanes must be positive")
         self.system = system
         self._queue: asyncio.Queue[ReplayObservationToken | None] = asyncio.Queue(
             queue_capacity
         )
-        # Only scoring and its completion receipt share this lock.  Catalog
-        # refresh and acceptance can be expensive and must not hold up the
-        # canonical observation path; their SQLite writes already serialize
-        # briefly at the store boundary.
-        self._decision_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        self._event_queues: dict[str, asyncio.Queue[ReplayObservationToken | None]] = {}
+        self._event_tasks: dict[str, asyncio.Task] = {}
+        self._max_event_lanes = max_event_lanes
         self._running = False
         self._on_update = on_update
         # This hook receives only the sealed replay token and the result scored
@@ -61,6 +62,8 @@ class PlatformOpportunityWorker:
         self._task = asyncio.create_task(
             self._run(), name="platform_opportunity_shadow_worker"
         )
+        for route_key, queue in self._event_queues.items():
+            self._start_event_task(route_key, queue)
         # Queue delivery is only a wake-up optimization.  On every process
         # start, reload durable tokens which never received a completion
         # receipt (including queue drops and a crash after persistence) in
@@ -74,7 +77,7 @@ class PlatformOpportunityWorker:
                 cohort_id=cohort_id,
             )
             for sequence in sequences:
-                await self._queue.put(
+                await self._enqueue(
                     ReplayObservationToken(cohort_id=cohort_id, sequence=sequence)
                 )
 
@@ -84,6 +87,12 @@ class PlatformOpportunityWorker:
             await self._queue.put(None)
             await self._task
             self._task = None
+        for queue in self._event_queues.values():
+            await queue.put(None)
+        if self._event_tasks:
+            await asyncio.gather(*self._event_tasks.values())
+        self._event_queues.clear()
+        self._event_tasks.clear()
 
     def submit_book(
         self,
@@ -133,7 +142,7 @@ class PlatformOpportunityWorker:
             self._publish()
             return False
         try:
-            self._queue.put_nowait(token)
+            self._enqueue_nowait(token)
             return True
         except asyncio.QueueFull:
             self.dropped += 1
@@ -175,26 +184,34 @@ class PlatformOpportunityWorker:
         return await self._run_sync(self.system.acceptance_report, lane)
 
     async def _run(self) -> None:
+        await self._run_queue(self._queue)
+
+    async def _run_event_lane(
+        self, queue: asyncio.Queue[ReplayObservationToken | None]
+    ) -> None:
+        """Drain one sealed occurrence in strict local sequence order."""
+        await self._run_queue(queue)
+
+    async def _run_queue(
+        self, queue: asyncio.Queue[ReplayObservationToken | None]
+    ) -> None:
         while True:
-            token = await self._queue.get()
+            token = await queue.get()
             if token is None:
-                self._queue.task_done()
+                queue.task_done()
                 break
             try:
-                async with self._decision_lock:
-                    result = await self._run_sync(
-                        self.system.observe_replay_token, token
+                result = await self._run_sync(self.system.observe_replay_token, token)
+                if self._on_observation is not None:
+                    await self._run_sync(self._on_observation, token, result)
+                store = getattr(self.system, "store", None)
+                if store is not None:
+                    await self._run_sync(
+                        store.record_replay_processing_receipt,
+                        cohort_id=token.cohort_id,
+                        sequence=token.sequence,
+                        completed_at=datetime.now(timezone.utc),
                     )
-                    if self._on_observation is not None:
-                        await self._run_sync(self._on_observation, token, result)
-                    store = getattr(self.system, "store", None)
-                    if store is not None:
-                        await self._run_sync(
-                            store.record_replay_processing_receipt,
-                            cohort_id=token.cohort_id,
-                            sequence=token.sequence,
-                            completed_at=datetime.now(timezone.utc),
-                        )
                 self.processed += 1
             except asyncio.CancelledError:
                 raise
@@ -226,8 +243,49 @@ class PlatformOpportunityWorker:
                     token.sequence,
                 )
             finally:
-                self._queue.task_done()
+                queue.task_done()
                 self._publish()
+
+    def _route_key(self, token: ReplayObservationToken) -> str | None:
+        """Read only sealed replay provenance; catalog state cannot route work."""
+        route_for = getattr(self.system, "political_replay_route", None)
+        if route_for is None:
+            return None
+        route = route_for(token)
+        return None if route is None else route.lane_key
+
+    def _event_queue_for(
+        self, token: ReplayObservationToken
+    ) -> asyncio.Queue[ReplayObservationToken | None] | None:
+        route_key = self._route_key(token)
+        if route_key is None:
+            return None
+        queue = self._event_queues.get(route_key)
+        if queue is not None:
+            return queue
+        if len(self._event_queues) >= self._max_event_lanes:
+            raise asyncio.QueueFull("political event-lane capacity exhausted")
+        queue = asyncio.Queue(self._queue.maxsize)
+        self._event_queues[route_key] = queue
+        if self._running:
+            self._start_event_task(route_key, queue)
+        return queue
+
+    def _start_event_task(
+        self, route_key: str, queue: asyncio.Queue[ReplayObservationToken | None]
+    ) -> None:
+        if route_key not in self._event_tasks:
+            self._event_tasks[route_key] = asyncio.create_task(
+                self._run_event_lane(queue), name=f"platform_opportunity_{route_key}"
+            )
+
+    def _enqueue_nowait(self, token: ReplayObservationToken) -> None:
+        queue = self._event_queue_for(token)
+        (self._queue if queue is None else queue).put_nowait(token)
+
+    async def _enqueue(self, token: ReplayObservationToken) -> None:
+        queue = self._event_queue_for(token)
+        await (self._queue if queue is None else queue).put(token)
 
     @staticmethod
     async def _run_sync(function, /, *args, **kwargs):
