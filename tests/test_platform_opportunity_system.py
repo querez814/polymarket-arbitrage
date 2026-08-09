@@ -25,6 +25,7 @@ from core.platform_opportunities import (
     VenueFeeSchedule,
     _normalized_milestone_metadata,
 )
+from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from utils.platform_opportunity_store import (
     PlatformOpportunityStore,
     ReplayEvidenceCapacityError,
@@ -136,6 +137,74 @@ def test_political_experimental_paper_account_is_idempotent_and_cent_exact(tmp_p
         }
     )
     assert store.political_experimental_paper_events(cohort_id=cohort_id) == [
+        {
+            "sequence": 1,
+            "event_type": "account_initialized",
+            "occurred_at": NOW.isoformat(),
+            "cash_micros": 1_000_000_000,
+            "reserved_micros": 0,
+            "realized_pnl_micros": 0,
+            "payload": {"starting_cash_micros": 1_000_000_000},
+        }
+    ]
+
+
+def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_path):
+    """A qualified signal survives restart but is never itself a fill attempt."""
+    path = tmp_path / "opportunities.db"
+    ledger = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(path), cohort_id="political-v2-test"
+    )
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    signal = {
+        "signal_id": "signal:causal-1",
+        "replay_sequence": 7,
+        "event_id": "event-1",
+        "milestone_id": "milestone-1",
+        "contract_id": "kalshi:KXTEST-26AUG",
+        "side": "yes",
+        "base_lane": "hot_pre_event",
+        "phase": "hot",
+        "signal_request_started_at": NOW,
+        "signal_received_at": NOW + timedelta(milliseconds=100),
+        "expires_at": NOW + timedelta(seconds=10),
+        "model_version": "depth-imbalance-reaction-experimental-v1",
+        "config_hash": "config-hash",
+        "state_hash": "book-hash",
+        "fee_hash": "fee-hash",
+        "features": {"mid": 0.52, "imbalance": 0.4},
+    }
+
+    assert ledger.record_pending_signal(**signal) is True
+    restarted = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(path), cohort_id="political-v2-test"
+    )
+    assert restarted.record_pending_signal(**signal) is False
+    assert restarted.store.political_experimental_pending_signals(
+        cohort_id="political-v2-test"
+    ) == [
+        {
+            "signal_id": "signal:causal-1",
+            "replay_sequence": 7,
+            "event_id": "event-1",
+            "milestone_id": "milestone-1",
+            "contract_id": "kalshi:KXTEST-26AUG",
+            "side": "yes",
+            "base_lane": "hot_pre_event",
+            "phase": "hot",
+            "signal_request_started_at": NOW.isoformat(),
+            "signal_received_at": (NOW + timedelta(milliseconds=100)).isoformat(),
+            "expires_at": (NOW + timedelta(seconds=10)).isoformat(),
+            "model_version": "depth-imbalance-reaction-experimental-v1",
+            "config_hash": "config-hash",
+            "state_hash": "book-hash",
+            "fee_hash": "fee-hash",
+            "features": {"mid": 0.52, "imbalance": 0.4},
+        }
+    ]
+    assert restarted.store.political_experimental_paper_events(
+        cohort_id="political-v2-test"
+    ) == [
         {
             "sequence": 1,
             "event_type": "account_initialized",

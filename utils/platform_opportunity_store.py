@@ -213,6 +213,31 @@ class PlatformOpportunityStore:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY(cohort_id, sequence)
                 );
+                -- A reaction signal is not an order.  Retaining it separately
+                -- from the legacy shadow intents gives the experimental ledger
+                -- a restart-safe, causal hand-off to a later replay book.
+                CREATE TABLE IF NOT EXISTS political_experimental_pending_signals (
+                    signal_id TEXT PRIMARY KEY,
+                    cohort_id TEXT NOT NULL,
+                    replay_sequence INTEGER NOT NULL CHECK(replay_sequence > 0),
+                    event_id TEXT NOT NULL,
+                    milestone_id TEXT NOT NULL,
+                    contract_id TEXT NOT NULL,
+                    side TEXT NOT NULL CHECK(side IN ('yes', 'no')),
+                    base_lane TEXT NOT NULL,
+                    phase TEXT NOT NULL CHECK(phase IN ('hot', 'event_live')),
+                    signal_request_started_at TEXT NOT NULL,
+                    signal_received_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    config_hash TEXT NOT NULL,
+                    state_hash TEXT NOT NULL,
+                    fee_hash TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_political_pending_signals_due
+                    ON political_experimental_pending_signals(cohort_id, contract_id, expires_at);
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -340,6 +365,135 @@ class PlatformOpportunityStore:
                 "reserved_micros": int(row["reserved_micros"]),
                 "realized_pnl_micros": int(row["realized_pnl_micros"]),
                 "payload": json.loads(str(row["payload_json"])),
+            }
+            for row in rows
+        ]
+
+    def record_political_experimental_pending_signal(
+        self,
+        *,
+        signal_id: str,
+        cohort_id: str,
+        replay_sequence: int,
+        event_id: str,
+        milestone_id: str,
+        contract_id: str,
+        side: str,
+        base_lane: str,
+        phase: str,
+        signal_request_started_at: datetime,
+        signal_received_at: datetime,
+        expires_at: datetime,
+        model_version: str,
+        config_hash: str,
+        state_hash: str,
+        fee_hash: str,
+        features: dict[str, Any],
+    ) -> bool:
+        """Persist one causal reaction signal, idempotently and fail-closed.
+
+        This deliberately has no fill semantics: only a later replay event may
+        consume it.  Requiring the account and valid evidence cohort prevents a
+        caller from creating an orphan signal outside the paper boundary.
+        """
+        required = (
+            signal_id,
+            cohort_id,
+            event_id,
+            milestone_id,
+            contract_id,
+            base_lane,
+            model_version,
+            config_hash,
+            state_hash,
+            fee_hash,
+        )
+        if not all(isinstance(value, str) and value.strip() for value in required):
+            raise ValueError("pending signal identity and provenance are required")
+        if (
+            not isinstance(replay_sequence, int)
+            or isinstance(replay_sequence, bool)
+            or replay_sequence <= 0
+        ):
+            raise ValueError(
+                "pending signal replay_sequence must be a positive integer"
+            )
+        if side not in {"yes", "no"}:
+            raise ValueError("pending signal side must be yes or no")
+        if phase not in {"hot", "event_live"}:
+            raise ValueError("pending signal phase must be hot or event_live")
+        request_iso = _utc_iso(signal_request_started_at)
+        received_iso = _utc_iso(signal_received_at)
+        expiry_iso = _utc_iso(expires_at)
+        if request_iso >= received_iso or received_iso >= expiry_iso:
+            raise ValueError("pending signal timestamps must be causally ordered")
+        with self._lock, self._connection:
+            connection = self._connection
+            account = connection.execute(
+                "SELECT 1 FROM political_experimental_paper_accounts WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+            if account is None:
+                raise RuntimeError(
+                    "political experimental paper account is not initialized"
+                )
+            status = connection.execute(
+                "SELECT cohort_valid, degraded_reason FROM platform_replay_evidence_status "
+                "WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+            if status is not None and not bool(status["cohort_valid"]):
+                raise ReplayEvidenceCapacityError(
+                    "replay evidence cohort is invalid: "
+                    f"{status['degraded_reason'] or 'unknown'}"
+                )
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO political_experimental_pending_signals "
+                "(signal_id, cohort_id, replay_sequence, event_id, milestone_id, contract_id, "
+                "side, base_lane, phase, signal_request_started_at, signal_received_at, "
+                "expires_at, model_version, config_hash, state_hash, fee_hash, features_json, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    signal_id,
+                    cohort_id,
+                    replay_sequence,
+                    event_id,
+                    milestone_id,
+                    contract_id,
+                    side,
+                    base_lane,
+                    phase,
+                    request_iso,
+                    received_iso,
+                    expiry_iso,
+                    model_version,
+                    config_hash,
+                    state_hash,
+                    fee_hash,
+                    _json(features),
+                    received_iso,
+                ),
+            )
+        return inserted.rowcount == 1
+
+    def political_experimental_pending_signals(
+        self, *, cohort_id: str
+    ) -> list[dict[str, Any]]:
+        """Read pending causal signals in durable signal-sequence order."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT signal_id, replay_sequence, event_id, milestone_id, contract_id, side, "
+                "base_lane, phase, signal_request_started_at, signal_received_at, expires_at, "
+                "model_version, config_hash, state_hash, fee_hash, features_json "
+                "FROM political_experimental_pending_signals WHERE cohort_id = ? "
+                "ORDER BY replay_sequence, signal_id",
+                (cohort_id,),
+            ).fetchall()
+        return [
+            {
+                **{key: row[key] for key in row.keys() if key != "features_json"},
+                "replay_sequence": int(row["replay_sequence"]),
+                "features": json.loads(str(row["features_json"])),
             }
             for row in rows
         ]
