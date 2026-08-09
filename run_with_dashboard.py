@@ -24,6 +24,7 @@ from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping
 
 import uvicorn
 from dotenv import load_dotenv
@@ -120,6 +121,29 @@ from dashboard.server import app, dashboard_state, configure_dashboard_runtime
 from dashboard.integration import DashboardIntegration
 
 logger = logging.getLogger(__name__)
+
+
+def _catalog_coverage_status(status: Mapping[str, object]) -> str:
+    """Classify one catalog pull without promoting an incomplete source.
+
+    Catalog clients mark deterministic page, wall-time, decoded-byte, and
+    market caps explicitly. Those responses are usable bounded cohorts. All
+    other incomplete responses are failures, so the opportunity system keeps
+    the last known-good cohort rather than silently replacing it with a
+    potentially interrupted payload.
+    """
+    if bool(status.get("failed")):
+        return "failure"
+    if bool(status.get("complete")):
+        return "complete"
+    if str(status.get("stop_reason", "")) in {
+        "page_budget",
+        "wall_time_budget",
+        "decoded_byte_budget",
+        "market_budget",
+    }:
+        return "bounded"
+    return "failure"
 
 
 class TradingBotWithDashboard:
@@ -946,27 +970,13 @@ class TradingBotWithDashboard:
             ),
             venue_coverage={
                 "polymarket": {
-                    "status": (
-                        "failure"
-                        if poly_catalog_status.get("failed")
-                        else (
-                            "complete"
-                            if poly_catalog_status.get("complete")
-                            else "partial"
-                        )
-                    ),
+                    "status": _catalog_coverage_status(poly_catalog_status),
                     "reason": str(
                         poly_catalog_status.get("stop_reason", "partial_response")
                     ),
                 },
                 "kalshi": {
-                    "status": (
-                        "failure"
-                        if ordinary_status.get("failed")
-                        else (
-                            "complete" if ordinary_status.get("complete") else "partial"
-                        )
-                    ),
+                    "status": _catalog_coverage_status(ordinary_status),
                     "reason": str(
                         ordinary_status.get("stop_reason", "partial_response")
                     ),

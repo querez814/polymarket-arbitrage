@@ -513,6 +513,48 @@ def test_venue_scoped_coverage_retains_only_failed_venue_cohort(tmp_path):
     assert store.catalog_counts() == {"current": 2, "revisions": 4}
 
 
+def test_catalog_coverage_names_deterministic_budgets_bounded(tmp_path):
+    """Budgeted source cohorts replace; a transport failure retains last good."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(store=store)
+    close = NOW + timedelta(minutes=30)
+
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p-old", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    bounded = system.refresh_catalog(
+        polymarket_markets=[_poly("p-new", "Will CPI be above 4%?", end_date=close)],
+        kalshi_markets=[],
+        venue_coverage={
+            "polymarket": {"status": "bounded", "reason": "page_budget"},
+            "kalshi": {"status": "complete", "reason": "source_exhausted"},
+        },
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    assert bounded.venue_coverage["polymarket"]["status"] == "bounded"
+    assert bounded.venue_coverage["polymarket"]["reason"] == "page_budget"
+    assert set(store.current_contract_payloads_for_venue("polymarket")) == {
+        "polymarket:p-new"
+    }
+
+    retained = system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[],
+        venue_coverage={
+            "polymarket": {"status": "failure", "reason": "decode_error"},
+            "kalshi": {"status": "complete", "reason": "source_exhausted"},
+        },
+        observed_at=NOW + timedelta(minutes=2),
+    )
+    assert retained.venue_coverage["polymarket"]["status"] == "failure"
+    assert set(store.current_contract_payloads_for_venue("polymarket")) == {
+        "polymarket:p-new"
+    }
+
+
 def test_partial_catalog_rehydrates_active_political_lock_after_restart(tmp_path):
     path = tmp_path / "opportunities.db"
     occurrence = NOW + timedelta(hours=2)

@@ -5,7 +5,7 @@ import asyncio
 import httpx
 import pytest
 
-from run_with_dashboard import TradingBotWithDashboard
+from run_with_dashboard import TradingBotWithDashboard, _catalog_coverage_status
 from core.combinatorial_arb import SamePlatformArbitrageDetector
 from core.cross_platform_arb import MarketPair
 from core.event_contracts import EventPairLink
@@ -33,6 +33,24 @@ from polymarket_client.models import (
 )
 from kalshi_client.models import KalshiMarket
 from kalshi_client.models import KalshiMilestone
+
+
+def test_catalog_coverage_status_separates_bounded_and_failed_sources():
+    assert _catalog_coverage_status(
+        {"complete": True, "stop_reason": "source_exhausted"}
+    ) == "complete"
+    for stop_reason in (
+        "page_budget",
+        "wall_time_budget",
+        "decoded_byte_budget",
+        "market_budget",
+    ):
+        assert _catalog_coverage_status(
+            {"complete": False, "stop_reason": stop_reason}
+        ) == "bounded"
+    assert _catalog_coverage_status(
+        {"complete": False, "stop_reason": "decode_error"}
+    ) == "failure"
 
 
 @pytest.mark.asyncio

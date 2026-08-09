@@ -1284,13 +1284,22 @@ class PlatformOpportunitySystem:
         *,
         snapshot_complete: bool,
     ) -> dict[str, dict[str, str]]:
-        """Normalize explicit source health without treating partial as failure."""
-        fallback = "complete" if snapshot_complete else "partial"
+        """Normalize source health without conflating bounded and failed pulls.
+
+        A completed but budget-limited pull is a new, explicitly bounded
+        catalog cohort.  Only a failed source retains the previous cohort.
+        ``partial`` remains a read-only compatibility alias for old callers;
+        new callers must report ``bounded`` so dashboard evidence never
+        mistakes a deterministic cap for an interrupted response.
+        """
+        fallback = "complete" if snapshot_complete else "bounded"
         result: dict[str, dict[str, str]] = {}
         for venue in ("polymarket", "kalshi"):
             supplied = (venue_coverage or {}).get(venue, {})
             status = str(supplied.get("status", fallback))
-            if status not in {"complete", "partial", "failure"}:
+            if status == "partial":
+                status = "bounded"
+            if status not in {"complete", "bounded", "failure"}:
                 raise ValueError(f"unsupported {venue} catalog status: {status}")
             result[venue] = {
                 "status": status,
