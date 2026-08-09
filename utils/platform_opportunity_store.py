@@ -1432,18 +1432,43 @@ class PlatformOpportunityStore:
                     reason = "missing_replay_event"
                 elif int(event["sequence"]) <= int(signal["replay_sequence"]):
                     reason = "not_later_replay_sequence"
-                elif event["contract_id"] != signal["contract_id"]:
+                else:
+                    # A pending signal may only use the *first* durable
+                    # same-contract observation after its source token.  If a
+                    # worker lost or failed that earlier token, allowing a
+                    # newer one to fill would cherry-pick favorable evidence
+                    # across a causal coverage gap.  Consume the signal with
+                    # a named terminal outcome instead; the missing token is
+                    # still independently replayable/recoverable through its
+                    # processing receipt.
+                    earliest_later = connection.execute(
+                        "SELECT MIN(sequence) FROM platform_replay_observation_events "
+                        "WHERE cohort_id = ? AND contract_id = ? "
+                        "AND sequence > ?",
+                        (
+                            cohort_id,
+                            str(signal["contract_id"]),
+                            int(signal["replay_sequence"]),
+                        ),
+                    ).fetchone()[0]
+                    if earliest_later is None:
+                        reason = "missing_later_replay_observation"
+                    elif int(earliest_later) != replay_sequence:
+                        reason = "first_later_replay_sequence_unprocessed"
+                if reason is None and event["contract_id"] != signal["contract_id"]:
                     reason = "contract_mismatch"
-                elif event["lock_phase"] != signal["phase"]:
+                elif reason is None and event["lock_phase"] != signal["phase"]:
                     reason = "phase_crossed"
-                elif (
+                elif reason is None and (
                     event["request_started_at"] is None
                     or event["request_started_at"] <= signal["signal_received_at"]
                 ):
                     reason = "request_not_strictly_after_signal_receipt"
-                elif event["received_at"] > signal["expires_at"]:
+                elif reason is None and event["received_at"] > signal["expires_at"]:
                     reason = "signal_ttl_expired"
-                elif isinstance(economics.get("preflight_reason"), str):
+                elif reason is None and isinstance(
+                    economics.get("preflight_reason"), str
+                ):
                     reason = str(economics["preflight_reason"])
                 status = connection.execute(
                     "SELECT cohort_valid FROM platform_replay_evidence_status WHERE cohort_id = ?",

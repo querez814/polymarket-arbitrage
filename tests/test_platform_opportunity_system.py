@@ -743,6 +743,74 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     }
 
 
+def test_political_paper_never_skips_the_first_later_same_contract_token(tmp_path):
+    """A callback loss at sequence two cannot let sequence three fill it."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:barrier")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.50, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:barrier",
+        contract_id="kalshi:KXBARRIER",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:barrier",
+        replay_sequence=first["event"]["sequence"],
+        event_id="event-barrier",
+        milestone_id="milestone-barrier",
+        contract_id="kalshi:KXBARRIER",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=first["state_hash"],
+        fee_hash=first["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    # This is the durable token whose callback/worker processing was lost.
+    store.record_replay_observation(
+        cohort_id="cohort:barrier",
+        contract_id="kalshi:KXBARRIER",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+    third = store.record_replay_observation(
+        cohort_id="cohort:barrier",
+        contract_id="kalshi:KXBARRIER",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=2),
+        request_started_at=NOW + timedelta(seconds=1, milliseconds=1),
+        received_at=NOW + timedelta(seconds=2),
+    )
+
+    [result] = ledger.process_observation(replay_sequence=third["event"]["sequence"])
+
+    assert result["outcome"] == "no_fill"
+    assert result["reason"] == "first_later_replay_sequence_unprocessed"
+    assert ledger.snapshot()["counts"]["filled"] == 0
+    assert ledger.snapshot()["counts"]["no_fill"] == 1
+
+
 def test_political_paper_reports_cash_shortfall_not_fractional_depth(tmp_path):
     """An affordable-depth failure is a capital blocker, never a depth blocker."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
