@@ -281,6 +281,71 @@ def test_selected_political_event_survives_refresh_volume_displacement_until_coo
     assert [lock["event_id"] for lock in locks] == ["election-2026"]
 
 
+def test_reviewed_pinned_kalshi_event_beats_automatic_volume_ranking(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=2,
+        reviewed_pinned_event_ids=("kalshi:KXTRUMPMENTION-26AUG10",),
+    )
+    system = PlatformOpportunitySystem(store=store, political_watch_policy=policy)
+    occurrence = NOW + timedelta(hours=2)
+
+    refresh = system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXTRUMPMENTION-26AUG10-T1",
+                "Will Trump mention tariffs?",
+                event_ticker="KXTRUMPMENTION-26AUG10",
+                volume=1,
+            ),
+            _kalshi(
+                "KXTRUMPRALLY-26AUG10-T1",
+                "Will Trump hold a rally?",
+                event_ticker="KXTRUMPRALLY-26AUG10",
+                volume=1_000_000,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="mention",
+                title="Trump remarks",
+                category="Politics",
+                milestone_type="speech",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=45),
+                related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                source_id="briefing",
+            ),
+            KalshiMilestone(
+                milestone_id="rally",
+                title="Trump rally",
+                category="Politics",
+                milestone_type="speech",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=45),
+                related_event_tickers=("KXTRUMPRALLY-26AUG10",),
+                primary_event_tickers=("KXTRUMPRALLY-26AUG10",),
+                source_id="briefing",
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    assert [
+        item.contract_id
+        for item in refresh.monitoring.warm
+        if item.reason == "political_event_lock"
+    ] == [
+        "kalshi:KXTRUMPMENTION-26AUG10-T1"
+    ]
+    assert [lock["event_id"] for lock in store.active_political_event_locks(now=NOW)] == [
+        "KXTRUMPMENTION-26AUG10"
+    ]
+
+
 def test_locked_political_event_is_sampled_at_warm_hot_and_cooldown_cadences(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(

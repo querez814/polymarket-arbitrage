@@ -226,6 +226,12 @@ class PoliticalWatchPolicy:
             raise ValueError("political watchlist cooldown cannot be negative")
         if any(not event_id.strip() for event_id in self.reviewed_pinned_event_ids):
             raise ValueError("reviewed pinned event IDs must be non-empty")
+        if len(set(self.reviewed_pinned_event_ids)) != len(
+            self.reviewed_pinned_event_ids
+        ):
+            raise ValueError("reviewed pinned event IDs must be unique")
+        if len(self.reviewed_pinned_event_ids) > self.max_events:
+            raise ValueError("reviewed pinned event IDs cannot exceed max_events")
 
 
 @dataclass(frozen=True)
@@ -236,6 +242,11 @@ class PoliticalEventLock:
     locked_until: datetime
     selected_at: datetime
     contract_ids: tuple[str, ...]
+
+
+def _event_pin_id(contract: PlatformContract) -> str:
+    """Return the stable, config-facing identity of an event candidate."""
+    return f"{contract.venue}:{contract.event_id}"
 
 
 _POLITICAL_TERMS = frozenset(
@@ -678,7 +689,25 @@ class PlatformOpportunitySystem:
                 item[0],
             ),
         )
-        for event_id, contracts in ranked:
+        # Pins are reviewed event identities, not a separate eligibility path:
+        # they must first pass the same active/political/exact-milestone/window
+        # gates above.  Once eligible they consume a normal watchlist slot,
+        # deterministically ahead of automatic volume ranking.
+        pinned = {
+            _event_pin_id(contracts[0]): (event_id, contracts)
+            for event_id, contracts in candidates.items()
+        }
+        selected = [
+            pinned[event_id]
+            for event_id in policy.reviewed_pinned_event_ids
+            if event_id in pinned
+        ]
+        selected.extend(
+            item
+            for item in ranked
+            if _event_pin_id(item[1][0]) not in policy.reviewed_pinned_event_ids
+        )
+        for event_id, contracts in selected:
             if len(retained) >= policy.max_events:
                 break
             if event_id in retained:
