@@ -450,6 +450,97 @@ def test_kalshi_exact_milestone_sets_occurrence_not_settlement_deadline(tmp_path
     ]
 
 
+def test_kalshi_ambiguous_distinct_primary_milestones_fail_closed(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    first = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXSPEECH-26-A",
+                "Will the President mention immigration?",
+                event_ticker="KXSPEECH-26",
+                close_time=NOW + timedelta(days=30),
+            )
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="speech-first",
+                title="President remarks",
+                category="Politics",
+                milestone_type="political_speech",
+                start_time=first,
+                end_time=first + timedelta(minutes=30),
+                related_event_tickers=("KXSPEECH-26",),
+                primary_event_tickers=("KXSPEECH-26",),
+            ),
+            KalshiMilestone(
+                milestone_id="speech-rescheduled",
+                title="President remarks",
+                category="Politics",
+                milestone_type="political_speech",
+                start_time=first + timedelta(hours=1),
+                end_time=first + timedelta(hours=1, minutes=30),
+                related_event_tickers=("KXSPEECH-26",),
+                primary_event_tickers=("KXSPEECH-26",),
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    contract = system.contracts[0]
+    assert contract.occurrence_at is None
+    assert contract.occurrence_evidence == "unknown"
+
+
+def test_kalshi_duplicate_primary_milestone_windows_deduplicate(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    occurrence = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXSPEECH-26-A",
+                "Will the President mention immigration?",
+                event_ticker="KXSPEECH-26",
+            )
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="speech-z",
+                title="President remarks",
+                category="Politics",
+                milestone_type="political_speech",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=30),
+                related_event_tickers=("KXSPEECH-26",),
+                primary_event_tickers=("KXSPEECH-26",),
+            ),
+            KalshiMilestone(
+                milestone_id="speech-a",
+                title="President remarks duplicate",
+                category="Politics",
+                milestone_type="political_speech",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=30),
+                related_event_tickers=("KXSPEECH-26",),
+                primary_event_tickers=("KXSPEECH-26",),
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    contract = system.contracts[0]
+    assert contract.occurrence_at == occurrence
+    assert contract.occurrence_sources == (
+        "kalshi.milestone:speech-a:start_date",
+    )
+
+
 def test_kalshi_unrelated_milestone_cannot_schedule_contract(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db")

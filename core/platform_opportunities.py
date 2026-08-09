@@ -764,9 +764,10 @@ class PlatformOpportunitySystem:
     ) -> list[PlatformContract]:
         """Apply only exact Kalshi event-ticker occurrence evidence.
 
-        Title/category matching is deliberately absent. When several venue
-        milestones name an event, a direct primary-event link wins, then the
-        earliest occurrence makes the choice deterministic and auditable.
+        Title/category matching is deliberately absent. Direct primary-event
+        links win over merely related links, but conflicting primary windows
+        are not evidence of a single occurrence. Duplicate records for the
+        same start/end window are safe to deduplicate by milestone id.
         """
         linked: dict[str, list[KalshiMilestone]] = defaultdict(list)
         for milestone in milestones:
@@ -781,10 +782,22 @@ class PlatformOpportunitySystem:
             if not candidates:
                 enriched.append(contract)
                 continue
+            primary_candidates = [
+                item
+                for item in candidates
+                if contract.event_id in item.primary_event_tickers
+            ]
+            if primary_candidates:
+                primary_windows = {
+                    (item.start_time, item.end_time) for item in primary_candidates
+                }
+                if len(primary_windows) != 1:
+                    enriched.append(contract)
+                    continue
+                candidates = primary_candidates
             milestone = min(
                 candidates,
                 key=lambda item: (
-                    0 if contract.event_id in item.primary_event_tickers else 1,
                     item.start_time,
                     item.milestone_id,
                 ),
