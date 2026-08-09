@@ -447,13 +447,63 @@ class PlatformOpportunityStore:
             ).fetchone()
         if row is None:
             raise KeyError(payload_hash)
-        encoded = zlib.decompress(bytes(row["compressed_payload"]))
+        try:
+            encoded = zlib.decompress(bytes(row["compressed_payload"]))
+        except zlib.error as exc:
+            self._invalidate_replay_payload_references(
+                hash_column=hash_column, payload_hash=payload_hash
+            )
+            raise ReplayEvidenceIntegrityError(
+                f"replay {table} payload cannot be decompressed"
+            ) from exc
         actual_hash = hashlib.sha256(encoded).hexdigest()
         if actual_hash != payload_hash:
+            self._invalidate_replay_payload_references(
+                hash_column=hash_column, payload_hash=payload_hash
+            )
             raise ReplayEvidenceIntegrityError(
                 f"replay {table} payload digest does not match {hash_column}"
             )
-        return json.loads(encoded.decode("utf-8"))
+        try:
+            return json.loads(encoded.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._invalidate_replay_payload_references(
+                hash_column=hash_column, payload_hash=payload_hash
+            )
+            raise ReplayEvidenceIntegrityError(
+                f"replay {table} payload cannot be decoded"
+            ) from exc
+
+    def _invalidate_replay_payload_references(
+        self, *, hash_column: str, payload_hash: str
+    ) -> None:
+        """Permanently invalidate every cohort that cites corrupt evidence.
+
+        A replay hash is shared across cohorts, so treating a failed decode as
+        a local reader error could allow another cohort to continue scoring the
+        exact same corrupted payload.  The status transitions and all affected
+        cohort lookups share one SQLite transaction so restart cannot observe a
+        partially invalidated evidence graph.
+        """
+        if hash_column not in {"state_hash", "fee_hash"}:
+            raise ValueError("unsupported replay payload hash column")
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT DISTINCT cohort_id FROM platform_replay_observation_events "
+                f"WHERE {hash_column} = ?",
+                (payload_hash,),
+            ).fetchall()
+            for row in rows:
+                self._connection.execute(
+                    "INSERT INTO platform_replay_evidence_status "
+                    "(cohort_id, cohort_valid, degraded_reason) VALUES (?, 0, ?) "
+                    "ON CONFLICT(cohort_id) DO UPDATE SET cohort_valid = 0, "
+                    "degraded_reason = CASE "
+                    "WHEN platform_replay_evidence_status.cohort_valid = 1 "
+                    "THEN excluded.degraded_reason "
+                    "ELSE platform_replay_evidence_status.degraded_reason END",
+                    (str(row["cohort_id"]), "replay_evidence_integrity_failure"),
+                )
 
     def replay_book_state(self, state_hash: str) -> dict[str, Any]:
         return self._replay_payload(

@@ -220,6 +220,68 @@ def test_replay_payload_decode_rejects_a_tampered_hash_addressed_book(tmp_path):
         store.replay_book_state(state_hash)
 
 
+@pytest.mark.parametrize(
+    ("table", "hash_column", "decode"),
+    (
+        ("normalized_book_states", "state_hash", "replay_book_state"),
+        ("normalized_fee_schedules", "fee_hash", "replay_fee_schedule"),
+    ),
+)
+def test_tampered_replay_payload_permanently_invalidates_every_referencing_cohort(
+    tmp_path, table, hash_column, decode
+):
+    """Book and fee integrity failures invalidate every dependent cohort."""
+    path = tmp_path / "opportunities.db"
+    store = PlatformOpportunityStore(path)
+    system = PlatformOpportunitySystem(store=store)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    fee = {"schema_version": 1, "venue": "kalshi", "fee_type": "none"}
+    for cohort_id in (system.cohort_id, "cohort:also-references-payload"):
+        store.record_replay_observation(
+            cohort_id=cohort_id,
+            contract_id="kalshi:KXTEST",
+            normalized_book=book,
+            fee_schedule=fee,
+            lock_phase="hot",
+            observed_at=NOW,
+            request_started_at=NOW,
+            received_at=NOW,
+        )
+
+    event = store.replay_observation_events(cohort_id=system.cohort_id)[0]
+    payload_hash = event[hash_column]
+    with store._connection:
+        store._connection.execute(
+            f"UPDATE {table} SET compressed_payload = ? WHERE {hash_column} = ?",
+            (zlib.compress(b'{"tampered":true}', level=9), payload_hash),
+        )
+
+    with pytest.raises(ReplayEvidenceIntegrityError):
+        getattr(store, decode)(payload_hash)
+
+    for cohort_id in (system.cohort_id, "cohort:also-references-payload"):
+        assert store.replay_evidence_status(cohort_id=cohort_id) == {
+            "cohort_valid": False,
+            "degraded_reason": "replay_evidence_integrity_failure",
+        }
+    assert (
+        "replay_evidence_invalid"
+        in system.acceptance_report("depth_imbalance_reaction_experimental_v1").reasons
+    )
+
+    restarted = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    assert (
+        "replay_evidence_invalid"
+        in restarted.acceptance_report(
+            "depth_imbalance_reaction_experimental_v1"
+        ).reasons
+    )
+
+
 def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_path):
     """Capacity loss is durable, visible, and cannot create a scored observation."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db", replay_byte_cap=1)
