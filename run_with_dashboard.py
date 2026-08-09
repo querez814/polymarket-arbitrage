@@ -883,44 +883,50 @@ class TradingBotWithDashboard:
             # token emits no new reaction; otherwise a live runtime can
             # persist a signal but never give its causal next book a chance to
             # fill it.
-            ledger.process_observation(replay_sequence=token.sequence)
-            decision = self.platform_opportunity_system.political_scored_decision(token)
-            if decision["outcome"] == "signal":
-                context = self.platform_opportunity_system.political_replay_context(
+            try:
+                ledger.process_observation(replay_sequence=token.sequence)
+                decision = self.platform_opportunity_system.political_scored_decision(
                     token
                 )
-                policy = (
-                    self.platform_opportunity_store.political_experimental_paper_policy(
+                if decision["outcome"] == "signal":
+                    context = self.platform_opportunity_system.political_replay_context(
+                        token
+                    )
+                    policy = self.platform_opportunity_store.political_experimental_paper_policy(
                         cohort_id=token.cohort_id
                     )
-                )
-                signal = decision["signal"]
-                if signal["contract_id"] == context["contract_id"]:
-                    ledger.record_pending_signal(
-                        signal_id=str(decision["signal_id"]),
-                        replay_sequence=token.sequence,
-                        event_id=context["event_id"],
-                        milestone_id=context["milestone_id"],
-                        contract_id=context["contract_id"],
-                        side=str(signal["direction"]),
-                        base_lane=context["base_lane"],
-                        phase=context["phase"],
-                        signal_request_started_at=datetime.fromisoformat(
-                            context["request_started_at"]
-                        ),
-                        signal_received_at=datetime.fromisoformat(
-                            context["received_at"]
-                        ),
-                        expires_at=datetime.fromisoformat(str(signal["expires_at"])),
-                        model_version="depth_imbalance_reaction_experimental_v1",
-                        config_hash=str(policy["policy_hash"]),
-                        state_hash=context["state_hash"],
-                        fee_hash=context["fee_hash"],
-                        features=dict(signal["feature_snapshot"]),
-                    )
-            dashboard_state.platform_opportunity["political_experimental_paper"][
-                "snapshot"
-            ] = ledger.snapshot()
+                    signal = decision["signal"]
+                    if signal["contract_id"] == context["contract_id"]:
+                        ledger.record_pending_signal(
+                            signal_id=str(decision["signal_id"]),
+                            replay_sequence=token.sequence,
+                            event_id=context["event_id"],
+                            milestone_id=context["milestone_id"],
+                            contract_id=context["contract_id"],
+                            side=str(signal["direction"]),
+                            base_lane=context["base_lane"],
+                            phase=context["phase"],
+                            signal_request_started_at=datetime.fromisoformat(
+                                context["request_started_at"]
+                            ),
+                            signal_received_at=datetime.fromisoformat(
+                                context["received_at"]
+                            ),
+                            expires_at=datetime.fromisoformat(
+                                str(signal["expires_at"])
+                            ),
+                            model_version="depth_imbalance_reaction_experimental_v1",
+                            config_hash=str(policy["policy_hash"]),
+                            state_hash=context["state_hash"],
+                            fee_hash=context["fee_hash"],
+                            features=dict(signal["feature_snapshot"]),
+                        )
+            finally:
+                # A committed close/no-fill must remain visible even when a
+                # later scored-decision or materialization step fails.
+                dashboard_state.platform_opportunity["political_experimental_paper"][
+                    "snapshot"
+                ] = ledger.snapshot()
 
         self.platform_opportunity_worker = PlatformOpportunityWorker(
             self.platform_opportunity_system,

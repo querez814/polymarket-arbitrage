@@ -15,6 +15,7 @@ from core.platform_opportunities import (
     MonitoringAssignment,
     PlatformOpportunitySystem,
     PoliticalWatchPolicy,
+    ReplayObservationToken,
     VenueFeeSchedule,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
@@ -838,8 +839,57 @@ async def test_platform_runtime_ttl_sweep_uses_the_isolated_ledger_and_refreshes
     assert dashboard_state.platform_opportunity["political_experimental_paper"][
         "snapshot"
     ] == {"ttl_swept": True}
-
     await bot._shutdown_platform_opportunity_system()
+
+
+@pytest.mark.asyncio
+async def test_political_paper_callback_refreshes_snapshot_after_later_failure(
+    tmp_path, monkeypatch
+):
+    """A post-transition scorer failure cannot hide durable paper accounting."""
+    config = BotConfig()
+    config.api.polymarket_platform = "us"
+    config.mode.kalshi_enabled = False
+    config.platform_opportunity.enabled = True
+    config.platform_opportunity.political_experimental_paper_enabled = True
+    config.platform_opportunity.catalog_path = str(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(config)
+    await bot._configure_platform_opportunity_system()
+
+    ledger = bot.political_experimental_paper_ledger
+    worker = bot.platform_opportunity_worker
+    assert ledger is not None
+    assert worker is not None
+    callback = worker._on_observation
+    assert callback is not None
+    token = ReplayObservationToken(
+        cohort_id=bot.platform_opportunity_system.cohort_id, sequence=1
+    )
+    transitions = []
+    monkeypatch.setattr(
+        ledger,
+        "process_observation",
+        lambda *, replay_sequence: transitions.append(replay_sequence),
+    )
+    monkeypatch.setattr(ledger, "snapshot", lambda: {"durable_close": True})
+
+    def fail_after_transition(_token):
+        raise RuntimeError("scored decision unavailable")
+
+    monkeypatch.setattr(
+        bot.platform_opportunity_system,
+        "political_scored_decision",
+        fail_after_transition,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="scored decision unavailable"):
+            callback(token, object())
+        assert transitions == [1]
+        assert dashboard_state.platform_opportunity["political_experimental_paper"][
+            "snapshot"
+        ] == {"durable_close": True}
+    finally:
+        await bot._shutdown_platform_opportunity_system()
 
 
 @pytest.mark.asyncio
