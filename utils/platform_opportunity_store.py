@@ -194,6 +194,13 @@ class PlatformOpportunityStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_platform_replay_events_contract
                     ON platform_replay_observation_events(cohort_id, contract_id, sequence);
+                -- A replay sequence is the global deterministic decision
+                -- order for one cohort.  It must be allocated by SQLite, not
+                -- inferred from a racy MAX(sequence) read across connections.
+                CREATE TABLE IF NOT EXISTS platform_replay_cohort_sequences (
+                    cohort_id TEXT PRIMARY KEY,
+                    next_sequence INTEGER NOT NULL CHECK(next_sequence > 0)
+                );
                 CREATE TABLE IF NOT EXISTS platform_replay_evidence_status (
                     cohort_id TEXT PRIMARY KEY,
                     cohort_valid INTEGER NOT NULL CHECK(cohort_valid IN (0, 1)),
@@ -668,6 +675,11 @@ class PlatformOpportunityStore:
             raise ValueError("pending signal timestamps must be causally ordered")
         with self._lock, self._connection:
             connection = self._connection
+            # This covers capacity admission, hash-addressed payload writes,
+            # and sequence allocation as one short writer transaction.  A
+            # second store connection therefore cannot observe the old
+            # counter value and allocate the same replay token.
+            connection.execute("BEGIN IMMEDIATE")
             account = connection.execute(
                 "SELECT 1 FROM political_experimental_paper_accounts WHERE cohort_id = ?",
                 (cohort_id,),
@@ -1823,10 +1835,22 @@ class PlatformOpportunityStore:
                     str(prior["lock_phase"]) != lock_phase,
                 )
             )
+            # Seed upgraded databases from their existing append-only rows
+            # exactly once, then atomically reserve the next cohort-local
+            # token.  ``RETURNING`` keeps allocation and increment in the
+            # same SQLite statement.
+            connection.execute(
+                "INSERT OR IGNORE INTO platform_replay_cohort_sequences "
+                "(cohort_id, next_sequence) VALUES (?, COALESCE((SELECT "
+                "MAX(sequence) + 1 FROM platform_replay_observation_events "
+                "WHERE cohort_id = ?), 1))",
+                (cohort_id, cohort_id),
+            )
             sequence = int(
                 connection.execute(
-                    "SELECT COALESCE(MAX(sequence), 0) + 1 "
-                    "FROM platform_replay_observation_events WHERE cohort_id = ?",
+                    "UPDATE platform_replay_cohort_sequences "
+                    "SET next_sequence = next_sequence + 1 "
+                    "WHERE cohort_id = ? RETURNING next_sequence - 1",
                     (cohort_id,),
                 ).fetchone()[0]
             )

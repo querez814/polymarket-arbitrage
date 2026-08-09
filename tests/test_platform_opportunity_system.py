@@ -1771,6 +1771,49 @@ def test_invalid_replay_cohort_fails_closed_in_acceptance_report(tmp_path):
     assert "replay_evidence_invalid" in report.reasons
 
 
+def test_replay_sequence_allocation_is_unique_and_ordered_across_connections(tmp_path):
+    """Two independent SQLite connections receive unique durable tokens."""
+    path = tmp_path / "opportunities.db"
+    cohort_id = "cohort:concurrent-sequences"
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    fee = {"schema_version": 1, "venue": "kalshi", "fee_type": "none"}
+
+    def persist(index: int) -> int:
+        store = PlatformOpportunityStore(path)
+        try:
+            return int(
+                store.record_replay_observation(
+                    cohort_id=cohort_id,
+                    contract_id=f"kalshi:KXTEST-{index}",
+                    normalized_book=book,
+                    fee_schedule=fee,
+                    lock_phase="hot",
+                    observed_at=NOW,
+                    request_started_at=NOW,
+                    received_at=NOW,
+                )["event"]["sequence"]
+            )
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        sequences = list(executor.map(persist, range(32)))
+
+    assert sorted(sequences) == list(range(1, 33))
+    reopened = PlatformOpportunityStore(path)
+    try:
+        assert [
+            event["sequence"]
+            for event in reopened.replay_observation_events(cohort_id=cohort_id)
+        ] == list(range(1, 33))
+    finally:
+        reopened.close()
+
+
 def test_replay_evidence_cap_accounts_for_sqlite_store_and_wal_bytes(tmp_path):
     """The configured cap is physical store capacity, not payload-only capacity."""
     path = tmp_path / "opportunities.db"
