@@ -10,7 +10,13 @@ from core.platform_opportunities import (
     VenueFeeSchedule,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
-from polymarket_client.models import OrderBook
+from polymarket_client.models import (
+    OrderBook,
+    OrderBookSide,
+    PriceLevel,
+    TokenOrderBook,
+    TokenType,
+)
 from utils.platform_opportunity_store import PlatformOpportunityStore
 
 
@@ -218,6 +224,45 @@ async def test_worker_persists_replay_event_before_scoring_an_observation(tmp_pa
     }
     assert system.store.replay_book_state(event["state_hash"])["yes"]["bids"] == []
     assert system.store.replay_fee_schedule(event["fee_hash"])["venue"] == "polymarket"
+
+
+@pytest.mark.asyncio
+async def test_worker_scores_only_the_persisted_bounded_replay_book(tmp_path):
+    """Raw depth beyond the retained 50 levels cannot influence decisions."""
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    worker = PlatformOpportunityWorker(system)
+    observed_at = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
+    # The final ask is real raw depth but lies beyond the persisted replay cap.
+    # Were scoring to retain the adapter object, entry/exit walking could see it.
+    yes = TokenOrderBook(TokenType.YES)
+    yes.bids = OrderBookSide([PriceLevel(0.49, 100)])
+    yes.asks = OrderBookSide(
+        [PriceLevel(0.51 + index * 0.001, 1) for index in range(51)]
+    )
+    no = TokenOrderBook(TokenType.NO)
+    no.bids = OrderBookSide([PriceLevel(0.49, 100)])
+    no.asks = OrderBookSide([PriceLevel(0.51, 100)])
+    raw_book = OrderBook(market_id="bounded", yes=yes, no=no)
+
+    await worker.start()
+    assert worker.submit_book(
+        "polymarket:bounded",
+        raw_book,
+        observed_at=observed_at,
+        request_started_at=observed_at,
+        received_at=observed_at,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+
+    scored_book, _ = system._latest_books["polymarket:bounded"]
+    assert scored_book is not raw_book
+    assert len(raw_book.yes.asks.levels) == 51
+    assert len(scored_book.yes.asks.levels) == 50
+    assert [price for price, _ in system._levels(scored_book, "yes", entry=True)] == [
+        0.51 + index * 0.001 for index in range(50)
+    ]
 
 
 def test_dashboard_exposes_durable_observation_time_bounds_and_provenance(tmp_path):

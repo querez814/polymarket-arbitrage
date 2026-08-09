@@ -142,8 +142,9 @@ class PlatformOpportunityWorker:
                     persist_replay = getattr(
                         self.system, "persist_replay_observation", None
                     )
+                    scored_book = envelope.book
                     if persist_replay is not None:
-                        await self._run_sync(
+                        replay_evidence = await self._run_sync(
                             persist_replay,
                             envelope.contract_id,
                             envelope.book,
@@ -152,10 +153,19 @@ class PlatformOpportunityWorker:
                             received_at=envelope.received_at,
                             fee_schedule=envelope.fee_schedule,
                         )
+                        replay_book = getattr(
+                            self.system, "replay_book_for_state_hash", None
+                        )
+                        if replay_book is not None:
+                            scored_book = await self._run_sync(
+                                replay_book,
+                                replay_evidence["state_hash"],
+                                market_id=envelope.book.market_id,
+                            )
                     await self._run_sync(
                         self.system.observe_book,
                         envelope.contract_id,
-                        envelope.book,
+                        scored_book,
                         observed_at=envelope.observed_at,
                     )
                     record = getattr(self.system, "record_successful_observation", None)

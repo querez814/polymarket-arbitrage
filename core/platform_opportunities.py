@@ -20,7 +20,14 @@ from typing import Iterable, Literal, Sequence, cast
 from collections.abc import Mapping
 
 from kalshi_client.models import KalshiMarket, KalshiMilestone
-from polymarket_client.models import Market, OrderBook, PriceLevel, TokenType
+from polymarket_client.models import (
+    Market,
+    OrderBook,
+    OrderBookSide,
+    PriceLevel,
+    TokenOrderBook,
+    TokenType,
+)
 from utils.platform_opportunity_store import PlatformOpportunityStore
 
 
@@ -833,6 +840,38 @@ class PlatformOpportunitySystem:
             observed_at=observed,
             request_started_at=request_started,
             received_at=received,
+        )
+
+    def replay_book_for_state_hash(
+        self, state_hash: str, *, market_id: str
+    ) -> OrderBook:
+        """Rehydrate the exact bounded state admitted to replay evidence.
+
+        The worker must score this value, rather than the adapter object it
+        normalized.  That makes the persisted 50-level/sanitized representation
+        the sole depth authority for marks and signals.
+        """
+        payload = self.store.replay_book_state(state_hash)
+        if payload.get("schema_version") != 1:
+            raise ValueError("unsupported normalized replay book schema")
+
+        def token(token_type: TokenType) -> TokenOrderBook:
+            raw = payload.get(token_type.value)
+            if not isinstance(raw, dict):
+                raise ValueError("normalized replay book token is missing")
+
+            def side(name: str) -> OrderBookSide:
+                levels = raw.get(name)
+                if not isinstance(levels, list):
+                    raise ValueError("normalized replay book side is missing")
+                return OrderBookSide(
+                    [PriceLevel(float(price), float(size)) for price, size in levels]
+                )
+
+            return TokenOrderBook(token_type, bids=side("bids"), asks=side("asks"))
+
+        return OrderBook(
+            market_id=market_id, yes=token(TokenType.YES), no=token(TokenType.NO)
         )
 
     def record_successful_observation(
