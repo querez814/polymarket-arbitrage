@@ -526,6 +526,112 @@ def test_kalshi_exact_milestone_sets_occurrence_not_settlement_deadline(tmp_path
     assert locks[0]["locked_until"] == (occurrence + timedelta(hours=2, minutes=45)).isoformat()
 
 
+def test_political_locks_require_token_bound_political_venue_provenance(tmp_path):
+    """Generic regulatory approval must not enter the political watchlist."""
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(max_events=3),
+    )
+    occurrence = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            KalshiMarket(
+                ticker="KXFDA-APPROVAL-A",
+                event_ticker="KXFDA-APPROVAL",
+                series_ticker="KXFDAAPPROVAL",
+                title="Will the FDA approve the drug?",
+                event_title="FDA drug approval decision",
+                category="Health",
+                close_time=NOW + timedelta(days=30),
+                volume=10_000,
+                open_interest=5_000,
+            ),
+            KalshiMarket(
+                ticker="KXPRES-APPROVAL-A",
+                event_ticker="KXPRES-APPROVAL",
+                series_ticker="KXPRESAPPROVAL",
+                title="Will presidential approval exceed 50%?",
+                event_title="President approval rating",
+                category="Politics",
+                close_time=NOW + timedelta(days=30),
+                volume=1_000,
+                open_interest=500,
+            ),
+            KalshiMarket(
+                ticker="KXBOARD-DISAPPROVAL-A",
+                event_ticker="KXBOARD-DISAPPROVAL",
+                series_ticker="KXBOARD",
+                title="Will board disapproval exceed 50%?",
+                event_title="Corporate board vote",
+                category="Business",
+                close_time=NOW + timedelta(days=30),
+                volume=8_000,
+                open_interest=4_000,
+            ),
+            KalshiMarket(
+                ticker="KXSERIES-GENERIC-A",
+                event_ticker="KXSERIES-GENERIC",
+                series_ticker="POLITICS-2026",
+                title="Will the named outcome occur?",
+                event_title="Scheduled market event",
+                category="General",
+                close_time=NOW + timedelta(days=30),
+                volume=500,
+                open_interest=250,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="fda-approval",
+                title="FDA decision",
+                category="Health",
+                milestone_type="regulatory_decision",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=30),
+                related_event_tickers=("KXFDA-APPROVAL",),
+                primary_event_tickers=("KXFDA-APPROVAL",),
+            ),
+            KalshiMilestone(
+                milestone_id="pres-approval",
+                title="President approval",
+                category="Politics",
+                milestone_type="polling_release",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=30),
+                related_event_tickers=("KXPRES-APPROVAL",),
+                primary_event_tickers=("KXPRES-APPROVAL",),
+            ),
+            KalshiMilestone(
+                milestone_id="board-disapproval",
+                title="Board vote",
+                category="Business",
+                milestone_type="corporate_event",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=30),
+                related_event_tickers=("KXBOARD-DISAPPROVAL",),
+                primary_event_tickers=("KXBOARD-DISAPPROVAL",),
+            ),
+            KalshiMilestone(
+                milestone_id="series-generic",
+                title="Scheduled event",
+                category="General",
+                milestone_type="event",
+                start_time=occurrence,
+                end_time=occurrence + timedelta(minutes=30),
+                related_event_tickers=("KXSERIES-GENERIC",),
+                primary_event_tickers=("KXSERIES-GENERIC",),
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    assert [lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)] == [
+        "KXPRES-APPROVAL",
+        "KXSERIES-GENERIC",
+    ]
+
+
 def test_political_lock_uses_milestone_end_for_live_event_cadence(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),

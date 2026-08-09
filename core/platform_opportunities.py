@@ -45,6 +45,10 @@ class PlatformContract:
     title: str
     event_id: str
     event_title: str
+    # Venue-native event and series identities are provenance, not text
+    # fragments to be guessed from a contract title.  Political selection uses
+    # them alongside the venue category and event title.
+    series_id: str = field(default="", kw_only=True)
     category: str
     active: bool
     close_time: datetime | None
@@ -118,6 +122,7 @@ def _stored_contract(payload: Mapping[str, object]) -> PlatformContract:
     # Revisions written before event-window provenance was introduced remain
     # readable, but cannot be mistaken for exact end-bounded evidence.
     for field_name in (
+        "series_id",
         "event_start_at",
         "event_end_at",
         "milestone_id",
@@ -141,6 +146,7 @@ def normalize_polymarket(market: Market) -> PlatformContract:
             "title": market.question.strip(),
             "event_id": market.event_id.strip() or market.condition_id,
             "event_title": market.event_title.strip(),
+            "series_id": "",
             "category": market.category.strip(),
             "active": bool(market.active and not market.closed and not market.resolved),
             "close_time": close,
@@ -185,6 +191,7 @@ def normalize_kalshi(market: KalshiMarket) -> PlatformContract:
             "title": market.title.strip(),
             "event_id": market.event_ticker.strip() or market.ticker,
             "event_title": market.event_title.strip(),
+            "series_id": market.series_ticker.strip(),
             "category": market.category.strip(),
             "active": market.is_active,
             "close_time": close,
@@ -320,14 +327,37 @@ _POLITICAL_TERMS = frozenset(
     }
 )
 
+_AMBIGUOUS_POLITICAL_TERMS = frozenset({"approval", "polling", "vote", "voting"})
 
-def _is_political_contract(contract: PlatformContract) -> bool:
-    """Use explicit political language; never infer politics from generic dates."""
-    text = " ".join((contract.title, contract.event_title, contract.category)).casefold()
-    return any(term in text for term in _POLITICAL_TERMS) or (
-        "approval" in text
-        and any(term in text for term in ("president", "trump", "white house"))
+
+def _word_tokens(value: str) -> frozenset[str]:
+    """Return normalized words without treating parts of words as evidence."""
+    return frozenset(re.findall(r"[a-z0-9]+", value.casefold()))
+
+
+def _contains_political_terms(value: str) -> bool:
+    tokens = _word_tokens(value)
+    return any(
+        all(word in tokens for word in term.split())
+        for term in _POLITICAL_TERMS - _AMBIGUOUS_POLITICAL_TERMS
     )
+
+
+def is_political_contract(contract: PlatformContract) -> bool:
+    """Classify only political contracts with explicit venue provenance.
+
+    Generic approval language is common in health and regulatory markets.  It
+    becomes political only when the market's category, series, or parent event
+    provides political context.  Word tokenization intentionally prevents
+    terms such as ``disapproval`` from matching ``approval``.
+    """
+    provenance = (
+        contract.title,
+        contract.category,
+        contract.series_id,
+        contract.event_title,
+    )
+    return any(_contains_political_terms(value) for value in provenance)
 
 
 def _is_combo_contract(contract: PlatformContract) -> bool:
@@ -741,7 +771,7 @@ class PlatformOpportunitySystem:
                 and (contract.occurrence_at or contract.catalyst_at) >= now
                 and (contract.occurrence_at or contract.catalyst_at)
                 <= now + policy.lookahead
-                and _is_political_contract(contract)
+                and is_political_contract(contract)
                 and not _is_combo_contract(contract)
                 # A Kalshi political lock is accepted only from an exact,
                 # end-bounded milestone.  A start alone cannot define when

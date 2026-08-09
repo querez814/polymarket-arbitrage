@@ -96,7 +96,7 @@ from core.platform_opportunities import (
     PoliticalWatchPolicy,
     PlatformOpportunitySystem,
     VenueFeeSchedule,
-    _is_political_contract,
+    is_political_contract,
     kalshi_fee_schedule_from_metadata,
     normalize_kalshi,
     polymarket_fee_schedule_from_market_info,
@@ -985,7 +985,7 @@ class TradingBotWithDashboard:
             {
                 market.event_ticker
                 for market in markets
-                if market.event_ticker and _is_political_contract(normalize_kalshi(market))
+                if market.event_ticker and is_political_contract(normalize_kalshi(market))
             }
         )
         event_tickers = tuple(dict.fromkeys((*pins, *automatic)))[
