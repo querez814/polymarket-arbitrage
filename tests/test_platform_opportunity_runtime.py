@@ -34,12 +34,20 @@ async def test_worker_drains_queued_observations_before_shutdown():
 
         def observe_replay_token(self, token):
             self.processed.append(token.sequence)
+            return {"canonical": token.sequence}
 
         def dashboard_summary(self):
             return {}
 
     system = System()
-    worker = PlatformOpportunityWorker(system, queue_capacity=10)
+    observed = []
+    worker = PlatformOpportunityWorker(
+        system,
+        queue_capacity=10,
+        on_observation=lambda token, result: observed.append(
+            (token.sequence, result["canonical"])
+        ),
+    )
     schedule = VenueFeeSchedule(
         "polymarket",
         "none",
@@ -61,6 +69,7 @@ async def test_worker_drains_queued_observations_before_shutdown():
     await worker.stop()
 
     assert system.processed == [1, 2, 3]
+    assert observed == [(1, 1), (2, 2), (3, 3)]
     assert worker.processed == 3
 
 

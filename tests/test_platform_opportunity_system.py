@@ -21,6 +21,7 @@ from core.platform_opportunities import (
     MonitoringPolicy,
     PoliticalWatchPolicy,
     PlatformOpportunitySystem,
+    ReplayObservationToken,
     LaneAuthority,
     StructuralRelation,
     VenueFeeSchedule,
@@ -2939,6 +2940,72 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
     )
     assert cooldown.intents == ()
     assert expired.intents == ()
+
+
+def test_political_replay_context_derives_only_the_durable_reviewed_lock(tmp_path):
+    """Token hand-off cannot accept sampler-supplied event or milestone text."""
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=1,
+        warm_before=timedelta(hours=4),
+        hot_before=timedelta(hours=1),
+    )
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=policy,
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
+    )
+    start = NOW + timedelta(hours=2)
+    end = start + timedelta(minutes=45)
+    market = _kalshi(
+        "KXTRUMPMENTION-26AUG10-A",
+        "Will Trump mention immigration?",
+        event_ticker="KXTRUMPMENTION-26AUG10",
+    )
+    milestone = KalshiMilestone(
+        milestone_id="mention-2026-08-10",
+        title="Trump remarks",
+        category="Politics",
+        milestone_type="political_speech",
+        start_time=start,
+        end_time=end,
+        related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        source_id="kalshi-milestones",
+    )
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[market],
+        kalshi_milestones=[milestone],
+        observed_at=NOW,
+    )
+    contract_id = "kalshi:KXTRUMPMENTION-26AUG10-A"
+    hot = start - timedelta(minutes=30)
+    system.set_fee_schedule(contract_id, _zero_fee("kalshi"))
+    replay = system.persist_replay_observation(
+        contract_id,
+        _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=hot,
+        request_started_at=hot - timedelta(milliseconds=100),
+        received_at=hot,
+        fee_schedule=_zero_fee("kalshi"),
+    )
+
+    context = system.political_replay_context(
+        ReplayObservationToken(system.cohort_id, replay["event"]["sequence"])
+    )
+
+    assert context == {
+        "event_id": "KXTRUMPMENTION-26AUG10",
+        "milestone_id": "mention-2026-08-10",
+        "contract_id": contract_id,
+        "phase": "hot",
+        "base_lane": "hot_pre_event",
+        "request_started_at": (hot - timedelta(milliseconds=100)).isoformat(),
+        "received_at": hot.isoformat(),
+        "state_hash": replay["state_hash"],
+        "fee_hash": replay["fee_hash"],
+    }
 
 
 def test_political_reaction_rearms_after_typed_short_interval_and_restart(tmp_path):

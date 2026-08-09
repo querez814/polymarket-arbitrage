@@ -30,6 +30,7 @@ class PlatformOpportunityWorker:
         *,
         queue_capacity: int = 10_000,
         on_update: Callable[[dict], None] | None = None,
+        on_observation: Callable[[ReplayObservationToken, object], None] | None = None,
     ):
         if queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
@@ -41,6 +42,10 @@ class PlatformOpportunityWorker:
         self._task: asyncio.Task | None = None
         self._running = False
         self._on_update = on_update
+        # This hook receives only the sealed replay token and the result scored
+        # from its canonical evidence.  It is the narrow runtime hand-off used
+        # by experimental paper; raw adapter books never reappear here.
+        self._on_observation = on_observation
         self.processed = 0
         self.dropped = 0
         self.failures = 0
@@ -159,7 +164,11 @@ class PlatformOpportunityWorker:
                 break
             try:
                 async with self._operation_lock:
-                    await self._run_sync(self.system.observe_replay_token, token)
+                    result = await self._run_sync(
+                        self.system.observe_replay_token, token
+                    )
+                    if self._on_observation is not None:
+                        await self._run_sync(self._on_observation, token, result)
                 self.processed += 1
             except asyncio.CancelledError:
                 raise

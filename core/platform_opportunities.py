@@ -959,6 +959,55 @@ class PlatformOpportunitySystem:
         self.set_fee_schedule(contract_id, schedule)
         return self.observe_book(contract_id, book, observed_at=received_at)
 
+    def political_replay_context(self, token: ReplayObservationToken) -> dict[str, str]:
+        """Derive immutable reviewed-lock attribution for one replay token.
+
+        The experimental-paper runtime must never accept event or milestone
+        text from a sampler or scorer.  It can only turn a scored political
+        reaction into a pending signal when the canonical token still maps to
+        exactly one durable reviewed lock and eligible phase.
+        """
+        if token.cohort_id != self.cohort_id:
+            raise ValueError("replay token belongs to another cohort")
+        event = self.store.replay_observation_event(
+            cohort_id=token.cohort_id, sequence=token.sequence
+        )
+        phase = str(event["lock_phase"])
+        base_lane = {"hot": "hot_pre_event", "event_live": "event_live"}.get(phase)
+        if base_lane is None:
+            raise ValueError("replay token is outside an eligible political phase")
+        received_at = _aware(datetime.fromisoformat(str(event["received_at"])))
+        if received_at is None:
+            raise ValueError("replay token has no timezone-aware receipt")
+        contract_id = str(event["contract_id"])
+        locks = [
+            lock
+            for lock in self.store.active_political_event_locks(now=received_at)
+            if contract_id in {str(item) for item in lock.get("contract_ids", ())}
+        ]
+        if len(locks) != 1:
+            raise ValueError("replay token has ambiguous or missing reviewed lock")
+        selected_contract = locks[0].get("selected_contract")
+        if not isinstance(selected_contract, Mapping):
+            raise ValueError("reviewed lock has no canonical selected contract")
+        milestone_id = selected_contract.get("milestone_id")
+        if not isinstance(milestone_id, str) or not milestone_id:
+            raise ValueError("reviewed lock has no canonical milestone")
+        request_started_at = event.get("request_started_at")
+        if not isinstance(request_started_at, str) or not request_started_at:
+            raise ValueError("replay token has no causal request start")
+        return {
+            "event_id": str(locks[0]["event_id"]),
+            "milestone_id": milestone_id,
+            "contract_id": contract_id,
+            "phase": phase,
+            "base_lane": base_lane,
+            "request_started_at": request_started_at,
+            "received_at": str(event["received_at"]),
+            "state_hash": str(event["state_hash"]),
+            "fee_hash": str(event["fee_hash"]),
+        }
+
     def record_successful_observation(
         self,
         contract_id: str,
