@@ -177,6 +177,35 @@ def test_partial_catalog_replaces_ordinary_eligibility_without_losing_history(tm
     assert store.catalog_counts() == {"current": 1, "revisions": 3}
 
 
+def test_repeated_partial_catalogs_retire_stale_structural_relations(tmp_path):
+    """Partial cohorts replace live relations instead of accumulating old ones."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(store=store)
+    close = NOW + timedelta(minutes=30)
+
+    for index, threshold in enumerate((3, 5, 7)):
+        refresh = system.refresh_catalog(
+            polymarket_markets=[
+                _poly(
+                    f"p{index}-low",
+                    f"Will August CPI be above {threshold}%?",
+                    end_date=close,
+                ),
+                _poly(
+                    f"p{index}-high",
+                    f"Will August CPI be above {threshold + 1}%?",
+                    end_date=close,
+                ),
+            ],
+            kalshi_markets=[],
+            snapshot_complete=False,
+            observed_at=NOW + timedelta(minutes=index),
+        )
+
+        assert refresh.catalog_contracts == 2
+        assert store.summary()["relations"] == 1
+
+
 def test_venue_scoped_coverage_retains_only_failed_venue_cohort(tmp_path):
     """A source failure must not retire its last-good rows or stale healthy rows."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")

@@ -1483,7 +1483,12 @@ class PlatformOpportunitySystem:
         self.store.record_relations(
             result,
             observed_at=observed_at,
-            retire_absent=self._snapshot_complete,
+            # Every usable response, including a bounded partial page,
+            # replaces the effective catalog cohort.  Relations describe
+            # that live cohort, so retaining absent relations here would
+            # leave structural opportunities for contracts no longer eligible
+            # or even present in the current inventory.
+            retire_absent=True,
         )
         return result
 
