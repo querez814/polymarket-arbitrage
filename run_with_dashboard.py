@@ -763,6 +763,9 @@ class TradingBotWithDashboard:
             ),
             slippage_per_contract=policy.slippage_per_contract,
             max_shadow_notional=policy.max_shadow_notional,
+            political_signal_ttl=timedelta(
+                seconds=policy.political_paper_signal_ttl_seconds
+            ),
             experiment_id=policy.experiment_id,
             lane_authorities={
                 "depth_imbalance_reaction_experimental_v1": (

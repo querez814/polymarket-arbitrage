@@ -1779,6 +1779,9 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
         observed_at=start - timedelta(minutes=30),
     )
     assert [intent.direction for intent in hot.intents] == ["yes"]
+    assert hot.intents[0].expires_at == start - timedelta(minutes=30) + timedelta(
+        seconds=10
+    )
 
     live = system.observe_book(
         contract_id,
@@ -1786,6 +1789,22 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
         observed_at=start + timedelta(minutes=1),
     )
     assert [intent.direction for intent in live.intents] == ["no"]
+    assert live.intents[0].expires_at == start + timedelta(minutes=1, seconds=10)
+
+    # A reaction near the reviewed event end cannot spill into cooldown,
+    # even though the configured signal TTL would otherwise extend past it.
+    system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=end - timedelta(seconds=6),
+    )
+    ending = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+        observed_at=end - timedelta(seconds=5),
+    )
+    assert [intent.direction for intent in ending.intents] == ["yes"]
+    assert ending.intents[0].expires_at == end
 
     cooldown = system.observe_book(
         contract_id,

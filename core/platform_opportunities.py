@@ -691,6 +691,7 @@ class PlatformOpportunitySystem:
         additional_fee_buffer_per_contract: float = 0.0,
         slippage_per_contract: float = 0.002,
         max_shadow_notional: float = 100.0,
+        political_signal_ttl: timedelta = timedelta(seconds=10),
         experiment_id: str = "platform-first-v1",
         lane_authorities: Mapping[str, LaneAuthority] | None = None,
     ):
@@ -705,6 +706,9 @@ class PlatformOpportunitySystem:
         self.max_shadow_notional = float(max_shadow_notional)
         if not math.isfinite(self.max_shadow_notional) or self.max_shadow_notional <= 0:
             raise ValueError("max_shadow_notional must be finite and positive")
+        if political_signal_ttl <= timedelta(0):
+            raise ValueError("political signal TTL must be positive")
+        self.political_signal_ttl = political_signal_ttl
         if not experiment_id.strip():
             raise ValueError("experiment_id must be non-empty")
         self.experiment_id = experiment_id.strip()
@@ -753,6 +757,7 @@ class PlatformOpportunitySystem:
                     "slippage": self.slippage_per_contract,
                     "additional_fee_buffer": self.additional_fee_buffer_per_contract,
                     "max_shadow_notional": self.max_shadow_notional,
+                    "political_signal_ttl_seconds": self.political_signal_ttl.total_seconds(),
                     "monitoring_policy": asdict(self.monitoring_policy),
                     "political_watch_policy": (
                         asdict(self.political_watch_policy)
@@ -1976,14 +1981,30 @@ class PlatformOpportunitySystem:
         if fee_schedule is None:
             return ObservationResult(relation_result.intents, tuple(marks))
         contract = self._contracts[contract_id]
-        expiry = min(
-            observed_at + timedelta(minutes=10),
-            (
-                (contract.catalyst_at + timedelta(minutes=30))
-                if contract.catalyst_at
-                else observed_at + timedelta(minutes=10)
-            ),
-        )
+        if self.political_watch_policy is not None:
+            # Political-v2 signals are a causal hand-off to the dedicated
+            # paper ledger, not ten-minute research intents.  A signal cannot
+            # survive its current reviewed phase boundary, where it would no
+            # longer be eligible for a same-phase next-book resolution.
+            phase = self._observation_lock_phase(contract_id, observed_at)
+            phase_boundary = (
+                contract.event_start_at
+                if phase == "hot"
+                else contract.event_end_at if phase == "event_live" else None
+            )
+            expiry = min(
+                observed_at + self.political_signal_ttl,
+                phase_boundary or observed_at + self.political_signal_ttl,
+            )
+        else:
+            expiry = min(
+                observed_at + timedelta(minutes=10),
+                (
+                    (contract.catalyst_at + timedelta(minutes=30))
+                    if contract.catalyst_at
+                    else observed_at + timedelta(minutes=10)
+                ),
+            )
         intent_id = (
             "intent:"
             + _fingerprint(
