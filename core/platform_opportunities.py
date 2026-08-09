@@ -474,6 +474,7 @@ class PlatformOpportunitySystem:
         )
         self._intents: dict[str, ShadowIntent] = {}
         self._relations: dict[str, StructuralRelation] = {}
+        self._sampled_contract_ids: set[str] = set()
         self._latest_books: dict[str, tuple[OrderBook, datetime]] = {}
         self._relation_residuals: dict[str, deque[float]] = defaultdict(
             lambda: deque(maxlen=64)
@@ -680,10 +681,22 @@ class PlatformOpportunitySystem:
             retire_absent=snapshot_complete,
         )
         self._refresh_political_locks(observed_at)
+        monitoring = self.plan_monitoring(observed_at)
+        # Relative-value observations need contemporaneous books for every leg.
+        # Keep the structural universe aligned with the assignments the runtime
+        # actually polls; ordinary warm inventory is intentionally not sampled.
+        self._sampled_contract_ids = {
+            assignment.contract_id for assignment in monitoring.hot
+        }
+        self._sampled_contract_ids.update(
+            assignment.contract_id
+            for assignment in monitoring.warm
+            if assignment.reason == "political_event_lock"
+        )
         return CatalogRefresh(
             catalog_contracts=len(self._contracts),
             revisions_written=revisions,
-            monitoring=self.plan_monitoring(observed_at),
+            monitoring=monitoring,
         )
 
     @staticmethod
@@ -899,6 +912,8 @@ class PlatformOpportunitySystem:
             tuple[str, str, str], list[tuple[float, PlatformContract, str]]
         ] = defaultdict(list)
         for contract in self._contracts.values():
+            if contract.contract_id not in self._sampled_contract_ids:
+                continue
             match = self._THRESHOLD.search(contract.title)
             if not match:
                 continue

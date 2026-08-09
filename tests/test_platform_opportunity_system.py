@@ -338,6 +338,32 @@ def test_only_machine_checkable_structure_authorizes_relative_value(tmp_path):
     assert "vague" not in relation.relation_id
 
 
+def test_structural_relation_is_excluded_when_a_leg_is_not_sampled(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(
+        store=store,
+        monitoring_policy=MonitoringPolicy(
+            lookahead=timedelta(days=7),
+            max_hot_contracts=1,
+            min_liquidity=100,
+            min_volume=100,
+        ),
+    )
+    close = NOW + timedelta(hours=2)
+    refresh = system.refresh_catalog(
+        polymarket_markets=[
+            _poly("p3", "Will August CPI be above 3%?", end_date=close),
+            _poly("p4", "Will August CPI be above 4%?", end_date=close),
+        ],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+
+    assert len(refresh.monitoring.hot) == 1
+    assert len(refresh.monitoring.budget_excluded) == 1
+    assert system.discover_structural_relations(observed_at=NOW) == ()
+
+
 def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)
