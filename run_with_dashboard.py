@@ -1146,6 +1146,11 @@ class TradingBotWithDashboard:
         elif self._kalshi_markets:
             ordinary_kalshi = list(self._kalshi_markets)
         event_index_status = await self._refresh_kalshi_event_index(now=now)
+        (
+            rotated_kalshi,
+            rotated_milestones,
+            rotation_status,
+        ) = await self._rotated_kalshi_event_targets(now=now)
         kalshi_by_ticker = {market.ticker: market for market in ordinary_kalshi}
         (
             targeted_kalshi,
@@ -1168,12 +1173,20 @@ class TradingBotWithDashboard:
                 if market.event_ticker not in blocked_target_events
             }
         kalshi_by_ticker.update({market.ticker: market for market in targeted_kalshi})
+        # Rotation is deliberately a separate bounded enrichment source.  A
+        # complete probe is the only way it may contribute markets or exact
+        # occurrence evidence; failed probes remain visible and back off.
+        kalshi_by_ticker.update({market.ticker: market for market in rotated_kalshi})
         kalshi_milestones, milestone_status = await self._political_kalshi_milestones(
             list(kalshi_by_ticker.values()),
             now=now,
             excluded_event_tickers=set(target_status["events"]),
         )
-        kalshi_milestones = [*targeted_milestones, *kalshi_milestones]
+        kalshi_milestones = [
+            *targeted_milestones,
+            *rotated_milestones,
+            *kalshi_milestones,
+        ]
         refresh = await worker.refresh_catalog(
             polymarket_markets=poly_markets,
             kalshi_markets=list(kalshi_by_ticker.values()),
@@ -1238,6 +1251,7 @@ class TradingBotWithDashboard:
                         "kalshi_ordinary": ordinary_status,
                         "kalshi_event_index": event_index_status,
                         "kalshi_mandatory_targets": target_status,
+                        "kalshi_rotation": rotation_status,
                         "kalshi_political_milestones": milestone_status,
                     },
                     # Transitional test doubles and external shadow workers may
@@ -1451,6 +1465,104 @@ class TradingBotWithDashboard:
                 state="joined", markets=len(event.markets), stop_reason=read.stop_reason
             )
             status["joined_event_tickers"] += 1
+        return markets, list(read.milestones), status
+
+    async def _rotated_kalshi_event_targets(self, *, now: datetime):
+        """Probe the next durable political-event rotation without spending pins.
+
+        Unlike reviewed targets, a rotation probe is allowed to fail without
+        blocking the catalog commit.  Its outcome is persisted immediately so
+        the next pass selects another unprobed event (or honors backoff after
+        a transient failure), including across a process restart.
+        """
+        system = self.platform_opportunity_system
+        client = self._platform_kalshi_client
+        status = {
+            "eligible_event_tickers": 0,
+            "attempted_event_tickers": 0,
+            "complete_event_tickers": 0,
+            "failed_event_tickers": 0,
+            "events": {},
+        }
+
+        def record_failure(event_ticker: str, reason: str) -> None:
+            system.store.record_kalshi_event_probe_failure(
+                event_ticker=event_ticker,
+                attempted_at=now,
+                reason=reason,
+                base_backoff_seconds=30,
+                max_backoff_seconds=900,
+            )
+
+        if system is None or client is None:
+            status.update(
+                status="unavailable", stop_reason="dedicated_source_unavailable"
+            )
+            return [], [], status
+        tickers = system.select_kalshi_event_rotation(
+            now=now,
+            limit=self.config.platform_opportunity.political_milestone_max_event_tickers,
+        )
+        status["eligible_event_tickers"] = len(tickers)
+        if not tickers:
+            status.update(status="idle", stop_reason="no_eligible_rotation_target")
+            return [], [], status
+        status["attempted_event_tickers"] = len(tickers)
+        try:
+            read = await client.list_event_catalog(
+                status="open",
+                tickers=tickers,
+                with_nested_markets=True,
+                with_milestones=True,
+                max_pages=self.config.platform_opportunity.political_milestone_max_pages_per_event,
+            )
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"[:200]
+            for ticker in tickers:
+                record_failure(ticker, reason)
+                status["events"][ticker] = {"state": "failed", "stop_reason": reason}
+            status.update(
+                status="failure",
+                stop_reason="fetch_failed",
+                failed_event_tickers=len(tickers),
+            )
+            return [], [], status
+        events = {event.event_ticker: event for event in read.events}
+        markets: list[KalshiMarket] = []
+        if not read.complete:
+            for ticker in tickers:
+                record_failure(ticker, read.stop_reason)
+                status["events"][ticker] = {
+                    "state": "failed",
+                    "stop_reason": read.stop_reason,
+                }
+            status.update(
+                status="bounded",
+                stop_reason=read.stop_reason,
+                failed_event_tickers=len(tickers),
+            )
+            return [], [], status
+        for ticker in tickers:
+            event = events.get(ticker)
+            if event is None:
+                record_failure(ticker, "not_returned")
+                status["events"][ticker] = {
+                    "state": "failed",
+                    "stop_reason": "not_returned",
+                }
+                status["failed_event_tickers"] += 1
+                continue
+            system.store.record_kalshi_event_probe_success(
+                event_ticker=ticker, attempted_at=now
+            )
+            markets.extend(event.markets)
+            status["events"][ticker] = {
+                "state": "complete",
+                "markets": len(event.markets),
+                "stop_reason": read.stop_reason,
+            }
+            status["complete_event_tickers"] += 1
+        status.update(status="complete", stop_reason=read.stop_reason)
         return markets, list(read.milestones), status
 
     async def _political_kalshi_milestones(

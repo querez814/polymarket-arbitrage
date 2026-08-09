@@ -192,6 +192,60 @@ async def test_kalshi_event_index_refresh_failure_preserves_active_inventory(tmp
     assert "429 backoff" in str(store.kalshi_event_index_state()["last_failure"])
 
 
+@pytest.mark.asyncio
+async def test_kalshi_rotation_probe_persists_complete_and_failed_targets(tmp_path):
+    """Runtime enrichment advances durable rotation instead of retrying one row."""
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    store.begin_kalshi_event_index_refresh(refresh_id="pass", started_at=now)
+    store.record_kalshi_event_index_page(
+        refresh_id="pass",
+        events=(
+            {"event_ticker": "KXROTATE-A", "category": "Politics"},
+            {"event_ticker": "KXROTATE-B", "category": "Politics"},
+        ),
+        next_cursor=None,
+        observed_at=now,
+    )
+    store.complete_kalshi_event_index_refresh(refresh_id="pass", completed_at=now)
+    config = BotConfig()
+    config.platform_opportunity.political_milestone_max_event_tickers = 2
+    bot = TradingBotWithDashboard(config)
+    bot.platform_opportunity_system = PlatformOpportunitySystem(
+        store=store, political_watch_policy=PoliticalWatchPolicy(max_events=4)
+    )
+
+    class Client:
+        async def list_event_catalog(self, **kwargs):
+            assert kwargs["tickers"] == ("KXROTATE-A", "KXROTATE-B")
+            market = KalshiMarket(
+                ticker="KXROTATE-A-T1",
+                event_ticker="KXROTATE-A",
+                series_ticker="KXROTATE",
+                title="Rotation fixture",
+            )
+            return SimpleNamespace(
+                complete=True,
+                stop_reason="source_exhausted",
+                events=(SimpleNamespace(event_ticker="KXROTATE-A", markets=(market,)),),
+                milestones=(),
+            )
+
+    bot._platform_kalshi_client = Client()
+    markets, milestones, status = await bot._rotated_kalshi_event_targets(now=now)
+
+    assert [market.ticker for market in markets] == ["KXROTATE-A-T1"]
+    assert milestones == []
+    assert status["complete_event_tickers"] == 1
+    assert status["failed_event_tickers"] == 1
+    assert status["events"]["KXROTATE-B"]["stop_reason"] == "not_returned"
+    assert (
+        store.kalshi_event_probe_state("KXROTATE-A")["last_success_at"]
+        == now.isoformat()
+    )
+    assert store.kalshi_event_probe_state("KXROTATE-B")["consecutive_failures"] == 1
+
+
 def test_platform_hot_sampler_rotates_due_contracts_across_bounded_batches():
     """Later contracts receive the next public-read slot under sustained load."""
     assignments = tuple(
