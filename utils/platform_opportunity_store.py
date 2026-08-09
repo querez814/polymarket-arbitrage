@@ -16,7 +16,7 @@ import zlib
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 class ReplayEvidenceCapacityError(RuntimeError):
@@ -201,6 +201,8 @@ class PlatformOpportunityStore:
                 CREATE TABLE IF NOT EXISTS political_experimental_paper_accounts (
                     cohort_id TEXT PRIMARY KEY,
                     starting_cash_micros INTEGER NOT NULL CHECK(starting_cash_micros >= 0),
+                    policy_json TEXT,
+                    policy_hash TEXT,
                     cash_micros INTEGER NOT NULL CHECK(cash_micros >= 0),
                     reserved_micros INTEGER NOT NULL CHECK(reserved_micros >= 0),
                     realized_pnl_micros INTEGER NOT NULL,
@@ -386,6 +388,18 @@ class PlatformOpportunityStore:
                 self._connection.execute(
                     "DROP TABLE political_experimental_positions_legacy"
                 )
+            account_columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(political_experimental_paper_accounts)"
+                )
+            }
+            for name in ("policy_json", "policy_hash"):
+                if name not in account_columns:
+                    self._connection.execute(
+                        "ALTER TABLE political_experimental_paper_accounts "
+                        f"ADD COLUMN {name} TEXT"
+                    )
 
     def close(self) -> None:
         with self._lock:
@@ -397,6 +411,7 @@ class PlatformOpportunityStore:
         cohort_id: str,
         starting_cash_micros: int,
         initialized_at: datetime,
+        policy: Mapping[str, Any] | None = None,
     ) -> dict[str, int | bool]:
         """Create one durable political-paper account without resetting restarts.
 
@@ -412,6 +427,11 @@ class PlatformOpportunityStore:
             or starting_cash_micros < 0
         ):
             raise ValueError("starting_cash_micros must be a non-negative integer")
+        policy_payload = dict(policy or {})
+        policy_payload.setdefault("schema_version", 1)
+        policy_payload["starting_cash_micros"] = starting_cash_micros
+        policy_json = _json(policy_payload)
+        policy_hash = hashlib.sha256(policy_json.encode("utf-8")).hexdigest()
         initialized_iso = _utc_iso(initialized_at)
         # A process-local lock is not enough: restart recovery and workers may
         # use separate store connections.  Take SQLite's writer reservation
@@ -422,7 +442,7 @@ class PlatformOpportunityStore:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 existing = connection.execute(
-                    "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                    "SELECT starting_cash_micros, policy_json, policy_hash, cash_micros, reserved_micros, "
                     "realized_pnl_micros FROM political_experimental_paper_accounts "
                     "WHERE cohort_id = ?",
                     (cohort_id,),
@@ -430,12 +450,14 @@ class PlatformOpportunityStore:
                 if existing is None:
                     connection.execute(
                         "INSERT INTO political_experimental_paper_accounts "
-                        "(cohort_id, starting_cash_micros, cash_micros, reserved_micros, "
+                        "(cohort_id, starting_cash_micros, policy_json, policy_hash, cash_micros, reserved_micros, "
                         "realized_pnl_micros, initialized_at, updated_at) "
-                        "VALUES (?, ?, ?, 0, 0, ?, ?)",
+                        "VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)",
                         (
                             cohort_id,
                             starting_cash_micros,
+                            policy_json,
+                            policy_hash,
                             starting_cash_micros,
                             initialized_iso,
                             initialized_iso,
@@ -454,7 +476,7 @@ class PlatformOpportunityStore:
                         ),
                     )
                     existing = connection.execute(
-                        "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                        "SELECT starting_cash_micros, policy_json, policy_hash, cash_micros, reserved_micros, "
                         "realized_pnl_micros FROM political_experimental_paper_accounts "
                         "WHERE cohort_id = ?",
                         (cohort_id,),
@@ -465,12 +487,30 @@ class PlatformOpportunityStore:
                         "political experimental paper account policy drift: "
                         "starting_cash_micros differs for cohort"
                     )
+                if (
+                    existing["policy_json"] is None
+                    or existing["policy_hash"] is None
+                    or str(existing["policy_json"]) != policy_json
+                    or str(existing["policy_hash"]) != policy_hash
+                ):
+                    raise ValueError(
+                        "political experimental paper account policy drift: "
+                        "immutable policy differs for cohort"
+                    )
                 connection.commit()
             except Exception:
                 connection.rollback()
                 raise
             assert existing is not None
-            account = {key: int(existing[key]) for key in existing.keys()}
+            account = {
+                key: int(existing[key])
+                for key in (
+                    "starting_cash_micros",
+                    "cash_micros",
+                    "reserved_micros",
+                    "realized_pnl_micros",
+                )
+            }
         if account["cash_micros"] + account["reserved_micros"] != (
             account["starting_cash_micros"] + account["realized_pnl_micros"]
         ):
@@ -480,6 +520,22 @@ class PlatformOpportunityStore:
             "open_positions": 0,
             "valuation_complete": True,
         }
+
+    def political_experimental_paper_policy(self, *, cohort_id: str) -> dict[str, Any]:
+        """Return the immutable canonical policy bound to this paper account."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT policy_json, policy_hash "
+                "FROM political_experimental_paper_accounts WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+        if row is None or row["policy_json"] is None or row["policy_hash"] is None:
+            raise RuntimeError("political experimental paper policy is unavailable")
+        policy_json = str(row["policy_json"])
+        policy_hash = str(row["policy_hash"])
+        if hashlib.sha256(policy_json.encode("utf-8")).hexdigest() != policy_hash:
+            raise RuntimeError("political experimental paper policy integrity violated")
+        return {"policy": json.loads(policy_json), "policy_hash": policy_hash}
 
     def political_experimental_paper_account(self, *, cohort_id: str) -> dict[str, int]:
         """Read the current account state used to size a conservative prefix."""

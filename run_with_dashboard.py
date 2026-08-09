@@ -798,6 +798,50 @@ class TradingBotWithDashboard:
             ledger.initialize(
                 starting_cash_micros=starting_cash_micros,
                 initialized_at=datetime.now(timezone.utc),
+                policy={
+                    "schema_version": 1,
+                    "model_version": "depth_imbalance_reaction_experimental_v1",
+                    "execution_authority": "none",
+                    "max_total_reserved_micros": int(
+                        Decimal(str(policy.political_paper_max_total_reserved_cap))
+                        * 1_000_000
+                    ),
+                    "max_position_reserved_micros": int(
+                        Decimal(str(policy.political_paper_max_position_reserved_debit))
+                        * 1_000_000
+                    ),
+                    "max_open_positions": policy.political_paper_max_open_positions,
+                    "entry_depth_fraction": str(
+                        policy.political_paper_entry_depth_fraction
+                    ),
+                    "signal_ttl_seconds": str(
+                        policy.political_paper_signal_ttl_seconds
+                    ),
+                    "minimum_hold_seconds": str(
+                        policy.political_paper_min_hold_seconds
+                    ),
+                    "max_book_request_latency_seconds": str(
+                        policy.political_paper_max_book_request_latency_seconds
+                    ),
+                    "max_fee_fetch_latency_seconds": str(
+                        policy.political_paper_max_fee_fetch_latency_seconds
+                    ),
+                    "max_fee_schedule_age_seconds": str(
+                        policy.political_paper_max_fee_schedule_age_seconds
+                    ),
+                    "one_open_position_per_contract": policy.political_paper_one_open_position_per_contract,
+                    "one_open_position_per_base_lane": policy.political_paper_one_open_position_per_base_lane,
+                    "entry_slippage_per_contract": "0.01",
+                    "exit_slippage_per_contract": "0.01",
+                    "exit_rule": {
+                        "precedence": [
+                            "event_boundary",
+                            "max_hold_10_minutes",
+                            "hard_stop_net_return_minus_0.05",
+                            "opposed_imbalance_0.25",
+                        ]
+                    },
+                },
             )
             self.political_experimental_paper_ledger = ledger
             dashboard_state.platform_opportunity["political_experimental_paper"][

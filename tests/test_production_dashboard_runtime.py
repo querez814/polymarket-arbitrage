@@ -735,6 +735,17 @@ async def test_platform_runtime_initializes_isolated_political_paper_ledger(tmp_
         "reserved_micros": 0,
         "realized_pnl_micros": 0,
     }
+    bound_policy = bot.platform_opportunity_store.political_experimental_paper_policy(
+        cohort_id=bot.platform_opportunity_system.cohort_id
+    )
+    assert bound_policy["policy"].get("execution_authority") == "none"
+    assert bound_policy["policy"].get("max_open_positions") == 4
+    assert bound_policy["policy"].get("exit_rule", {}).get("precedence") == [
+        "event_boundary",
+        "max_hold_10_minutes",
+        "hard_stop_net_return_minus_0.05",
+        "opposed_imbalance_0.25",
+    ]
     assert (
         dashboard_state.platform_opportunity["political_experimental_paper"][
             "execution_authority"

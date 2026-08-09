@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
-from typing import Any
+from typing import Any, Mapping
 
 from utils.platform_opportunity_store import PlatformOpportunityStore
 
@@ -129,12 +129,17 @@ class PoliticalExperimentalPaperLedger:
         self.cohort_id = cohort_id
 
     def initialize(
-        self, *, starting_cash_micros: int, initialized_at: datetime
+        self,
+        *,
+        starting_cash_micros: int,
+        initialized_at: datetime,
+        policy: Mapping[str, Any] | None = None,
     ) -> dict[str, int | bool]:
         return self.store.initialize_political_experimental_paper_account(
             cohort_id=self.cohort_id,
             starting_cash_micros=starting_cash_micros,
             initialized_at=initialized_at,
+            policy=policy,
         )
 
     @staticmethod

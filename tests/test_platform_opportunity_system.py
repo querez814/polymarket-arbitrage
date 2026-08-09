@@ -267,6 +267,44 @@ def test_political_paper_account_initialization_serializes_connections_and_rejec
         )
 
 
+def test_political_paper_account_binds_a_canonical_immutable_policy(tmp_path):
+    """A restart can reuse a cohort only with the identical paper policy."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    policy = {
+        "max_open_positions": 4,
+        "entry_depth_fraction": "0.10",
+        "exit_rule": {"maximum_hold_seconds": 600},
+    }
+    store.initialize_political_experimental_paper_account(
+        cohort_id="political-v2-policy",
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+        policy=policy,
+    )
+
+    bound = store.political_experimental_paper_policy(cohort_id="political-v2-policy")
+    assert bound["policy"] == {
+        **policy,
+        "schema_version": 1,
+        "starting_cash_micros": 1_000_000_000,
+    }
+    assert len(bound["policy_hash"]) == 64
+
+    store.initialize_political_experimental_paper_account(
+        cohort_id="political-v2-policy",
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW + timedelta(seconds=1),
+        policy=dict(reversed(list(policy.items()))),
+    )
+    with pytest.raises(ValueError, match="immutable policy differs"):
+        store.initialize_political_experimental_paper_account(
+            cohort_id="political-v2-policy",
+            starting_cash_micros=1_000_000_000,
+            initialized_at=NOW,
+            policy={**policy, "max_open_positions": 3},
+        )
+
+
 def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_path):
     """A qualified signal survives restart but is never itself a fill attempt."""
     path = tmp_path / "opportunities.db"
