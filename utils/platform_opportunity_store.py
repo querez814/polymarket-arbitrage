@@ -2555,6 +2555,33 @@ class PlatformOpportunityStore:
             ).fetchall()
         return [int(row["sequence"]) for row in rows]
 
+    def unprocessed_replay_observation_sequences_for_occurrence(
+        self, *, cohort_id: str, milestone_id: str
+    ) -> list[int]:
+        """Return one sealed occurrence's unfinished tokens in causal order.
+
+        Event-lane wakeups are intentionally disposable: after a crash a lane
+        must be able to reconstruct its own backlog from immutable replay
+        provenance, without consulting the mutable current lock catalog.  A
+        global receipt remains the terminal acknowledgement; filtering by the
+        replay row's sealed milestone keeps independent occurrences isolated.
+        """
+        if not isinstance(milestone_id, str) or not milestone_id.strip():
+            raise ValueError("milestone_id must be non-empty")
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT event.sequence FROM platform_replay_observation_events AS event "
+                "LEFT JOIN platform_replay_processing_receipts AS receipt "
+                "ON receipt.cohort_id = event.cohort_id "
+                "AND receipt.sequence = event.sequence "
+                "WHERE event.cohort_id = ? "
+                "AND event.reviewed_milestone_id = ? "
+                "AND receipt.sequence IS NULL "
+                "ORDER BY event.sequence",
+                (cohort_id, milestone_id),
+            ).fetchall()
+        return [int(row["sequence"]) for row in rows]
+
     def record_political_scored_decision(
         self,
         *,

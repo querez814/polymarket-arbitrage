@@ -4091,6 +4091,26 @@ def test_political_replay_context_uses_sealed_reviewed_lock_provenance(tmp_path)
         received_at=hot,
         fee_schedule=_zero_fee("kalshi"),
     )
+    sequence = int(replay["event"]["sequence"])
+
+    # A future occurrence lane can rebuild only its own durable backlog after
+    # a lost wakeup, without reading the mutable reviewed-lock catalog.
+    assert system.store.unprocessed_replay_observation_sequences_for_occurrence(
+        cohort_id=system.cohort_id,
+        milestone_id="mention-2026-08-10",
+    ) == [sequence]
+    system.store.record_replay_processing_receipt(
+        cohort_id=system.cohort_id,
+        sequence=sequence,
+        completed_at=hot,
+    )
+    assert (
+        system.store.unprocessed_replay_observation_sequences_for_occurrence(
+            cohort_id=system.cohort_id,
+            milestone_id="mention-2026-08-10",
+        )
+        == []
+    )
 
     # Simulate a later catalog refresh retiring/replacing the live lock.  The
     # token must retain the lock that was already durable at read time.
@@ -4098,7 +4118,7 @@ def test_political_replay_context_uses_sealed_reviewed_lock_provenance(tmp_path)
     system.store._connection.execute("DELETE FROM political_event_locks")
     system.store._connection.commit()
 
-    token = ReplayObservationToken(system.cohort_id, replay["event"]["sequence"])
+    token = ReplayObservationToken(system.cohort_id, sequence)
     # The future dispatcher can route this token without consulting the now
     # replaced catalog lock.  A milestone, rather than an event ticker, is
     # the occurrence identity shared by derivative contracts.
