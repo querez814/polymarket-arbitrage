@@ -688,6 +688,21 @@ class PlatformOpportunitySystem:
             observed_at=_aware(observed_at) or observed_at,
         )
 
+    def record_observation_failure(
+        self,
+        contract_id: str,
+        *,
+        reason_code: str,
+        failed_at: datetime,
+    ) -> None:
+        """Persist transport failures separately from successful book reads."""
+        self.store.record_observation_failure(
+            cohort_id=self.cohort_id,
+            contract_id=contract_id,
+            reason_code=reason_code,
+            failed_at=_aware(failed_at) or failed_at,
+        )
+
     def _restore_state(self) -> None:
         """Resume open intents, marks, and cooldowns from the current cohort."""
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -2082,6 +2097,9 @@ class PlatformOpportunitySystem:
     def dashboard_summary(self) -> dict:
         counts = self.store.summary(cohort_id=self.cohort_id)
         observations = self.store.observation_telemetry(cohort_id=self.cohort_id)
+        observation_failures = self.store.observation_failure_telemetry(
+            cohort_id=self.cohort_id
+        )
         now = datetime.now(timezone.utc)
         political_policy = self.political_watch_policy
         locks = []
@@ -2121,6 +2139,11 @@ class PlatformOpportunitySystem:
                         for contract_id in lock.contract_ids
                         if contract_id in observations
                     },
+                    "observation_failures": {
+                        contract_id: observation_failures[contract_id]
+                        for contract_id in lock.contract_ids
+                        if contract_id in observation_failures
+                    },
                 }
             )
         return {
@@ -2143,6 +2166,11 @@ class PlatformOpportunitySystem:
                 contract_id: observations[contract_id]
                 for contract_id in sorted(self._sampled_contract_ids)
                 if contract_id in observations
+            },
+            "observation_failures": {
+                contract_id: observation_failures[contract_id]
+                for contract_id in sorted(self._sampled_contract_ids)
+                if contract_id in observation_failures
             },
             "research_pnl": self.store.research_mark_summary(cohort_id=self.cohort_id),
         }

@@ -141,3 +141,35 @@ async def test_worker_persists_successful_empty_depth_observation_across_restart
             "last_observed_at": "2026-08-09T00:00:00+00:00",
         }
     }
+
+
+def test_observation_failures_are_reason_coded_and_survive_restart(tmp_path):
+    path = tmp_path / "opportunities.db"
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    system._sampled_contract_ids = {"polymarket:target"}
+    system.record_observation_failure(
+        "polymarket:target",
+        reason_code="book_read_failed",
+        failed_at=observed_at,
+    )
+    system.record_observation_failure(
+        "polymarket:target",
+        reason_code="fee_metadata_failed",
+        failed_at=observed_at,
+    )
+    system.record_observation_failure(
+        "polymarket:target",
+        reason_code="book_read_failed",
+        failed_at=observed_at,
+    )
+
+    failures = system.dashboard_summary()["observation_failures"]
+    assert failures["polymarket:target"]["book_read_failed"]["failure_count"] == 2
+    assert failures["polymarket:target"]["fee_metadata_failed"]["failure_count"] == 1
+    assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {}
+    system.store.close()
+
+    resumed = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    resumed._sampled_contract_ids = {"polymarket:target"}
+    assert resumed.dashboard_summary()["observation_failures"] == failures

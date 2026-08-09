@@ -125,6 +125,16 @@ class PlatformOpportunityStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_platform_observations_cohort
                     ON platform_observations(cohort_id);
+                CREATE TABLE IF NOT EXISTS platform_observation_failures (
+                    cohort_id TEXT NOT NULL,
+                    contract_id TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    failure_count INTEGER NOT NULL,
+                    last_failed_at TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, contract_id, reason_code)
+                );
+                CREATE INDEX IF NOT EXISTS idx_platform_observation_failures_cohort
+                    ON platform_observation_failures(cohort_id);
                 """)
 
     def close(self) -> None:
@@ -236,6 +246,45 @@ class PlatformOpportunityStore:
             }
             for row in rows
         }
+
+    def record_observation_failure(
+        self,
+        *,
+        cohort_id: str,
+        contract_id: str,
+        reason_code: str,
+        failed_at: datetime,
+    ) -> None:
+        """Persist a failed read without treating it as a successful observation."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO platform_observation_failures "
+                "(cohort_id, contract_id, reason_code, failure_count, last_failed_at) "
+                "VALUES (?, ?, ?, 1, ?) "
+                "ON CONFLICT(cohort_id, contract_id, reason_code) DO UPDATE SET "
+                "failure_count=platform_observation_failures.failure_count + 1, "
+                "last_failed_at=excluded.last_failed_at",
+                (cohort_id, contract_id, reason_code, _utc_iso(failed_at)),
+            )
+
+    def observation_failure_telemetry(
+        self, *, cohort_id: str
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        """Return durable read failures, isolated from successful observation facts."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT contract_id, reason_code, failure_count, last_failed_at "
+                "FROM platform_observation_failures WHERE cohort_id = ? "
+                "ORDER BY contract_id, reason_code",
+                (cohort_id,),
+            ).fetchall()
+        result: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            result.setdefault(str(row["contract_id"]), {})[str(row["reason_code"])] = {
+                "failure_count": int(row["failure_count"]),
+                "last_failed_at": str(row["last_failed_at"]),
+            }
+        return result
 
     def latest_contract_payloads(
         self, contract_ids: Iterable[str]

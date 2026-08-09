@@ -11,8 +11,10 @@ from core.cross_platform_arb import MarketPair
 from core.event_contracts import EventPairLink
 from core.event_lane import EventLanePolicy, EventLaneScheduler
 from core.pair_monitoring import PairTierMonitor
+from core.platform_opportunities import MonitoringAssignment, PlatformOpportunitySystem
 from dashboard.server import dashboard_state
 from utils.config_loader import BotConfig
+from utils.platform_opportunity_store import PlatformOpportunityStore
 from utils.task_supervision import RestartingTaskSupervisor
 from polymarket_client.models import (
     OrderBook,
@@ -22,6 +24,67 @@ from polymarket_client.models import (
     TokenType,
 )
 from kalshi_client.models import KalshiMarket
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_reason", "dashboard_key"),
+    [
+        ("book", "book_read_failed", "book_read_failures"),
+        ("fee", "fee_metadata_failed", "fee_metadata_failures"),
+    ],
+)
+async def test_platform_hot_sampler_persists_reason_coded_read_failures(
+    tmp_path, failure, expected_reason, dashboard_key
+):
+    """A failed public read is durable evidence, never a successful observation."""
+    bot = TradingBotWithDashboard(BotConfig())
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    system._sampled_contract_ids = {"polymarket:target"}
+    bot.platform_opportunity_system = system
+    bot.platform_opportunity_worker = SimpleNamespace(
+        submit_book=lambda *args, **kwargs: True
+    )
+    bot._platform_hot_assignments = (
+        MonitoringAssignment(
+            contract_id="polymarket:target",
+            venue="polymarket",
+            native_id="target",
+            catalyst_at=None,
+            reason="test",
+            priority_score=1.0,
+            cadence="hot",
+            interval_seconds=0.0,
+        ),
+    )
+    bot.config.platform_opportunity.hot_poll_seconds = 0.0
+    bot._running = True
+
+    class Client:
+        async def get_orderbook(self, native_id):
+            if failure == "book":
+                bot._running = False
+                raise RuntimeError("book unavailable")
+            return OrderBook(market_id=native_id)
+
+        async def get_market(self, native_id):
+            bot._running = False
+            raise RuntimeError("fee metadata unavailable")
+
+    bot._platform_poly_client = Client()
+    await bot._platform_hot_sampling_loop()
+
+    failures = system.store.observation_failure_telemetry(cohort_id=system.cohort_id)
+    assert set(failures) == {"polymarket:target"}
+    failure_record = failures["polymarket:target"][expected_reason]
+    assert failure_record["failure_count"] == 1
+    assert failure_record["last_failed_at"]
+    assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {}
+    assert dashboard_state.platform_opportunity[dashboard_key] == 1
+    assert dashboard_state.platform_opportunity["observation_failures"] == failures
+    system.store.close()
 
 
 @pytest.mark.asyncio

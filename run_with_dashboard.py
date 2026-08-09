@@ -182,6 +182,7 @@ class TradingBotWithDashboard:
         self._platform_hot_assignments = ()
         self._platform_catalog_refreshed_at: datetime | None = None
         self._platform_fee_cache: dict[str, tuple[VenueFeeSchedule, float]] = {}
+        self._platform_book_read_failures = 0
         self._platform_fee_failures = 0
         self._platform_milestone_cache: dict[str, tuple[float, tuple]] = {}
         self._semantic_embedder = None
@@ -687,6 +688,8 @@ class TradingBotWithDashboard:
                 "horizons": {},
             },
             "acceptance": {},
+            "book_read_failures": 0,
+            "fee_metadata_failures": 0,
             "worker": {"queued": 0, "processed": 0, "dropped": 0, "failures": 0},
         }
         if not policy.enabled:
@@ -1099,20 +1102,48 @@ class TradingBotWithDashboard:
                 try:
                     if assignment.venue == "polymarket":
                         if self._platform_poly_client is None:
-                            return assignment, None
+                            raise RuntimeError("Polymarket research client unavailable")
                         book = await self._platform_poly_client.get_orderbook(
                             assignment.native_id
                         )
                     else:
                         if self._platform_kalshi_client is None:
-                            return assignment, None
+                            raise RuntimeError("Kalshi research client unavailable")
                         book = await self._platform_kalshi_client.get_orderbook_unified(
                             assignment.native_id
                         )
+                except Exception:
+                    self._platform_book_read_failures += 1
+                    self.platform_opportunity_system.record_observation_failure(
+                        assignment.contract_id,
+                        reason_code="book_read_failed",
+                        failed_at=datetime.now(timezone.utc),
+                    )
+                    dashboard_state.platform_opportunity.update(
+                        self.platform_opportunity_system.dashboard_summary()
+                    )
+                    dashboard_state.platform_opportunity["book_read_failures"] = (
+                        self._platform_book_read_failures
+                    )
+                    logger.warning(
+                        "Shadow hot-book read failed | contract=%s",
+                        assignment.contract_id,
+                        exc_info=True,
+                    )
+                    return assignment, None, None
+                try:
                     schedule = await fee_schedule(assignment)
                     return assignment, book, schedule
                 except Exception:
                     self._platform_fee_failures += 1
+                    self.platform_opportunity_system.record_observation_failure(
+                        assignment.contract_id,
+                        reason_code="fee_metadata_failed",
+                        failed_at=datetime.now(timezone.utc),
+                    )
+                    dashboard_state.platform_opportunity.update(
+                        self.platform_opportunity_system.dashboard_summary()
+                    )
                     dashboard_state.platform_opportunity["fee_metadata_failures"] = (
                         self._platform_fee_failures
                     )
