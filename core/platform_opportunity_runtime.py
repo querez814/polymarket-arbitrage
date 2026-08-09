@@ -26,6 +26,8 @@ class BookEnvelope:
     contract_id: str
     book: OrderBook
     observed_at: datetime
+    request_started_at: datetime | None
+    received_at: datetime | None
     fee_schedule: VenueFeeSchedule
 
 
@@ -72,12 +74,21 @@ class PlatformOpportunityWorker:
         book: OrderBook,
         *,
         observed_at: datetime,
+        request_started_at: datetime | None = None,
+        received_at: datetime | None = None,
         fee_schedule: VenueFeeSchedule,
     ) -> bool:
         """Never wait in a feed/execution callback; drop visibly if saturated."""
         try:
             self._queue.put_nowait(
-                BookEnvelope(contract_id, book, observed_at, fee_schedule)
+                BookEnvelope(
+                    contract_id,
+                    book,
+                    observed_at,
+                    request_started_at,
+                    received_at,
+                    fee_schedule,
+                )
             )
             return True
         except asyncio.QueueFull:
@@ -140,6 +151,8 @@ class PlatformOpportunityWorker:
                             record,
                             envelope.contract_id,
                             observed_at=envelope.observed_at,
+                            request_started_at=envelope.request_started_at,
+                            received_at=envelope.received_at,
                         )
                 self.processed += 1
             except asyncio.CancelledError:

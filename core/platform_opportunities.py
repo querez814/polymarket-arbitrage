@@ -757,13 +757,22 @@ class PlatformOpportunitySystem:
         self._fee_schedules[contract_id] = schedule
 
     def record_successful_observation(
-        self, contract_id: str, *, observed_at: datetime
+        self,
+        contract_id: str,
+        *,
+        observed_at: datetime,
+        request_started_at: datetime | None = None,
+        received_at: datetime | None = None,
     ) -> None:
         """Persist transport-successful reads separately from assignment state."""
         self.store.record_successful_observation(
             cohort_id=self.cohort_id,
             contract_id=contract_id,
             observed_at=_aware(observed_at) or observed_at,
+            request_started_at=(
+                _aware(request_started_at) if request_started_at is not None else None
+            ),
+            received_at=_aware(received_at) if received_at is not None else None,
         )
 
     def record_observation_failure(

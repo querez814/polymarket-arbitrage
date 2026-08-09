@@ -107,8 +107,16 @@ async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
     )
     submitted = []
 
-    def submit_book(contract_id, book, *, observed_at, fee_schedule):
-        submitted.append(contract_id)
+    def submit_book(
+        contract_id,
+        book,
+        *,
+        observed_at,
+        request_started_at,
+        received_at,
+        fee_schedule,
+    ):
+        submitted.append((contract_id, observed_at, request_started_at, received_at))
         bot._running = False
         return True
 
@@ -162,7 +170,9 @@ async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
     await bot._platform_hot_sampling_loop()
 
     assert calls == 1
-    assert submitted == ["kalshi:later"]
+    assert [item[0] for item in submitted] == ["kalshi:later"]
+    _, observed_at, request_started_at, received_at = submitted[0]
+    assert request_started_at <= received_at == observed_at
     assert dashboard_state.platform_opportunity["status"] == "degraded"
     system.store.close()
 

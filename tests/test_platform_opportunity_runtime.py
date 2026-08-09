@@ -130,6 +130,8 @@ async def test_worker_persists_successful_empty_depth_observation_across_restart
         "polymarket:empty-depth": {
             "observation_count": 1,
             "last_observed_at": "2026-08-09T00:00:00+00:00",
+            "last_request_started_at": None,
+            "last_received_at": None,
         }
     }
     system.store.close()
@@ -139,6 +141,41 @@ async def test_worker_persists_successful_empty_depth_observation_across_restart
         "polymarket:empty-depth": {
             "observation_count": 1,
             "last_observed_at": "2026-08-09T00:00:00+00:00",
+            "last_request_started_at": None,
+            "last_received_at": None,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_local_book_request_and_receipt_times(tmp_path):
+    """Request timing is durable evidence, not an adapter timestamp substitute."""
+    path = tmp_path / "opportunities.db"
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    worker = PlatformOpportunityWorker(system)
+    request_started_at = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    received_at = request_started_at.replace(second=1)
+    schedule = VenueFeeSchedule(
+        "polymarket", "none", 0, 1, 0, received_at, "test"
+    )
+
+    await worker.start()
+    assert worker.submit_book(
+        "polymarket:timed-book",
+        OrderBook(market_id="timed-book"),
+        observed_at=received_at,
+        request_started_at=request_started_at,
+        received_at=received_at,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+
+    assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {
+        "polymarket:timed-book": {
+            "observation_count": 1,
+            "last_observed_at": "2026-08-09T12:00:01+00:00",
+            "last_request_started_at": "2026-08-09T12:00:00+00:00",
+            "last_received_at": "2026-08-09T12:00:01+00:00",
         }
     }
 

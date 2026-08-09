@@ -1168,6 +1168,7 @@ class TradingBotWithDashboard:
                 return schedule
 
             async def fetch(assignment):
+                request_started_at = datetime.now(timezone.utc)
                 try:
                     if assignment.venue == "polymarket":
                         if self._platform_poly_client is None:
@@ -1181,6 +1182,7 @@ class TradingBotWithDashboard:
                         book = await self._platform_kalshi_client.get_orderbook_unified(
                             assignment.native_id
                         )
+                    received_at = datetime.now(timezone.utc)
                 except Exception:
                     self._platform_book_read_failures += 1
                     self._record_platform_observation_failure(
@@ -1196,10 +1198,10 @@ class TradingBotWithDashboard:
                         assignment.contract_id,
                         exc_info=True,
                     )
-                    return assignment, None, None
+                    return assignment, None, None, None, None
                 try:
                     schedule = await fee_schedule(assignment)
-                    return assignment, book, schedule
+                    return assignment, book, schedule, request_started_at, received_at
                 except Exception:
                     self._platform_fee_failures += 1
                     self._record_platform_observation_failure(
@@ -1215,24 +1217,24 @@ class TradingBotWithDashboard:
                         assignment.contract_id,
                         exc_info=True,
                     )
-                    return assignment, None, None
+                    return assignment, None, None, None, None
 
             results = await asyncio.gather(*(fetch(item) for item in due))
-            for assignment, book, schedule in results:
+            for assignment, book, schedule, request_started_at, received_at in results:
                 next_due[assignment.contract_id] = time.monotonic() + max(
                     self.config.platform_opportunity.hot_poll_seconds,
                     assignment.interval_seconds,
                 )
                 if book is not None and schedule is not None:
-                    observed_at = book.timestamp
-                    if observed_at.tzinfo is None:
-                        observed_at = observed_at.replace(tzinfo=timezone.utc)
-                    else:
-                        observed_at = observed_at.astimezone(timezone.utc)
                     self.platform_opportunity_worker.submit_book(
                         assignment.contract_id,
                         book,
-                        observed_at=observed_at,
+                        # The unified-book timestamp is not a verified venue
+                        # timestamp. Receipt is the truthful local observation
+                        # time carried into durable evidence.
+                        observed_at=received_at,
+                        request_started_at=request_started_at,
+                        received_at=received_at,
                         fee_schedule=schedule,
                     )
 

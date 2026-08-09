@@ -121,6 +121,8 @@ class PlatformOpportunityStore:
                     contract_id TEXT NOT NULL,
                     observation_count INTEGER NOT NULL,
                     last_observed_at TEXT NOT NULL,
+                    last_request_started_at TEXT,
+                    last_received_at TEXT,
                     PRIMARY KEY(cohort_id, contract_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_platform_observations_cohort
@@ -136,6 +138,23 @@ class PlatformOpportunityStore:
                 CREATE INDEX IF NOT EXISTS idx_platform_observation_failures_cohort
                     ON platform_observation_failures(cohort_id);
                 """)
+            # Existing research ledgers remain readable while timing evidence is
+            # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
+            columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(platform_observations)"
+                )
+            }
+            if "last_request_started_at" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE platform_observations "
+                    "ADD COLUMN last_request_started_at TEXT"
+                )
+            if "last_received_at" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE platform_observations ADD COLUMN last_received_at TEXT"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -217,25 +236,46 @@ class PlatformOpportunityStore:
         return {"current": int(current), "revisions": int(revisions)}
 
     def record_successful_observation(
-        self, *, cohort_id: str, contract_id: str, observed_at: datetime
+        self,
+        *,
+        cohort_id: str,
+        contract_id: str,
+        observed_at: datetime,
+        request_started_at: datetime | None = None,
+        received_at: datetime | None = None,
     ) -> None:
-        """Record a completed book observation, including valid empty depth."""
+        """Record a completed book observation, including valid empty depth.
+
+        Request and receipt timestamps are local process facts.  They are
+        deliberately optional for old callers, but never inferred from the
+        adapter's book timestamp.
+        """
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO platform_observations "
-                "(cohort_id, contract_id, observation_count, last_observed_at) "
-                "VALUES (?, ?, 1, ?) "
+                "(cohort_id, contract_id, observation_count, last_observed_at, "
+                "last_request_started_at, last_received_at) "
+                "VALUES (?, ?, 1, ?, ?, ?) "
                 "ON CONFLICT(cohort_id, contract_id) DO UPDATE SET "
                 "observation_count=platform_observations.observation_count + 1, "
-                "last_observed_at=excluded.last_observed_at",
-                (cohort_id, contract_id, _utc_iso(observed_at)),
+                "last_observed_at=excluded.last_observed_at, "
+                "last_request_started_at=excluded.last_request_started_at, "
+                "last_received_at=excluded.last_received_at",
+                (
+                    cohort_id,
+                    contract_id,
+                    _utc_iso(observed_at),
+                    _utc_iso(request_started_at) if request_started_at else None,
+                    _utc_iso(received_at) if received_at else None,
+                ),
             )
 
     def observation_telemetry(self, *, cohort_id: str) -> dict[str, dict[str, Any]]:
         """Return durable observation facts, deliberately scoped to one cohort."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT contract_id, observation_count, last_observed_at "
+                "SELECT contract_id, observation_count, last_observed_at, "
+                "last_request_started_at, last_received_at "
                 "FROM platform_observations WHERE cohort_id = ? ORDER BY contract_id",
                 (cohort_id,),
             ).fetchall()
@@ -243,6 +283,8 @@ class PlatformOpportunityStore:
             str(row["contract_id"]): {
                 "observation_count": int(row["observation_count"]),
                 "last_observed_at": str(row["last_observed_at"]),
+                "last_request_started_at": row["last_request_started_at"],
+                "last_received_at": row["last_received_at"],
             }
             for row in rows
         }
