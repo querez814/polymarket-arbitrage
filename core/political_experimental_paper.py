@@ -332,6 +332,47 @@ class PoliticalExperimentalPaperLedger:
             as_of=as_of,
         )
 
+    def process_observation(self, *, replay_sequence: int) -> list[dict[str, Any]]:
+        """Resolve prior same-contract signals from one canonical replay token.
+
+        This is deliberately the runtime-facing transition boundary: callers
+        provide only the durable replay sequence.  The method never resolves
+        a signal from its own observation, and leaves scoring/new-signal
+        creation to happen afterwards at the sealed observation boundary.
+        """
+        if not isinstance(replay_sequence, int) or isinstance(replay_sequence, bool):
+            raise ValueError("political paper replay sequence must be an integer")
+        events = {
+            int(item["sequence"]): item
+            for item in self.store.replay_observation_events(cohort_id=self.cohort_id)
+        }
+        event = events.get(replay_sequence)
+        if event is None:
+            raise ValueError(
+                "political paper observation requires durable replay evidence"
+            )
+        contract_id = str(event["contract_id"])
+        candidates = [
+            signal
+            for signal in self.store.political_experimental_pending_signals(
+                cohort_id=self.cohort_id
+            )
+            if str(signal["contract_id"]) == contract_id
+            and int(signal["replay_sequence"]) < replay_sequence
+        ]
+        if not candidates:
+            return []
+        # Signal reads are sequence ordered.  Resolving more than the first
+        # prior signal from one book would cherry-pick a single observation
+        # for multiple pending intents and violates the causal one-transition
+        # boundary.
+        signal = candidates[0]
+        return [
+            self.resolve_pending_signal(
+                signal_id=str(signal["signal_id"]), replay_sequence=replay_sequence
+            )
+        ]
+
     def snapshot(self) -> dict[str, Any]:
         """Return the invariant-checked state needed for paper-only reporting."""
         return self.store.political_experimental_paper_snapshot(

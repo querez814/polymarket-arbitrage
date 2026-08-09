@@ -648,10 +648,9 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         received_at=NOW + timedelta(seconds=1),
     )
 
-    result = ledger.resolve_pending_signal(
-        signal_id="signal:causal-fill",
-        replay_sequence=later["event"]["sequence"],
-    )
+    results = ledger.process_observation(replay_sequence=later["event"]["sequence"])
+    assert len(results) == 1
+    result = results[0]
 
     assert result["outcome"] == "filled"
     assert result["payload"]["quantity"] == 10
