@@ -292,46 +292,62 @@ class PlatformOpportunityStore:
         ):
             raise ValueError("starting_cash_micros must be a non-negative integer")
         initialized_iso = _utc_iso(initialized_at)
-        with self._lock, self._connection:
+        # A process-local lock is not enough: restart recovery and workers may
+        # use separate store connections.  Take SQLite's writer reservation
+        # before reading so exactly one initializer can create the account and
+        # its first append-only after-state.
+        with self._lock:
             connection = self._connection
-            existing = connection.execute(
-                "SELECT starting_cash_micros, cash_micros, reserved_micros, "
-                "realized_pnl_micros FROM political_experimental_paper_accounts "
-                "WHERE cohort_id = ?",
-                (cohort_id,),
-            ).fetchone()
-            if existing is None:
-                connection.execute(
-                    "INSERT INTO political_experimental_paper_accounts "
-                    "(cohort_id, starting_cash_micros, cash_micros, reserved_micros, "
-                    "realized_pnl_micros, initialized_at, updated_at) "
-                    "VALUES (?, ?, ?, 0, 0, ?, ?)",
-                    (
-                        cohort_id,
-                        starting_cash_micros,
-                        starting_cash_micros,
-                        initialized_iso,
-                        initialized_iso,
-                    ),
-                )
-                connection.execute(
-                    "INSERT INTO political_experimental_paper_events "
-                    "(cohort_id, sequence, event_type, occurred_at, cash_micros, "
-                    "reserved_micros, realized_pnl_micros, payload_json) "
-                    "VALUES (?, 1, 'account_initialized', ?, ?, 0, 0, ?)",
-                    (
-                        cohort_id,
-                        initialized_iso,
-                        starting_cash_micros,
-                        _json({"starting_cash_micros": starting_cash_micros}),
-                    ),
-                )
+            connection.execute("BEGIN IMMEDIATE")
+            try:
                 existing = connection.execute(
                     "SELECT starting_cash_micros, cash_micros, reserved_micros, "
                     "realized_pnl_micros FROM political_experimental_paper_accounts "
                     "WHERE cohort_id = ?",
                     (cohort_id,),
                 ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        "INSERT INTO political_experimental_paper_accounts "
+                        "(cohort_id, starting_cash_micros, cash_micros, reserved_micros, "
+                        "realized_pnl_micros, initialized_at, updated_at) "
+                        "VALUES (?, ?, ?, 0, 0, ?, ?)",
+                        (
+                            cohort_id,
+                            starting_cash_micros,
+                            starting_cash_micros,
+                            initialized_iso,
+                            initialized_iso,
+                        ),
+                    )
+                    connection.execute(
+                        "INSERT INTO political_experimental_paper_events "
+                        "(cohort_id, sequence, event_type, occurred_at, cash_micros, "
+                        "reserved_micros, realized_pnl_micros, payload_json) "
+                        "VALUES (?, 1, 'account_initialized', ?, ?, 0, 0, ?)",
+                        (
+                            cohort_id,
+                            initialized_iso,
+                            starting_cash_micros,
+                            _json({"starting_cash_micros": starting_cash_micros}),
+                        ),
+                    )
+                    existing = connection.execute(
+                        "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                        "realized_pnl_micros FROM political_experimental_paper_accounts "
+                        "WHERE cohort_id = ?",
+                        (cohort_id,),
+                    ).fetchone()
+                assert existing is not None
+                if int(existing["starting_cash_micros"]) != starting_cash_micros:
+                    raise ValueError(
+                        "political experimental paper account policy drift: "
+                        "starting_cash_micros differs for cohort"
+                    )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
             assert existing is not None
             account = {key: int(existing[key]) for key in existing.keys()}
         if account["cash_micros"] + account["reserved_micros"] != (

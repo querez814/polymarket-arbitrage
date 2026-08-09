@@ -1,6 +1,7 @@
 import json
 import zlib
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -147,6 +148,43 @@ def test_political_experimental_paper_account_is_idempotent_and_cent_exact(tmp_p
             "payload": {"starting_cash_micros": 1_000_000_000},
         }
     ]
+
+
+def test_political_paper_account_initialization_serializes_connections_and_rejects_drift(
+    tmp_path,
+):
+    """Separate workers create one account/event and cannot change its policy."""
+    path = tmp_path / "opportunities.db"
+    stores = (PlatformOpportunityStore(path), PlatformOpportunityStore(path))
+
+    def initialize(index: int) -> dict[str, int | bool]:
+        return stores[index].initialize_political_experimental_paper_account(
+            cohort_id="political-v2-race",
+            starting_cash_micros=1_000_000_000,
+            initialized_at=NOW + timedelta(seconds=index),
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            accounts = list(executor.map(initialize, (0, 1)))
+    finally:
+        for store in stores:
+            store.close()
+
+    assert accounts[0] == accounts[1]
+    store = PlatformOpportunityStore(path)
+    assert [
+        event["event_type"]
+        for event in store.political_experimental_paper_events(
+            cohort_id="political-v2-race"
+        )
+    ] == ["account_initialized"]
+    with pytest.raises(ValueError, match="policy drift"):
+        store.initialize_political_experimental_paper_account(
+            cohort_id="political-v2-race",
+            starting_cash_micros=999_000_000,
+            initialized_at=NOW,
+        )
 
 
 def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_path):
