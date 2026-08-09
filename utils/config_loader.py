@@ -274,6 +274,19 @@ class PlatformOpportunityConfig:
     min_event_clusters: int = 50
     min_intents: int = 200
     max_research_drawdown: float = 50.0
+    # Political-event collection is intentionally a separately bounded lane.
+    # Keep these explicit so an experiment cannot silently inherit code defaults.
+    political_max_events: int = 4
+    political_max_contracts_per_event: int = 6
+    political_lookahead_days: float = 7.0
+    political_warm_before_hours: float = 24.0
+    political_hot_before_minutes: float = 60.0
+    political_warm_poll_seconds: float = 60.0
+    political_hot_poll_seconds: float = 2.0
+    political_event_poll_seconds: float = 2.0
+    political_cooldown_poll_seconds: float = 10.0
+    political_cooldown_after_hours: float = 2.0
+    reviewed_pinned_event_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1022,6 +1035,14 @@ def validate_config(config: BotConfig) -> None:
         "catalog_wall_time_seconds",
         "max_shadow_notional",
         "max_research_drawdown",
+        "political_lookahead_days",
+        "political_warm_before_hours",
+        "political_hot_before_minutes",
+        "political_warm_poll_seconds",
+        "political_hot_poll_seconds",
+        "political_event_poll_seconds",
+        "political_cooldown_poll_seconds",
+        "political_cooldown_after_hours",
     ):
         value = getattr(platform, name)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1049,6 +1070,8 @@ def validate_config(config: BotConfig) -> None:
         "catalog_max_markets_per_venue",
         "catalog_max_pages",
         "catalog_max_decoded_bytes",
+        "political_max_events",
+        "political_max_contracts_per_event",
     ):
         value = getattr(platform, name)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -1057,6 +1080,17 @@ def validate_config(config: BotConfig) -> None:
         errors.append("platform_opportunity.max_hot_contracts must be <= 500")
     if isinstance(platform.queue_capacity, int) and platform.queue_capacity > 100_000:
         errors.append("platform_opportunity.queue_capacity must be <= 100000")
+    if not isinstance(platform.reviewed_pinned_event_ids, list) or any(
+        not isinstance(event_id, str) or not event_id.strip()
+        for event_id in platform.reviewed_pinned_event_ids
+    ):
+        errors.append(
+            "platform_opportunity.reviewed_pinned_event_ids must be a list of non-empty strings"
+        )
+    elif len(set(platform.reviewed_pinned_event_ids)) != len(
+        platform.reviewed_pinned_event_ids
+    ):
+        errors.append("platform_opportunity.reviewed_pinned_event_ids must be unique")
     critical_database_paths = {
         "monitoring.paper_trade_db_path": config.monitoring.paper_trade_db_path,
         "production.execution_journal_path": config.production.execution_journal_path,

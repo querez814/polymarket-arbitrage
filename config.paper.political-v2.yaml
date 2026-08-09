@@ -1,0 +1,61 @@
+# Political-event v2 is a real-data, shadow-only collection profile.  It has
+# no exchange-order authority and uses isolated persistence and log artifacts.
+trading:
+  risk_profile: conservative
+  min_edge: 0.02
+  bundle_arb_enabled: false
+  mm_enabled: false
+
+mode:
+  trading_mode: dry_run
+  data_mode: real
+  cross_platform_enabled: true
+  cross_platform_execution_enabled: false
+  kalshi_enabled: true
+  simulate_fills: false
+  fill_probability: 0
+  paper_locked_arb_enabled: false
+  semantic_matching_enabled: true
+
+logging:
+  log_dir: logs/political-event-reaction-v2-2026-08-09
+  main_log_file: political-v2.log
+  trades_log_file: political-v2-trades.log
+  opportunities_log_file: political-v2-opportunities.log
+
+monitoring:
+  paper_trade_db_path: data/political_v2_paper_trades.db
+
+platform_opportunity:
+  enabled: true
+  experiment_id: political-event-reaction-v2-2026-08-09
+  catalog_path: data/political_v2_platform_opportunities.db
+  catalog_refresh_seconds: 1800
+  catalog_max_markets_per_venue: 25000
+  catalog_max_pages: 500
+  catalog_max_decoded_bytes: 67108864
+  catalog_wall_time_seconds: 120
+  lookahead_days: 7
+  max_hot_contracts: 40
+  min_liquidity: 100
+  min_volume: 100
+  queue_capacity: 10000
+  hot_poll_seconds: 1
+  political_max_events: 4
+  political_max_contracts_per_event: 6
+  political_lookahead_days: 7
+  political_warm_before_hours: 24
+  political_hot_before_minutes: 60
+  political_warm_poll_seconds: 60
+  political_hot_poll_seconds: 2
+  political_event_poll_seconds: 2
+  political_cooldown_poll_seconds: 10
+  political_cooldown_after_hours: 2
+  reviewed_pinned_event_ids:
+    - kalshi:KXTRUMPMENTION-26AUG10
+  additional_fee_buffer_per_contract: 0
+  slippage_per_contract: 0.002
+  max_shadow_notional: 100
+  min_event_clusters: 50
+  min_intents: 200
+  max_research_drawdown: 50

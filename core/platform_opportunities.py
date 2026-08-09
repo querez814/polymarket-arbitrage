@@ -193,13 +193,39 @@ class PoliticalWatchPolicy:
 
     max_events: int = 4
     max_contracts_per_event: int = 6
+    lookahead: timedelta = timedelta(days=7)
+    warm_before: timedelta = timedelta(hours=24)
+    hot_before: timedelta = timedelta(hours=1)
+    warm_poll_seconds: float = 60.0
+    hot_poll_seconds: float = 2.0
+    event_poll_seconds: float = 2.0
+    cooldown_poll_seconds: float = 10.0
     cooldown_after: timedelta = timedelta(hours=2)
+    reviewed_pinned_event_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.max_events <= 0 or self.max_contracts_per_event <= 0:
             raise ValueError("political watchlist caps must be positive")
+        if self.lookahead <= timedelta(0):
+            raise ValueError("political watchlist lookahead must be positive")
+        if not timedelta(0) < self.hot_before <= self.warm_before <= self.lookahead:
+            raise ValueError(
+                "political watch windows must satisfy lookahead >= warm >= hot > 0"
+            )
+        if any(
+            not math.isfinite(value) or value <= 0
+            for value in (
+                self.warm_poll_seconds,
+                self.hot_poll_seconds,
+                self.event_poll_seconds,
+                self.cooldown_poll_seconds,
+            )
+        ):
+            raise ValueError("political watch cadences must be finite and positive")
         if self.cooldown_after < timedelta(0):
             raise ValueError("political watchlist cooldown cannot be negative")
+        if any(not event_id.strip() for event_id in self.reviewed_pinned_event_ids):
+            raise ValueError("reviewed pinned event IDs must be non-empty")
 
 
 @dataclass(frozen=True)
@@ -638,6 +664,8 @@ class PlatformOpportunitySystem:
                 contract.active
                 and (contract.occurrence_at or contract.catalyst_at) is not None
                 and (contract.occurrence_at or contract.catalyst_at) >= now
+                and (contract.occurrence_at or contract.catalyst_at)
+                <= now + policy.lookahead
                 and _is_political_contract(contract)
                 and not _is_combo_contract(contract)
                 and (contract.venue != "kalshi" or contract.occurrence_at is not None)
@@ -850,6 +878,7 @@ class PlatformOpportunitySystem:
     def plan_monitoring(self, now: datetime) -> MonitoringPlan:
         now = _aware(now) or now
         policy = self.monitoring_policy
+        political_policy = self.political_watch_policy
         eligible: list[MonitoringAssignment] = []
         warm: list[MonitoringAssignment] = []
         lock_by_contract_id = {
@@ -863,7 +892,7 @@ class PlatformOpportunitySystem:
                 # A lock owns the complete research window.  It deliberately
                 # bypasses ordinary volume/lookahead ranking so refreshes
                 # cannot silently stop pre-event baselines or cooldown marks.
-                if now < lock.occurrence_at - timedelta(hours=1):
+                if now < lock.occurrence_at - political_policy.hot_before:
                     warm.append(
                         MonitoringAssignment(
                             contract.contract_id,
@@ -873,7 +902,7 @@ class PlatformOpportunitySystem:
                             "political_event_lock",
                             1_000_000_000_000.0,
                             "warm",
-                            60.0,
+                            political_policy.warm_poll_seconds,
                         )
                     )
                 elif now < lock.occurrence_at:
@@ -886,7 +915,7 @@ class PlatformOpportunitySystem:
                             "political_event_lock",
                             1_000_000_000_000.0,
                             "hot",
-                            2.0,
+                            political_policy.hot_poll_seconds,
                         )
                     )
                 else:
@@ -899,7 +928,7 @@ class PlatformOpportunitySystem:
                             "political_event_lock",
                             1_000_000_000_000.0,
                             "cooldown",
-                            10.0,
+                            political_policy.cooldown_poll_seconds,
                         )
                     )
                 continue

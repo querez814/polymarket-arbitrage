@@ -57,6 +57,17 @@ platform_opportunity:
   min_volume: 500
   queue_capacity: 2000
   hot_poll_seconds: 2
+  political_max_events: 2
+  political_max_contracts_per_event: 3
+  political_lookahead_days: 5
+  political_warm_before_hours: 12
+  political_hot_before_minutes: 30
+  political_warm_poll_seconds: 45
+  political_hot_poll_seconds: 3
+  political_event_poll_seconds: 1
+  political_cooldown_poll_seconds: 15
+  political_cooldown_after_hours: 4
+  reviewed_pinned_event_ids: [kalshi:KXTRUMPMENTION-26AUG10]
 """,
         encoding="utf-8",
     )
@@ -67,6 +78,32 @@ platform_opportunity:
     assert config.platform_opportunity.catalog_path == "data/research.db"
     assert config.platform_opportunity.max_hot_contracts == 40
     assert config.platform_opportunity.queue_capacity == 2000
+    assert config.platform_opportunity.political_max_events == 2
+    assert config.platform_opportunity.political_hot_before_minutes == 30
+    assert config.platform_opportunity.reviewed_pinned_event_ids == [
+        "kalshi:KXTRUMPMENTION-26AUG10"
+    ]
+
+
+def test_political_v2_profile_is_isolated_real_data_shadow_collection():
+    config = load_config(
+        str(Path(__file__).parents[1] / "config.paper.political-v2.yaml")
+    )
+
+    assert config.is_dry_run is True
+    assert config.mode.data_mode == "real"
+    assert config.mode.simulate_fills is False
+    assert config.mode.cross_platform_execution_enabled is False
+    assert config.platform_opportunity.experiment_id == (
+        "political-event-reaction-v2-2026-08-09"
+    )
+    assert config.platform_opportunity.catalog_path == (
+        "data/political_v2_platform_opportunities.db"
+    )
+    assert config.monitoring.paper_trade_db_path == "data/political_v2_paper_trades.db"
+    assert config.platform_opportunity.reviewed_pinned_event_ids == [
+        "kalshi:KXTRUMPMENTION-26AUG10"
+    ]
 
 
 @pytest.mark.parametrize(
