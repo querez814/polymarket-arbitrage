@@ -124,6 +124,19 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     assert config.platform_opportunity.relative_value_authority == "disabled"
     assert config.platform_opportunity.slippage_per_contract == 0.01
     assert config.platform_opportunity.replay_evidence_byte_cap == 4 * 1024**3
+    assert config.platform_opportunity.political_experimental_paper_enabled is True
+    assert config.platform_opportunity.political_paper_starting_cash == 1_000
+    assert config.platform_opportunity.political_paper_max_total_reserved_cap == 100
+    assert config.platform_opportunity.political_paper_max_position_reserved_debit == 25
+    assert config.platform_opportunity.political_paper_max_open_positions == 4
+    assert config.platform_opportunity.political_paper_entry_depth_fraction == 0.10
+    assert config.platform_opportunity.political_paper_signal_ttl_seconds == 10
+    assert config.platform_opportunity.political_paper_min_hold_seconds == 2
+    assert config.platform_opportunity.political_paper_max_book_request_latency_seconds == 2
+    assert config.platform_opportunity.political_paper_max_fee_fetch_latency_seconds == 2
+    assert config.platform_opportunity.political_paper_max_fee_schedule_age_seconds == 60
+    assert config.platform_opportunity.political_paper_one_open_position_per_contract
+    assert config.platform_opportunity.political_paper_one_open_position_per_base_lane
 
 
 def test_political_v2_profile_disables_legacy_discovery_and_semantic_runtime():

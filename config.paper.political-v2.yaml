@@ -76,6 +76,21 @@ platform_opportunity:
   slippage_per_contract: 0.01
   max_shadow_notional: 100
   replay_evidence_byte_cap: 4294967296
+  # Dedicated causal paper simulation. This remains distinct from standard
+  # projected locked paper and unconstrained shadow research marks.
+  political_experimental_paper_enabled: true
+  political_paper_starting_cash: 1000
+  political_paper_max_total_reserved_cap: 100
+  political_paper_max_position_reserved_debit: 25
+  political_paper_max_open_positions: 4
+  political_paper_entry_depth_fraction: 0.10
+  political_paper_signal_ttl_seconds: 10
+  political_paper_min_hold_seconds: 2
+  political_paper_max_book_request_latency_seconds: 2
+  political_paper_max_fee_fetch_latency_seconds: 2
+  political_paper_max_fee_schedule_age_seconds: 60
+  political_paper_one_open_position_per_contract: true
+  political_paper_one_open_position_per_base_lane: true
   min_event_clusters: 50
   min_intents: 200
   max_research_drawdown: 50

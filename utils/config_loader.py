@@ -282,6 +282,22 @@ class PlatformOpportunityConfig:
     # Bounded normalized replay storage; capacity exhaustion invalidates the
     # affected cohort rather than silently dropping causal book evidence.
     replay_evidence_byte_cap: int = 4 * 1024**3
+    # This separate simulated ledger is the only political-v2 portfolio
+    # authority. It remains an experimental paper simulation and never
+    # enables adapter mutation or generic simulated fills.
+    political_experimental_paper_enabled: bool = False
+    political_paper_starting_cash: float = 1_000.0
+    political_paper_max_total_reserved_cap: float = 100.0
+    political_paper_max_position_reserved_debit: float = 25.0
+    political_paper_max_open_positions: int = 4
+    political_paper_entry_depth_fraction: float = 0.10
+    political_paper_signal_ttl_seconds: float = 10.0
+    political_paper_min_hold_seconds: float = 2.0
+    political_paper_max_book_request_latency_seconds: float = 2.0
+    political_paper_max_fee_fetch_latency_seconds: float = 2.0
+    political_paper_max_fee_schedule_age_seconds: float = 60.0
+    political_paper_one_open_position_per_contract: bool = True
+    political_paper_one_open_position_per_base_lane: bool = True
     min_event_clusters: int = 50
     min_intents: int = 200
     max_research_drawdown: float = 50.0
@@ -1071,6 +1087,11 @@ def validate_config(config: BotConfig) -> None:
         "political_cooldown_after_hours",
         "political_max_event_duration_hours",
         "political_milestone_cache_seconds",
+        "political_paper_signal_ttl_seconds",
+        "political_paper_min_hold_seconds",
+        "political_paper_max_book_request_latency_seconds",
+        "political_paper_max_fee_fetch_latency_seconds",
+        "political_paper_max_fee_schedule_age_seconds",
     ):
         value = getattr(platform, name)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1082,6 +1103,10 @@ def validate_config(config: BotConfig) -> None:
         "min_volume",
         "additional_fee_buffer_per_contract",
         "slippage_per_contract",
+        "political_paper_starting_cash",
+        "political_paper_max_total_reserved_cap",
+        "political_paper_max_position_reserved_debit",
+        "political_paper_entry_depth_fraction",
     ):
         value = getattr(platform, name)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1104,6 +1129,7 @@ def validate_config(config: BotConfig) -> None:
         "political_milestone_max_pages_per_event",
         "political_milestone_max_results_per_event",
         "political_milestone_concurrency",
+        "political_paper_max_open_positions",
     ):
         value = getattr(platform, name)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -1112,6 +1138,33 @@ def validate_config(config: BotConfig) -> None:
         errors.append("platform_opportunity.max_hot_contracts must be <= 500")
     if isinstance(platform.queue_capacity, int) and platform.queue_capacity > 100_000:
         errors.append("platform_opportunity.queue_capacity must be <= 100000")
+    for name in (
+        "political_experimental_paper_enabled",
+        "political_paper_one_open_position_per_contract",
+        "political_paper_one_open_position_per_base_lane",
+    ):
+        if not isinstance(getattr(platform, name), bool):
+            errors.append(f"platform_opportunity.{name} must be a boolean")
+    if (
+        isinstance(platform.political_paper_entry_depth_fraction, (int, float))
+        and not isinstance(platform.political_paper_entry_depth_fraction, bool)
+        and float(platform.political_paper_entry_depth_fraction) > 1
+    ):
+        errors.append(
+            "platform_opportunity.political_paper_entry_depth_fraction must be <= 1"
+        )
+    if (
+        isinstance(platform.political_paper_max_position_reserved_debit, (int, float))
+        and isinstance(platform.political_paper_max_total_reserved_cap, (int, float))
+        and not isinstance(platform.political_paper_max_position_reserved_debit, bool)
+        and not isinstance(platform.political_paper_max_total_reserved_cap, bool)
+        and float(platform.political_paper_max_position_reserved_debit)
+        > float(platform.political_paper_max_total_reserved_cap)
+    ):
+        errors.append(
+            "platform_opportunity.political_paper_max_position_reserved_debit "
+            "must not exceed political_paper_max_total_reserved_cap"
+        )
     if not isinstance(platform.reviewed_pinned_event_ids, list) or any(
         not isinstance(event_id, str) or not event_id.strip()
         for event_id in platform.reviewed_pinned_event_ids
