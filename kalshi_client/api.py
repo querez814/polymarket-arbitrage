@@ -849,7 +849,11 @@ class KalshiClient:
             related = data.get("related_event_tickers")
             if not all(isinstance(value, str) and value.strip() for value in (milestone_id, title, start_date)):
                 return None
-            if not isinstance(related, list) or not all(isinstance(value, str) and value.strip() for value in related):
+            if (
+                not isinstance(related, list)
+                or not related
+                or not all(isinstance(value, str) and value.strip() for value in related)
+            ):
                 return None
             start_time = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
             if start_time.tzinfo is None:
