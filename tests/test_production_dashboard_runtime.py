@@ -68,6 +68,41 @@ def test_platform_fee_cache_expires_before_political_fee_evidence_does():
     assert bot._platform_fee_cache_ttl_seconds() == pytest.approx(1.8)
 
 
+def test_platform_hot_sampler_rotates_due_contracts_across_bounded_batches():
+    """Later contracts receive the next public-read slot under sustained load."""
+    assignments = tuple(
+        MonitoringAssignment(
+            contract_id=f"kalshi:contract-{index}",
+            venue="kalshi",
+            native_id=f"contract-{index}",
+            catalyst_at=None,
+            reason="political_event_lock",
+            priority_score=1.0,
+            cadence="event_live",
+            interval_seconds=2.0,
+        )
+        for index in range(24)
+    )
+    next_due = {assignment.contract_id: 0.0 for assignment in assignments}
+    cursor = None
+    batches = []
+    for _ in range(3):
+        selected, cursor = TradingBotWithDashboard._select_fair_due_assignments(
+            assignments=assignments,
+            next_due=next_due,
+            now_monotonic=1.0,
+            limit=8,
+            last_scheduled_contract_id=cursor,
+        )
+        batches.append([assignment.contract_id for assignment in selected])
+
+    assert batches == [
+        [f"kalshi:contract-{index}" for index in range(0, 8)],
+        [f"kalshi:contract-{index}" for index in range(8, 16)],
+        [f"kalshi:contract-{index}" for index in range(16, 24)],
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "expected_reason", "dashboard_key"),

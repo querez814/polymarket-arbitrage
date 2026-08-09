@@ -1337,13 +1337,16 @@ class TradingBotWithDashboard:
     async def _platform_hot_sampling_loop(self) -> None:
         """Poll bounded hot contracts on isolated public read pools."""
         next_due: dict[str, float] = {}
+        last_scheduled_contract_id: str | None = None
         while self._running and self.platform_opportunity_worker is not None:
             now_mono = time.monotonic()
-            due = [
-                assignment
-                for assignment in self._platform_hot_assignments
-                if next_due.get(assignment.contract_id, 0.0) <= now_mono
-            ][:8]
+            due, last_scheduled_contract_id = self._select_fair_due_assignments(
+                assignments=self._platform_hot_assignments,
+                next_due=next_due,
+                now_monotonic=now_mono,
+                limit=self.config.platform_opportunity.hot_sampling_concurrency,
+                last_scheduled_contract_id=last_scheduled_contract_id,
+            )
             if not due:
                 await asyncio.sleep(0.25)
                 continue
@@ -1359,6 +1362,7 @@ class TradingBotWithDashboard:
                     market = await self._platform_poly_client.get_market(
                         assignment.native_id
                     )
+
                     if market is None or not market.condition_id:
                         raise RuntimeError("Polymarket condition metadata unavailable")
                     info = await self._platform_poly_client.get_clob_market_info(
@@ -1482,6 +1486,47 @@ class TradingBotWithDashboard:
                         fee_request_started_at=fee_request_started_at,
                         fee_received_at=fee_received_at,
                     )
+
+    @staticmethod
+    def _select_fair_due_assignments(
+        *,
+        assignments: tuple,
+        next_due: Mapping[str, float],
+        now_monotonic: float,
+        limit: int,
+        last_scheduled_contract_id: str | None,
+    ) -> tuple[tuple, str | None]:
+        """Rotate due assignments without starving later locked contracts.
+
+        Catalog ordering is useful for reproducibility, but slicing its first
+        eight due contracts repeatedly means a busy leading event can prevent
+        later events from ever receiving a public read. Start immediately
+        after the prior dispatch in that stable ordering, admit at most the
+        typed network bound, and retain the last actual dispatch as the next
+        rotation point. This helper is side-effect free for networkless tests.
+        """
+        if limit <= 0:
+            raise ValueError("hot sampling concurrency must be positive")
+        ordered = tuple(assignments)
+        if not ordered:
+            return (), last_scheduled_contract_id
+        start_index = 0
+        if last_scheduled_contract_id is not None:
+            for index, assignment in enumerate(ordered):
+                if assignment.contract_id == last_scheduled_contract_id:
+                    start_index = (index + 1) % len(ordered)
+                    break
+        selected = []
+        for offset in range(len(ordered)):
+            assignment = ordered[(start_index + offset) % len(ordered)]
+            if next_due.get(assignment.contract_id, 0.0) > now_monotonic:
+                continue
+            selected.append(assignment)
+            if len(selected) == limit:
+                break
+        if not selected:
+            return (), last_scheduled_contract_id
+        return tuple(selected), selected[-1].contract_id
 
     def _record_platform_observation_failure(
         self,

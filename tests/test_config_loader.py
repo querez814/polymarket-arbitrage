@@ -56,6 +56,7 @@ platform_opportunity:
   min_liquidity: 250
   min_volume: 500
   queue_capacity: 2000
+  hot_sampling_concurrency: 6
   hot_poll_seconds: 2
   political_max_events: 2
   political_max_contracts_per_event: 3
@@ -78,6 +79,7 @@ platform_opportunity:
     assert config.platform_opportunity.catalog_path == "data/research.db"
     assert config.platform_opportunity.max_hot_contracts == 40
     assert config.platform_opportunity.queue_capacity == 2000
+    assert config.platform_opportunity.hot_sampling_concurrency == 6
     assert config.platform_opportunity.political_max_events == 2
     assert config.platform_opportunity.political_hot_before_minutes == 30
     assert (
@@ -103,6 +105,7 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     assert config.mode.cross_platform_execution_enabled is False
     assert config.mode.semantic_matching_enabled is False
     assert config.mode.semantic_cache_path == "data/political_v2_semantic_cache.db"
+    assert config.platform_opportunity.hot_sampling_concurrency == 8
     assert config.platform_opportunity.experiment_id == (
         "political-event-reaction-v2-2026-08-09"
     )

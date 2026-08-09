@@ -262,6 +262,9 @@ class PlatformOpportunityConfig:
     min_liquidity: float = 100.0
     min_volume: float = 100.0
     queue_capacity: int = 10_000
+    # One bounded public-read batch.  The sampler rotates due contracts across
+    # batches so this limit cannot permanently favour the first assignments.
+    hot_sampling_concurrency: int = 8
     hot_poll_seconds: float = 1.0
     catalog_refresh_seconds: float = 1800.0
     catalog_max_markets_per_venue: int = 25_000
@@ -1125,6 +1128,7 @@ def validate_config(config: BotConfig) -> None:
     for name in (
         "max_hot_contracts",
         "queue_capacity",
+        "hot_sampling_concurrency",
         "min_event_clusters",
         "min_intents",
         "catalog_max_markets_per_venue",
@@ -1145,6 +1149,11 @@ def validate_config(config: BotConfig) -> None:
         errors.append("platform_opportunity.max_hot_contracts must be <= 500")
     if isinstance(platform.queue_capacity, int) and platform.queue_capacity > 100_000:
         errors.append("platform_opportunity.queue_capacity must be <= 100000")
+    if (
+        isinstance(platform.hot_sampling_concurrency, int)
+        and platform.hot_sampling_concurrency > 100
+    ):
+        errors.append("platform_opportunity.hot_sampling_concurrency must be <= 100")
     for name in (
         "political_experimental_paper_enabled",
         "political_paper_one_open_position_per_contract",

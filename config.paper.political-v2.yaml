@@ -47,6 +47,7 @@ platform_opportunity:
   min_liquidity: 100
   min_volume: 100
   queue_capacity: 10000
+  hot_sampling_concurrency: 8
   hot_poll_seconds: 1
   political_max_events: 4
   political_max_contracts_per_event: 6
