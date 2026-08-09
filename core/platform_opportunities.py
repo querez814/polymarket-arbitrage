@@ -867,6 +867,96 @@ class PlatformOpportunitySystem:
                 ranked.append((1, str(last_success), ticker))
         return tuple(ticker for _, _, ticker in sorted(ranked)[:limit])
 
+    def kalshi_event_rotation_coverage(self, *, now: datetime) -> dict[str, object]:
+        """Report durable rotation breadth without treating a probe batch as coverage.
+
+        The selected batch is deliberately capped, while the dashboard needs to
+        distinguish it from the entire currently political source inventory.
+        A full pass means every eligible event has had one complete targeted
+        read; events in retry backoff are visible but do not make that claim.
+        """
+        at = _aware(now)
+        if at is None:
+            raise ValueError("Kalshi event rotation time must be timezone-aware")
+        if self.political_watch_policy is None:
+            return {
+                "eligible_event_tickers": 0,
+                "unprobed_event_tickers": 0,
+                "backing_off_event_tickers": 0,
+                "full_pass_progress": {
+                    "completed_event_tickers": 0,
+                    "eligible_event_tickers": 0,
+                    "fraction": None,
+                    "complete": False,
+                },
+                "oldest_unprobed_age_seconds": None,
+            }
+        pins = {
+            pin.split(":", 1)[1]
+            for pin in self.political_watch_policy.reviewed_pinned_event_ids
+            if pin.startswith("kalshi:")
+        }
+        promoted = set(self._political_locks)
+        states = self.store.kalshi_event_probe_states()
+        eligible: list[dict] = []
+        for row in self.store.kalshi_event_index_rows(active_only=True):
+            ticker = str(row["event_ticker"])
+            if ticker in pins or ticker in promoted:
+                continue
+            payload = row["payload"]
+            if isinstance(payload, Mapping) and _is_political_kalshi_event_summary(
+                payload
+            ):
+                eligible.append(row)
+
+        unprobed = [
+            row for row in eligible if states.get(str(row["event_ticker"])) is None
+        ]
+        completed = sum(
+            1
+            for row in eligible
+            if states.get(str(row["event_ticker"]), {}).get("last_success_at")
+            is not None
+        )
+        backing_off = sum(
+            1
+            for row in eligible
+            if (
+                (state := states.get(str(row["event_ticker"]))) is not None
+                and state.get("last_success_at") is None
+                and (
+                    next_eligible := _aware(
+                        datetime.fromisoformat(str(state["next_eligible_at"]))
+                    )
+                )
+                is not None
+                and next_eligible > at
+            )
+        )
+        oldest_unprobed_age_seconds = None
+        if unprobed:
+            oldest_seen = min(
+                _aware(datetime.fromisoformat(str(row["first_seen_at"])))
+                for row in unprobed
+            )
+            if oldest_seen is not None:
+                oldest_unprobed_age_seconds = max(
+                    0.0, (at - oldest_seen).total_seconds()
+                )
+        eligible_count = len(eligible)
+        return {
+            "eligible_event_tickers": eligible_count,
+            "unprobed_event_tickers": len(unprobed),
+            "backing_off_event_tickers": backing_off,
+            "full_pass_progress": {
+                "completed_event_tickers": completed,
+                "eligible_event_tickers": eligible_count,
+                "fraction": (completed / eligible_count) if eligible_count else None,
+                "complete": bool(eligible_count and completed == eligible_count),
+            },
+            "oldest_unprobed_age_seconds": oldest_unprobed_age_seconds,
+        }
+
     def set_fee_schedule(self, contract_id: str, schedule: VenueFeeSchedule) -> None:
         if schedule.venue != contract_id.split(":", 1)[0]:
             raise ValueError("fee schedule venue does not match contract")

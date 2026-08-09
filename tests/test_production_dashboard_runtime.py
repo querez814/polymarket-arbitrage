@@ -238,6 +238,16 @@ async def test_kalshi_rotation_probe_persists_complete_and_failed_targets(tmp_pa
     assert milestones == []
     assert status["complete_event_tickers"] == 1
     assert status["failed_event_tickers"] == 1
+    assert status["eligible_event_tickers"] == 2
+    assert status["unprobed_event_tickers"] == 0
+    assert status["backing_off_event_tickers"] == 1
+    assert status["full_pass_progress"] == {
+        "completed_event_tickers": 1,
+        "eligible_event_tickers": 2,
+        "fraction": 0.5,
+        "complete": False,
+    }
+    assert status["oldest_unprobed_age_seconds"] is None
     assert status["events"]["KXROTATE-B"]["stop_reason"] == "not_returned"
     assert (
         store.kalshi_event_probe_state("KXROTATE-A")["last_success_at"]

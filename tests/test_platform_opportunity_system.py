@@ -494,6 +494,16 @@ def test_kalshi_event_rotation_prefers_unprobed_currently_political_rows_across_
             reviewed_pinned_event_ids=("kalshi:KXROTATE-00",),
         ),
     )
+    coverage = system.kalshi_event_rotation_coverage(now=now + timedelta(minutes=5))
+    assert coverage["eligible_event_tickers"] == 50
+    assert coverage["unprobed_event_tickers"] == 50
+    assert coverage["oldest_unprobed_age_seconds"] == 300.0
+    assert coverage["full_pass_progress"] == {
+        "completed_event_tickers": 0,
+        "eligible_event_tickers": 50,
+        "fraction": 0.0,
+        "complete": False,
+    }
 
     first = system.select_kalshi_event_rotation(now=now, limit=24)
     assert "KXROTATE-00" not in first

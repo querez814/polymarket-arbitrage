@@ -1499,14 +1499,18 @@ class TradingBotWithDashboard:
                 status="unavailable", stop_reason="dedicated_source_unavailable"
             )
             return [], [], status
+
+        def finished_status() -> dict:
+            status.update(system.kalshi_event_rotation_coverage(now=now))
+            return status
+
         tickers = system.select_kalshi_event_rotation(
             now=now,
             limit=self.config.platform_opportunity.political_milestone_max_event_tickers,
         )
-        status["eligible_event_tickers"] = len(tickers)
         if not tickers:
             status.update(status="idle", stop_reason="no_eligible_rotation_target")
-            return [], [], status
+            return [], [], finished_status()
         status["attempted_event_tickers"] = len(tickers)
         try:
             read = await client.list_event_catalog(
@@ -1526,7 +1530,7 @@ class TradingBotWithDashboard:
                 stop_reason="fetch_failed",
                 failed_event_tickers=len(tickers),
             )
-            return [], [], status
+            return [], [], finished_status()
         events = {event.event_ticker: event for event in read.events}
         markets: list[KalshiMarket] = []
         if not read.complete:
@@ -1541,7 +1545,7 @@ class TradingBotWithDashboard:
                 stop_reason=read.stop_reason,
                 failed_event_tickers=len(tickers),
             )
-            return [], [], status
+            return [], [], finished_status()
         for ticker in tickers:
             event = events.get(ticker)
             if event is None:
@@ -1563,7 +1567,7 @@ class TradingBotWithDashboard:
             }
             status["complete_event_tickers"] += 1
         status.update(status="complete", stop_reason=read.stop_reason)
-        return markets, list(read.milestones), status
+        return markets, list(read.milestones), finished_status()
 
     async def _political_kalshi_milestones(
         self, markets, *, now: datetime, excluded_event_tickers: set[str] = frozenset()
