@@ -116,6 +116,15 @@ class PlatformOpportunityStore:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY(intent_id, horizon_seconds, capacity_fraction)
                 );
+                CREATE TABLE IF NOT EXISTS platform_observations (
+                    cohort_id TEXT NOT NULL,
+                    contract_id TEXT NOT NULL,
+                    observation_count INTEGER NOT NULL,
+                    last_observed_at TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, contract_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_platform_observations_cohort
+                    ON platform_observations(cohort_id);
                 """)
 
     def close(self) -> None:
@@ -196,6 +205,37 @@ class PlatformOpportunityStore:
                 "SELECT COUNT(*) FROM platform_contract_revisions"
             ).fetchone()[0]
         return {"current": int(current), "revisions": int(revisions)}
+
+    def record_successful_observation(
+        self, *, cohort_id: str, contract_id: str, observed_at: datetime
+    ) -> None:
+        """Record a completed book observation, including valid empty depth."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO platform_observations "
+                "(cohort_id, contract_id, observation_count, last_observed_at) "
+                "VALUES (?, ?, 1, ?) "
+                "ON CONFLICT(cohort_id, contract_id) DO UPDATE SET "
+                "observation_count=platform_observations.observation_count + 1, "
+                "last_observed_at=excluded.last_observed_at",
+                (cohort_id, contract_id, _utc_iso(observed_at)),
+            )
+
+    def observation_telemetry(self, *, cohort_id: str) -> dict[str, dict[str, Any]]:
+        """Return durable observation facts, deliberately scoped to one cohort."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT contract_id, observation_count, last_observed_at "
+                "FROM platform_observations WHERE cohort_id = ? ORDER BY contract_id",
+                (cohort_id,),
+            ).fetchall()
+        return {
+            str(row["contract_id"]): {
+                "observation_count": int(row["observation_count"]),
+                "last_observed_at": str(row["last_observed_at"]),
+            }
+            for row in rows
+        }
 
     def latest_contract_payloads(
         self, contract_ids: Iterable[str]

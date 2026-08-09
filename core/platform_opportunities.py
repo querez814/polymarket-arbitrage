@@ -118,7 +118,7 @@ def _stored_contract(payload: Mapping[str, object]) -> PlatformContract:
         if isinstance(value, str):
             values[field_name] = _aware(datetime.fromisoformat(value))
     for field_name in ("occurrence_sources", "catalyst_sources"):
-        values[field_name] = tuple(values.get(field_name) or ())
+        values[field_name] = tuple(cast(Iterable[str], values.get(field_name) or ()))
     # Revisions written before event-window provenance was introduced remain
     # readable, but cannot be mistaken for exact end-bounded evidence.
     for field_name in (
@@ -678,6 +678,16 @@ class PlatformOpportunitySystem:
             raise ValueError("fee schedule venue does not match contract")
         self._fee_schedules[contract_id] = schedule
 
+    def record_successful_observation(
+        self, contract_id: str, *, observed_at: datetime
+    ) -> None:
+        """Persist transport-successful reads separately from assignment state."""
+        self.store.record_successful_observation(
+            cohort_id=self.cohort_id,
+            contract_id=contract_id,
+            observed_at=_aware(observed_at) or observed_at,
+        )
+
     def _restore_state(self) -> None:
         """Resume open intents, marks, and cooldowns from the current cohort."""
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
@@ -833,11 +843,17 @@ class PlatformOpportunitySystem:
                     contract.contract_id,
                 )
             )
-            occurrence_at = min(
-                contract.occurrence_at or contract.catalyst_at
+            occurrence_candidates = [
+                candidate
                 for contract in contracts
-                if (contract.occurrence_at or contract.catalyst_at) is not None
-            )
+                if (candidate := contract.occurrence_at or contract.catalyst_at)
+                is not None
+            ]
+            # Candidate admission already requires an exact bounded window;
+            # keep this explicit for both runtime safety and type clarity.
+            if not occurrence_candidates:
+                continue
+            occurrence_at = min(occurrence_candidates)
             event_start_at = min(
                 contract.event_start_at or occurrence_at for contract in contracts
             )
@@ -1064,7 +1080,7 @@ class PlatformOpportunitySystem:
         }
         for contract in self._contracts.values():
             lock = lock_by_contract_id.get(contract.contract_id)
-            if lock is not None:
+            if lock is not None and political_policy is not None:
                 # A lock owns the complete research window.  It deliberately
                 # bypasses ordinary volume/lookahead ranking so refreshes
                 # cannot silently stop pre-event baselines or cooldown marks.
@@ -2065,6 +2081,7 @@ class PlatformOpportunitySystem:
 
     def dashboard_summary(self) -> dict:
         counts = self.store.summary(cohort_id=self.cohort_id)
+        observations = self.store.observation_telemetry(cohort_id=self.cohort_id)
         now = datetime.now(timezone.utc)
         political_policy = self.political_watch_policy
         locks = []
@@ -2099,6 +2116,11 @@ class PlatformOpportunitySystem:
                         for contract_id in lock.contract_ids
                         if contract_id in self._sampled_contract_ids
                     ],
+                    "observations": {
+                        contract_id: observations[contract_id]
+                        for contract_id in lock.contract_ids
+                        if contract_id in observations
+                    },
                 }
             )
         return {
@@ -2117,5 +2139,10 @@ class PlatformOpportunitySystem:
             "marks": counts["marks"],
             "political_event_locks": locks,
             "sampled_contract_ids": sorted(self._sampled_contract_ids),
+            "observation_telemetry": {
+                contract_id: observations[contract_id]
+                for contract_id in sorted(self._sampled_contract_ids)
+                if contract_id in observations
+            },
             "research_pnl": self.store.research_mark_summary(cohort_id=self.cohort_id),
         }

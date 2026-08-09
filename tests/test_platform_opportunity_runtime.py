@@ -104,3 +104,40 @@ async def test_worker_persists_exact_kalshi_milestone_window_in_political_lock(t
     )
     assert lock["event_start_at"] == "2026-08-10T22:30:00+00:00"
     assert lock["event_end_at"] == "2026-08-10T23:15:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_successful_empty_depth_observation_across_restart(tmp_path):
+    """An assigned contract is not an observation until its book read completes."""
+    path = tmp_path / "opportunities.db"
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    worker = PlatformOpportunityWorker(system)
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule(
+        "polymarket", "none", 0, 1, 0, observed_at, "test"
+    )
+
+    await worker.start()
+    assert worker.submit_book(
+        "polymarket:empty-depth",
+        OrderBook(market_id="empty-depth"),
+        observed_at=observed_at,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+
+    assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {
+        "polymarket:empty-depth": {
+            "observation_count": 1,
+            "last_observed_at": "2026-08-09T00:00:00+00:00",
+        }
+    }
+    system.store.close()
+
+    resumed = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    assert resumed.store.observation_telemetry(cohort_id=resumed.cohort_id) == {
+        "polymarket:empty-depth": {
+            "observation_count": 1,
+            "last_observed_at": "2026-08-09T00:00:00+00:00",
+        }
+    }

@@ -132,6 +132,13 @@ class PlatformOpportunityWorker:
                         envelope.book,
                         observed_at=envelope.observed_at,
                     )
+                    record = getattr(self.system, "record_successful_observation", None)
+                    if record is not None:
+                        await self._run_sync(
+                            record,
+                            envelope.contract_id,
+                            observed_at=envelope.observed_at,
+                        )
                 self.processed += 1
             except asyncio.CancelledError:
                 raise
