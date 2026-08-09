@@ -823,6 +823,26 @@ class PlatformOpportunitySystem:
             if cooldown_key[0] is not None:
                 self._last_intent_at[(cooldown_key[0], cooldown_key[1])] = created_at
         self._marked = self.store.mark_keys(cohort_id=self.cohort_id)
+        # A political lock owns its whole event window across process restarts.
+        # Restore its selected contracts before rebuilding locks so a future
+        # event is not discarded merely because the next catalog page has not
+        # arrived yet.
+        now = datetime.now(timezone.utc)
+        active_locks = self.store.active_political_event_locks(now=now)
+        locked_contract_ids = {
+            str(contract_id)
+            for lock in active_locks
+            for contract_id in lock.get("contract_ids", ())
+        }
+        self._contracts.update(
+            {
+                contract_id: _stored_contract(payload)
+                for contract_id, payload in self.store.latest_contract_payloads(
+                    locked_contract_ids
+                ).items()
+            }
+        )
+        self._refresh_political_locks(now)
 
     def _refresh_political_locks(self, now: datetime) -> None:
         """Keep selected events locked until cooldown, regardless of later volume."""
@@ -837,7 +857,11 @@ class PlatformOpportunitySystem:
                 selected_contract = tuple(
                     (
                         str(key),
-                        value if isinstance(value, str) or value is None else str(value),
+                        (
+                            value
+                            if isinstance(value, str) or value is None
+                            else str(value)
+                        ),
                     )
                     for key, value in stored_selected_contract.items()
                 )

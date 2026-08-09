@@ -11,7 +11,15 @@ from core.cross_platform_arb import MarketPair
 from core.event_contracts import EventPairLink
 from core.event_lane import EventLanePolicy, EventLaneScheduler
 from core.pair_monitoring import PairTierMonitor
-from core.platform_opportunities import MonitoringAssignment, PlatformOpportunitySystem
+from core.platform_opportunities import (
+    MonitoringAssignment,
+    PlatformOpportunitySystem,
+    PoliticalWatchPolicy,
+)
+from core.platform_opportunity_runtime import PlatformOpportunityWorker
+from core.production_runtime import ProductionArbitrageRuntime
+from core.execution_journal import ExecutionJournal
+from core.operations import PersistentOperatorControls
 from dashboard.server import dashboard_state
 from utils.config_loader import BotConfig
 from utils.platform_opportunity_store import PlatformOpportunityStore
@@ -24,6 +32,7 @@ from polymarket_client.models import (
     TokenType,
 )
 from kalshi_client.models import KalshiMarket
+from kalshi_client.models import KalshiMilestone
 
 
 @pytest.mark.asyncio
@@ -668,9 +677,10 @@ async def test_platform_catalog_uses_only_ordinary_kalshi_inventory():
         for call in bot._platform_kalshi_client.calls
         if "mve_filter" in call
     ] == ["exclude"]
-    assert [market.ticker for market in bot.platform_opportunity_worker.received["kalshi_markets"]] == [
-        "KXPOL-1"
-    ]
+    assert [
+        market.ticker
+        for market in bot.platform_opportunity_worker.received["kalshi_markets"]
+    ] == ["KXPOL-1"]
     assert dashboard_state.platform_opportunity["catalog"]["multivariate_requests"] == 0
 
 
@@ -744,6 +754,241 @@ async def test_platform_catalog_fetches_exact_political_milestones_and_passes_th
     ]
     assert status["requested_event_tickers"] == 1
     assert status["successful_event_tickers"] == 1
+
+
+@pytest.mark.asyncio
+async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_safe(
+    tmp_path, monkeypatch
+):
+    """Exercise the real catalog boundary without network, runtime startup, or orders."""
+    start = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 10, 23, 15, tzinfo=timezone.utc)
+    config = BotConfig()
+    config.mode.cross_platform_enabled = False
+    config.mode.cross_platform_execution_enabled = False
+    config.mode.semantic_matching_enabled = False
+    config.platform_opportunity.reviewed_pinned_event_ids = [
+        "kalshi:KXTRUMPMENTION-26AUG10"
+    ]
+    config.platform_opportunity.catalog_path = str(tmp_path / "catalog.db")
+    config.platform_opportunity.political_max_events = 1
+    config.platform_opportunity.political_max_contracts_per_event = 6
+    config.platform_opportunity.political_warm_before_hours = 24
+    config.platform_opportunity.political_hot_before_minutes = 60
+    config.platform_opportunity.political_cooldown_after_hours = 2
+    watch_policy = PoliticalWatchPolicy(
+        max_events=config.platform_opportunity.political_max_events,
+        max_contracts_per_event=(
+            config.platform_opportunity.political_max_contracts_per_event
+        ),
+        lookahead=timedelta(days=config.platform_opportunity.political_lookahead_days),
+        warm_before=timedelta(
+            hours=config.platform_opportunity.political_warm_before_hours
+        ),
+        hot_before=timedelta(
+            minutes=config.platform_opportunity.political_hot_before_minutes
+        ),
+        warm_poll_seconds=config.platform_opportunity.political_warm_poll_seconds,
+        hot_poll_seconds=config.platform_opportunity.political_hot_poll_seconds,
+        event_poll_seconds=config.platform_opportunity.political_event_poll_seconds,
+        cooldown_poll_seconds=config.platform_opportunity.political_cooldown_poll_seconds,
+        cooldown_after=timedelta(
+            hours=config.platform_opportunity.political_cooldown_after_hours
+        ),
+        reviewed_pinned_event_ids=tuple(
+            config.platform_opportunity.reviewed_pinned_event_ids
+        ),
+    )
+
+    class CatalogClient:
+        last_catalog_status = {"complete": True, "stop_reason": "complete"}
+
+        def __init__(self):
+            self.catalog_calls = []
+            self.milestone_calls = []
+
+        async def list_full_market_catalog(
+            self,
+            *,
+            status,
+            mve_filter,
+            max_markets,
+            max_pages,
+            max_decoded_bytes,
+            wall_time_seconds,
+        ):
+            self.catalog_calls.append(
+                {
+                    "status": status,
+                    "mve_filter": mve_filter,
+                    "max_markets": max_markets,
+                    "max_pages": max_pages,
+                    "max_decoded_bytes": max_decoded_bytes,
+                    "wall_time_seconds": wall_time_seconds,
+                }
+            )
+            return [
+                KalshiMarket(
+                    ticker=f"KXTRUMPMENTION-26AUG10-T{index}",
+                    event_ticker="KXTRUMPMENTION-26AUG10",
+                    series_ticker="KXTRUMPMENTION",
+                    title=f"Will Trump mention topic {index}?",
+                    event_title="Trump remarks",
+                    category="Politics",
+                    volume=1_000,
+                    open_interest=500,
+                )
+                for index in range(1, 3)
+            ]
+
+        async def list_all_milestones(
+            self, *, max_pages, max_milestones, related_event_ticker
+        ):
+            self.milestone_calls.append(
+                {
+                    "max_pages": max_pages,
+                    "max_milestones": max_milestones,
+                    "related_event_ticker": related_event_ticker,
+                }
+            )
+            return [
+                KalshiMilestone(
+                    milestone_id="trump-remarks",
+                    title="Trump remarks",
+                    category="Politics",
+                    milestone_type="speech",
+                    start_time=start,
+                    end_time=end,
+                    related_event_tickers=(related_event_ticker,),
+                    primary_event_tickers=(related_event_ticker,),
+                    source_id="official-schedule",
+                )
+            ]
+
+    class NoMutationVenue:
+        def __init__(self, venue):
+            self.venue = venue
+            self.mutations = []
+
+        async def available_collateral(self):
+            return 1_000.0
+
+        async def prepare_ioc(self, intent, *, idempotency_key, size):
+            self.mutations.append("prepare_ioc")
+            raise AssertionError("preflight must not prepare an order")
+
+        async def submit_prepared(self, prepared):
+            self.mutations.append("submit_prepared")
+            raise AssertionError("preflight must not submit an order")
+
+        async def cancel_open(self, order):
+            self.mutations.append("cancel_open")
+
+        async def read_order(self, lookup):
+            return None
+
+        async def list_open_orders(self):
+            return ()
+
+        async def list_positions(self):
+            return ()
+
+    bot = TradingBotWithDashboard(config)
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(config.platform_opportunity.catalog_path),
+        political_watch_policy=watch_policy,
+    )
+    worker = PlatformOpportunityWorker(system)
+    client = CatalogClient()
+    bot._platform_kalshi_client = client
+    bot.platform_opportunity_system = system
+    bot.platform_opportunity_worker = worker
+    monkeypatch.setattr(bot, "_platform_catalyst_references", lambda: [])
+
+    await bot._refresh_platform_catalog()
+
+    assert client.catalog_calls[0]["mve_filter"] == "exclude"
+    assert client.milestone_calls == [
+        {
+            "max_pages": 2,
+            "max_milestones": 20,
+            "related_event_ticker": "KXTRUMPMENTION-26AUG10",
+        }
+    ]
+    assert dashboard_state.platform_opportunity["catalog"]["multivariate_requests"] == 0
+    assert system.store.summary(cohort_id=system.cohort_id)["current"] == 2
+    assert len(system._political_locks) == 1
+    [lock] = system._political_locks.values()
+    assert 1 <= len(lock.contract_ids) <= 6
+    assert (lock.event_start_at, lock.event_end_at) == (start, end)
+    assert lock.locked_until == end + timedelta(hours=2)
+
+    def cadence(at):
+        return {item.cadence for item in system.plan_monitoring(at).hot}
+
+    assert {
+        item.cadence
+        for item in system.plan_monitoring(start - timedelta(hours=25)).warm
+    } == {"warm"}
+    assert cadence(start - timedelta(minutes=30)) == {"hot"}
+    assert cadence(start + timedelta(minutes=10)) == {"event_live"}
+    assert cadence(end + timedelta(minutes=30)) == {"cooldown"}
+    assert system.plan_monitoring(end + timedelta(hours=2, seconds=1)).hot == ()
+
+    schedule = system._fee_schedules.get(lock.contract_ids[0])
+    if schedule is None:
+        from core.platform_opportunities import VenueFeeSchedule
+
+        schedule = VenueFeeSchedule("kalshi", "none", 0, 1, 0, start, "preflight")
+    await worker.start()
+    assert worker.submit_book(
+        lock.contract_ids[0],
+        OrderBook(market_id=lock.contract_ids[0]),
+        observed_at=start,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+    selected_at = lock.selected_at
+    assert (
+        system.store.observation_telemetry(cohort_id=system.cohort_id)[
+            lock.contract_ids[0]
+        ]["observation_count"]
+        == 1
+    )
+    system.store.close()
+
+    resumed = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(config.platform_opportunity.catalog_path),
+        political_watch_policy=watch_policy,
+    )
+    [resumed_lock] = resumed._political_locks.values()
+    assert resumed_lock.selected_at == selected_at
+    assert resumed_lock.contract_ids == lock.contract_ids
+    assert resumed.store.summary(cohort_id=resumed.cohort_id)["current"] == 2
+
+    poly = NoMutationVenue("polymarket")
+    kalshi = NoMutationVenue("kalshi")
+    controls = PersistentOperatorControls(
+        tmp_path / "operator.sqlite3", auth_token="x" * 32
+    )
+    with ExecutionJournal(tmp_path / "journal.sqlite3") as journal:
+        runtime = ProductionArbitrageRuntime(
+            journal=journal,
+            adapters={"polymarket": poly, "kalshi": kalshi},
+            controls=controls,
+            min_net_edge=0.02,
+            max_order_notional=10.0,
+            economics_max_age=timedelta(seconds=30),
+            require_private_stream=False,
+        )
+        assert runtime.status().started is False
+        assert runtime.status().ready is False
+    controls.close()
+    resumed.store.close()
+    assert config.mode.cross_platform_enabled is False
+    assert config.mode.semantic_matching_enabled is False
+    assert poly.mutations == []
+    assert kalshi.mutations == []
 
 
 @pytest.mark.asyncio
