@@ -9,13 +9,16 @@ trading:
 mode:
   trading_mode: dry_run
   data_mode: real
-  cross_platform_enabled: true
+  # This profile collects the independently locked political cohort only.
+  # Keep legacy two-venue discovery and semantic verification completely off.
+  cross_platform_enabled: false
   cross_platform_execution_enabled: false
   kalshi_enabled: true
   simulate_fills: false
   fill_probability: 0
   paper_locked_arb_enabled: false
-  semantic_matching_enabled: true
+  semantic_matching_enabled: false
+  semantic_cache_path: data/political_v2_semantic_cache.db
 
 logging:
   log_dir: logs/political-event-reaction-v2-2026-08-09
@@ -25,6 +28,10 @@ logging:
 
 monitoring:
   paper_trade_db_path: data/political_v2_paper_trades.db
+
+production:
+  execution_journal_path: data/political_v2_execution_journal.sqlite3
+  operator_state_path: data/political_v2_operator_state.sqlite3
 
 platform_opportunity:
   enabled: true

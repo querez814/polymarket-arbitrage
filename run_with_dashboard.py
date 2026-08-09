@@ -215,6 +215,14 @@ class TradingBotWithDashboard:
         """Signal that a critical trading dependency ended terminally."""
         return self._failure_event
 
+    @property
+    def cross_platform_discovery_enabled(self) -> bool:
+        """Whether the legacy Polymarket/Kalshi discovery runtime may start."""
+        return bool(
+            self.config.mode.cross_platform_enabled
+            and self.config.mode.kalshi_enabled
+        )
+
     def _build_semantic_pipeline(
         self,
         *,
@@ -415,7 +423,7 @@ class TradingBotWithDashboard:
         await self.client.connect()
 
         # Initialize Kalshi client (if cross-platform enabled)
-        if self.config.mode.cross_platform_enabled and self.config.mode.kalshi_enabled:
+        if self.cross_platform_discovery_enabled:
             logger.info("Initializing Kalshi client for cross-platform arbitrage...")
             self.kalshi_client = KalshiClient(
                 base_url=self.config.api.kalshi_api_url,
@@ -2244,9 +2252,7 @@ class TradingBotWithDashboard:
 
     def _critical_dependencies_ready(self) -> bool:
         """Report whether the configured cross-platform discovery path is alive."""
-        if not (
-            self.config.mode.cross_platform_enabled and self.config.mode.kalshi_enabled
-        ):
+        if not self.cross_platform_discovery_enabled:
             return True
         return bool(
             self._kalshi_monitor_task

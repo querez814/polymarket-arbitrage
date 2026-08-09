@@ -93,7 +93,10 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     assert config.is_dry_run is True
     assert config.mode.data_mode == "real"
     assert config.mode.simulate_fills is False
+    assert config.mode.cross_platform_enabled is False
     assert config.mode.cross_platform_execution_enabled is False
+    assert config.mode.semantic_matching_enabled is False
+    assert config.mode.semantic_cache_path == "data/political_v2_semantic_cache.db"
     assert config.platform_opportunity.experiment_id == (
         "political-event-reaction-v2-2026-08-09"
     )
@@ -101,10 +104,30 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
         "data/political_v2_platform_opportunities.db"
     )
     assert config.monitoring.paper_trade_db_path == "data/political_v2_paper_trades.db"
+    assert (
+        config.production.execution_journal_path
+        == "data/political_v2_execution_journal.sqlite3"
+    )
+    assert config.production.operator_state_path == "data/political_v2_operator_state.sqlite3"
     assert config.platform_opportunity.reviewed_pinned_event_ids == [
         "kalshi:KXTRUMPMENTION-26AUG10",
         "kalshi:KXTRUMPSAY-26AUG10",
     ]
+
+
+def test_political_v2_profile_disables_legacy_discovery_and_semantic_runtime():
+    config = load_config(
+        str(Path(__file__).parents[1] / "config.paper.political-v2.yaml")
+    )
+
+    from run_with_dashboard import TradingBotWithDashboard
+
+    bot = TradingBotWithDashboard(config)
+
+    assert bot.cross_platform_discovery_enabled is False
+    assert bot._semantic_embedder is None
+    assert bot.cross_platform_engine is None
+    assert bot.kalshi_client is None
 
 
 @pytest.mark.parametrize(
