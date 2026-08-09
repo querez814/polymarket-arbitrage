@@ -257,3 +257,108 @@ class PoliticalExperimentalPaperLedger:
             fee_hash=fee_hash,
             features=features,
         )
+
+    def resolve_pending_signal(
+        self,
+        *,
+        signal_id: str,
+        replay_sequence: int,
+        attempted_at: datetime,
+        max_total_reserved_micros: int = 100_000_000,
+        max_position_reserved_micros: int = 25_000_000,
+        max_open_positions: int = 4,
+        displayed_depth_fraction: Decimal = Decimal("0.10"),
+    ) -> dict[str, Any]:
+        """Open from one strictly later replay book, never from the signal book.
+
+        The resolver is intentionally supplied only a replay sequence.  It
+        rehydrates that sequence's exact persisted book and fee schedule, so a
+        runtime caller cannot sneak raw adapter depth into a paper fill.
+        Multi-level IOC aggregation and exits build on this one-level causal
+        opening boundary in a later slice.
+        """
+        if not Decimal("0") < displayed_depth_fraction <= Decimal("1"):
+            raise ValueError("displayed depth fraction must be in (0, 1]")
+        signals = {
+            item["signal_id"]: item
+            for item in self.store.political_experimental_pending_signals(
+                cohort_id=self.cohort_id
+            )
+        }
+        signal = signals.get(signal_id)
+        events = {
+            int(item["sequence"]): item
+            for item in self.store.replay_observation_events(cohort_id=self.cohort_id)
+        }
+        event = events.get(replay_sequence)
+        # Store the causal no-fill even when no replay payload can safely be
+        # decoded.  Dummy economics are never applied on those paths.
+        if signal is None:
+            raise ValueError("political paper pending signal does not exist")
+        if event is None:
+            return self.store.resolve_political_experimental_pending_signal(
+                cohort_id=self.cohort_id,
+                signal_id=signal_id,
+                replay_sequence=replay_sequence,
+                attempted_at=attempted_at,
+                quantity=1,
+                debit_micros=1,
+                max_total_reserved_micros=max_total_reserved_micros,
+                max_position_reserved_micros=max_position_reserved_micros,
+                max_open_positions=max_open_positions,
+                economics={},
+            )
+        book = self.store.replay_book_state(str(event["state_hash"]))
+        fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        token = book.get(str(signal["side"]))
+        asks = token.get("asks", []) if isinstance(token, dict) else []
+        if not asks:
+            # Let the store record the causal outcome; a zero quantity is never
+            # passed across the accounting boundary.
+            return self.store.resolve_political_experimental_pending_signal(
+                cohort_id=self.cohort_id,
+                signal_id=signal_id,
+                replay_sequence=replay_sequence,
+                attempted_at=attempted_at,
+                quantity=1,
+                debit_micros=max_position_reserved_micros + 1,
+                max_total_reserved_micros=max_total_reserved_micros,
+                max_position_reserved_micros=max_position_reserved_micros,
+                max_open_positions=max_open_positions,
+                economics={"preflight_reason": "empty_executable_asks"},
+            )
+        price, displayed_size = asks[0]
+        quantity = int(Decimal(str(displayed_size)) * displayed_depth_fraction)
+        if quantity <= 0:
+            return self.store.resolve_political_experimental_pending_signal(
+                cohort_id=self.cohort_id,
+                signal_id=signal_id,
+                replay_sequence=replay_sequence,
+                attempted_at=attempted_at,
+                quantity=1,
+                debit_micros=max_position_reserved_micros + 1,
+                max_total_reserved_micros=max_total_reserved_micros,
+                max_position_reserved_micros=max_position_reserved_micros,
+                max_open_positions=max_open_positions,
+                economics={"preflight_reason": "fractional_or_zero_executable_depth"},
+            )
+        economics = self.entry_economics(
+            quantity=quantity, displayed_ask=str(price), fee_schedule=fee_schedule
+        )
+        return self.store.resolve_political_experimental_pending_signal(
+            cohort_id=self.cohort_id,
+            signal_id=signal_id,
+            replay_sequence=replay_sequence,
+            attempted_at=attempted_at,
+            quantity=quantity,
+            debit_micros=economics.debit_micros,
+            max_total_reserved_micros=max_total_reserved_micros,
+            max_position_reserved_micros=max_position_reserved_micros,
+            max_open_positions=max_open_positions,
+            economics={
+                "effective_price": economics.effective_price,
+                "raw_fee": economics.raw_fee,
+                "rounded_trade_fee": economics.rounded_trade_fee,
+                "balance_change_micros": economics.balance_change_micros,
+            },
+        )

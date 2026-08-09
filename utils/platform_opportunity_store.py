@@ -243,6 +243,30 @@ class PlatformOpportunityStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_political_pending_signals_due
                     ON political_experimental_pending_signals(cohort_id, contract_id, expires_at);
+                -- A fill attempt consumes a pending signal exactly once.  Keeping
+                -- no-fills here makes causal failures auditable rather than an
+                -- absence of a trade row.
+                CREATE TABLE IF NOT EXISTS political_experimental_fill_attempts (
+                    signal_id TEXT PRIMARY KEY REFERENCES political_experimental_pending_signals(signal_id),
+                    cohort_id TEXT NOT NULL,
+                    replay_sequence INTEGER NOT NULL,
+                    outcome TEXT NOT NULL CHECK(outcome IN ('filled', 'no_fill')),
+                    reason TEXT,
+                    attempted_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS political_experimental_positions (
+                    position_id TEXT PRIMARY KEY,
+                    cohort_id TEXT NOT NULL,
+                    signal_id TEXT NOT NULL UNIQUE REFERENCES political_experimental_pending_signals(signal_id),
+                    contract_id TEXT NOT NULL,
+                    base_lane TEXT NOT NULL,
+                    side TEXT NOT NULL CHECK(side IN ('yes', 'no')),
+                    quantity INTEGER NOT NULL CHECK(quantity > 0),
+                    cost_basis_micros INTEGER NOT NULL CHECK(cost_basis_micros > 0),
+                    opened_at TEXT NOT NULL,
+                    UNIQUE(cohort_id, contract_id, base_lane)
+                );
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -578,6 +602,236 @@ class PlatformOpportunityStore:
             }
             for row in rows
         ]
+
+    def resolve_political_experimental_pending_signal(
+        self,
+        *,
+        cohort_id: str,
+        signal_id: str,
+        replay_sequence: int,
+        attempted_at: datetime,
+        quantity: int,
+        debit_micros: int,
+        max_total_reserved_micros: int,
+        max_position_reserved_micros: int,
+        max_open_positions: int,
+        economics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Consume one signal only from a strictly later causal replay event.
+
+        This is deliberately the narrow signal-to-open transition: the caller
+        has already quoted conservative economics from the persisted book and
+        fee payload, while this transaction proves causality, reserves capital,
+        creates the position, and records the after-state together.
+        """
+        if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
+            raise ValueError("political paper fill quantity must be whole and positive")
+        if not isinstance(debit_micros, int) or debit_micros <= 0:
+            raise ValueError(
+                "political paper fill debit must be positive integer micros"
+            )
+        if (
+            min(
+                max_total_reserved_micros,
+                max_position_reserved_micros,
+                max_open_positions,
+            )
+            <= 0
+        ):
+            raise ValueError("political paper limits must be positive")
+        attempted_iso = _utc_iso(attempted_at)
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                prior = connection.execute(
+                    "SELECT outcome, reason, payload_json FROM political_experimental_fill_attempts "
+                    "WHERE signal_id = ?",
+                    (signal_id,),
+                ).fetchone()
+                if prior is not None:
+                    connection.commit()
+                    return {
+                        "outcome": str(prior["outcome"]),
+                        "reason": prior["reason"],
+                        "idempotent": True,
+                        "payload": json.loads(str(prior["payload_json"])),
+                    }
+                signal = connection.execute(
+                    "SELECT * FROM political_experimental_pending_signals WHERE signal_id = ? AND cohort_id = ?",
+                    (signal_id, cohort_id),
+                ).fetchone()
+                event = connection.execute(
+                    "SELECT * FROM platform_replay_observation_events WHERE cohort_id = ? AND sequence = ?",
+                    (cohort_id, replay_sequence),
+                ).fetchone()
+                reason: str | None = None
+                if signal is None or event is None:
+                    reason = "missing_signal_or_replay_event"
+                elif int(event["sequence"]) <= int(signal["replay_sequence"]):
+                    reason = "not_later_replay_sequence"
+                elif event["contract_id"] != signal["contract_id"]:
+                    reason = "contract_mismatch"
+                elif event["lock_phase"] != signal["phase"]:
+                    reason = "phase_crossed"
+                elif (
+                    event["request_started_at"] is None
+                    or event["request_started_at"] <= signal["signal_received_at"]
+                ):
+                    reason = "request_not_strictly_after_signal_receipt"
+                elif event["received_at"] > signal["expires_at"]:
+                    reason = "signal_ttl_expired"
+                elif isinstance(economics.get("preflight_reason"), str):
+                    reason = str(economics["preflight_reason"])
+                status = connection.execute(
+                    "SELECT cohort_valid FROM platform_replay_evidence_status WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+                if (
+                    reason is None
+                    and status is not None
+                    and not bool(status["cohort_valid"])
+                ):
+                    reason = "replay_evidence_invalid"
+                payload = {
+                    "replay_sequence": replay_sequence,
+                    "quantity": quantity,
+                    "debit_micros": debit_micros,
+                    "economics": economics,
+                }
+                if reason is not None:
+                    connection.execute(
+                        "INSERT INTO political_experimental_fill_attempts "
+                        "(signal_id, cohort_id, replay_sequence, outcome, reason, attempted_at, payload_json) "
+                        "VALUES (?, ?, ?, 'no_fill', ?, ?, ?)",
+                        (
+                            signal_id,
+                            cohort_id,
+                            replay_sequence,
+                            reason,
+                            attempted_iso,
+                            _json(payload),
+                        ),
+                    )
+                    connection.commit()
+                    return {
+                        "outcome": "no_fill",
+                        "reason": reason,
+                        "idempotent": False,
+                        "payload": payload,
+                    }
+                assert signal is not None
+                account = connection.execute(
+                    "SELECT * FROM political_experimental_paper_accounts WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+                if account is None:
+                    raise RuntimeError(
+                        "political experimental paper account is not initialized"
+                    )
+                open_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM political_experimental_positions WHERE cohort_id = ?",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                existing_position = connection.execute(
+                    "SELECT 1 FROM political_experimental_positions WHERE cohort_id = ? AND contract_id = ? AND base_lane = ?",
+                    (cohort_id, signal["contract_id"], signal["base_lane"]),
+                ).fetchone()
+                if debit_micros > max_position_reserved_micros:
+                    reason = "per_position_reserved_cap"
+                elif (
+                    int(account["reserved_micros"]) + debit_micros
+                    > max_total_reserved_micros
+                ):
+                    reason = "total_reserved_cap"
+                elif debit_micros > int(account["cash_micros"]):
+                    reason = "insufficient_cash"
+                elif open_count >= max_open_positions:
+                    reason = "max_open_positions"
+                elif existing_position is not None:
+                    reason = "contract_base_lane_overlap"
+                if reason is not None:
+                    connection.execute(
+                        "INSERT INTO political_experimental_fill_attempts "
+                        "(signal_id, cohort_id, replay_sequence, outcome, reason, attempted_at, payload_json) VALUES (?, ?, ?, 'no_fill', ?, ?, ?)",
+                        (
+                            signal_id,
+                            cohort_id,
+                            replay_sequence,
+                            reason,
+                            attempted_iso,
+                            _json(payload),
+                        ),
+                    )
+                    connection.commit()
+                    return {
+                        "outcome": "no_fill",
+                        "reason": reason,
+                        "idempotent": False,
+                        "payload": payload,
+                    }
+                cash = int(account["cash_micros"]) - debit_micros
+                reserved = int(account["reserved_micros"]) + debit_micros
+                position_id = f"position:{signal_id}"
+                connection.execute(
+                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        position_id,
+                        cohort_id,
+                        signal_id,
+                        signal["contract_id"],
+                        signal["base_lane"],
+                        signal["side"],
+                        quantity,
+                        debit_micros,
+                        attempted_iso,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE political_experimental_paper_accounts SET cash_micros = ?, reserved_micros = ?, updated_at = ? WHERE cohort_id = ?",
+                    (cash, reserved, attempted_iso, cohort_id),
+                )
+                sequence = int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM political_experimental_paper_events WHERE cohort_id = ?",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                payload["position_id"] = position_id
+                connection.execute(
+                    "INSERT INTO political_experimental_paper_events (cohort_id, sequence, event_type, occurred_at, cash_micros, reserved_micros, realized_pnl_micros, payload_json) VALUES (?, ?, 'position_opened', ?, ?, ?, ?, ?)",
+                    (
+                        cohort_id,
+                        sequence,
+                        attempted_iso,
+                        cash,
+                        reserved,
+                        int(account["realized_pnl_micros"]),
+                        _json(payload),
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO political_experimental_fill_attempts (signal_id, cohort_id, replay_sequence, outcome, reason, attempted_at, payload_json) VALUES (?, ?, ?, 'filled', NULL, ?, ?)",
+                    (
+                        signal_id,
+                        cohort_id,
+                        replay_sequence,
+                        attempted_iso,
+                        _json(payload),
+                    ),
+                )
+                connection.commit()
+                return {
+                    "outcome": "filled",
+                    "reason": None,
+                    "idempotent": False,
+                    "payload": payload,
+                }
+            except Exception:
+                connection.rollback()
+                raise
 
     @staticmethod
     def _canonical_replay_payload(

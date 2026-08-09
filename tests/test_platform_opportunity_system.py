@@ -402,6 +402,135 @@ def test_political_pending_signal_rejects_unproven_provenance_and_id_collision(
         )
 
 
+def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp_path):
+    """The signal book cannot fund a fill; the next causal book can."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:causal")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.50, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:causal",
+        contract_id="kalshi:KXCAUSAL",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    signal = {
+        "signal_id": "signal:causal-fill",
+        "replay_sequence": first["event"]["sequence"],
+        "event_id": "event-1",
+        "milestone_id": "milestone-1",
+        "contract_id": "kalshi:KXCAUSAL",
+        "side": "yes",
+        "base_lane": "hot_pre_event",
+        "phase": "hot",
+        "signal_request_started_at": NOW,
+        "signal_received_at": NOW + timedelta(milliseconds=100),
+        "expires_at": NOW + timedelta(seconds=10),
+        "model_version": "depth-imbalance-reaction-experimental-v1",
+        "config_hash": "config-hash",
+        "state_hash": first["state_hash"],
+        "fee_hash": first["fee_hash"],
+        "features": {"imbalance": 0.4},
+    }
+    assert ledger.record_pending_signal(**signal)
+    later = store.record_replay_observation(
+        cohort_id="cohort:causal",
+        contract_id="kalshi:KXCAUSAL",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+
+    result = ledger.resolve_pending_signal(
+        signal_id="signal:causal-fill",
+        replay_sequence=later["event"]["sequence"],
+        attempted_at=NOW + timedelta(seconds=1),
+    )
+
+    assert result["outcome"] == "filled"
+    assert result["payload"]["quantity"] == 10
+    assert result["payload"]["debit_micros"] == 4_270_000
+    assert store.political_experimental_paper_events(cohort_id="cohort:causal")[-1] == {
+        "sequence": 2,
+        "event_type": "position_opened",
+        "occurred_at": (NOW + timedelta(seconds=1)).isoformat(),
+        "cash_micros": 995_730_000,
+        "reserved_micros": 4_270_000,
+        "realized_pnl_micros": 0,
+        "payload": result["payload"],
+    }
+
+
+def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill(
+    tmp_path,
+):
+    """A later sequence is insufficient when its request began before receipt."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:overlap")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.5, 100]], "asks": [[0.4, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.6, 100]]},
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:overlap",
+        contract_id="kalshi:KXOVERLAP",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:overlap",
+        replay_sequence=1,
+        event_id="event-1",
+        milestone_id="milestone-1",
+        contract_id="kalshi:KXOVERLAP",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=first["state_hash"],
+        fee_hash=first["fee_hash"],
+        features={},
+    )
+    second = store.record_replay_observation(
+        cohort_id="cohort:overlap",
+        contract_id="kalshi:KXOVERLAP",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=50),
+        received_at=NOW + timedelta(seconds=1),
+    )
+    result = ledger.resolve_pending_signal(
+        signal_id="signal:overlap",
+        replay_sequence=second["event"]["sequence"],
+        attempted_at=NOW + timedelta(seconds=1),
+    )
+    assert result["outcome"] == "no_fill"
+    assert result["reason"] == "request_not_strictly_after_signal_receipt"
+
+
 def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     """Replay storage retains normalized depth, never an adapter raw payload."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
