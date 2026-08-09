@@ -393,6 +393,63 @@ def test_kalshi_event_index_rejects_duplicate_or_incomplete_refresh_pages(tmp_pa
         store.complete_kalshi_event_index_refresh(refresh_id="pass", completed_at=now)
 
 
+def test_kalshi_event_probe_state_survives_restart_and_caps_failure_backoff(tmp_path):
+    """Rotation can prefer unprobed rows without retrying one failed source forever."""
+    path = tmp_path / "opportunities.db"
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(path)
+
+    first = store.record_kalshi_event_probe_failure(
+        event_ticker="KXPROBE-26",
+        attempted_at=now,
+        reason="429 backoff",
+        base_backoff_seconds=30,
+        max_backoff_seconds=90,
+    )
+    second = store.record_kalshi_event_probe_failure(
+        event_ticker="KXPROBE-26",
+        attempted_at=now + timedelta(seconds=31),
+        reason="temporary response",
+        base_backoff_seconds=30,
+        max_backoff_seconds=90,
+    )
+    third = store.record_kalshi_event_probe_failure(
+        event_ticker="KXPROBE-26",
+        attempted_at=now + timedelta(minutes=2),
+        reason="temporary response",
+        base_backoff_seconds=30,
+        max_backoff_seconds=90,
+    )
+    assert [
+        first["backoff_seconds"],
+        second["backoff_seconds"],
+        third["backoff_seconds"],
+    ] == [
+        30,
+        60,
+        90,
+    ]
+    assert third["consecutive_failures"] == 3
+    store.close()
+
+    restarted = PlatformOpportunityStore(path)
+    assert restarted.kalshi_event_probe_state("KXPROBE-26") == {
+        "event_ticker": "KXPROBE-26",
+        "last_attempt_at": (now + timedelta(minutes=2)).isoformat(),
+        "last_success_at": None,
+        "last_failure_at": (now + timedelta(minutes=2)).isoformat(),
+        "consecutive_failures": 3,
+        "next_eligible_at": (now + timedelta(minutes=2, seconds=90)).isoformat(),
+        "last_failure": "temporary response",
+    }
+    success = restarted.record_kalshi_event_probe_success(
+        event_ticker="KXPROBE-26", attempted_at=now + timedelta(minutes=4)
+    )
+    assert success["consecutive_failures"] == 0
+    assert success["next_eligible_at"] == (now + timedelta(minutes=4)).isoformat()
+    assert success["last_failure"] is None
+
+
 def test_political_paper_account_binds_a_canonical_immutable_policy(tmp_path):
     """A restart can reuse a cohort only with the identical paper policy."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")

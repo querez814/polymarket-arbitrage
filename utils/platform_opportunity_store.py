@@ -14,7 +14,7 @@ import sqlite3
 import threading
 import zlib
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -120,6 +120,22 @@ class PlatformOpportunityStore:
                     last_completed_at TEXT,
                     last_failure TEXT
                 );
+                -- Probe results are deliberately separate from raw event
+                -- inventory.  They let rotation apply the current political
+                -- classifier at selection time while remembering which exact
+                -- venue event was last successfully hydrated or is temporarily
+                -- backing off after a failed targeted read.
+                CREATE TABLE IF NOT EXISTS kalshi_event_probe_state (
+                    event_ticker TEXT PRIMARY KEY,
+                    last_attempt_at TEXT NOT NULL,
+                    last_success_at TEXT,
+                    last_failure_at TEXT,
+                    consecutive_failures INTEGER NOT NULL CHECK(consecutive_failures >= 0),
+                    next_eligible_at TEXT NOT NULL,
+                    last_failure TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_kalshi_event_probe_eligible
+                    ON kalshi_event_probe_state(next_eligible_at);
 
                 CREATE TABLE IF NOT EXISTS structural_relations (
                     relation_id TEXT PRIMARY KEY,
@@ -718,6 +734,123 @@ class PlatformOpportunityStore:
             }
             for row in rows
         ]
+
+    def record_kalshi_event_probe_success(
+        self, *, event_ticker: str, attempted_at: datetime
+    ) -> dict[str, Any]:
+        """Record one complete targeted probe and reset its retry backoff."""
+        ticker = self._require_kalshi_event_ticker(event_ticker)
+        attempted_iso = _utc_iso(attempted_at)
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO kalshi_event_probe_state "
+                "(event_ticker, last_attempt_at, last_success_at, last_failure_at, "
+                "consecutive_failures, next_eligible_at, last_failure) "
+                "VALUES (?, ?, ?, NULL, 0, ?, NULL) "
+                "ON CONFLICT(event_ticker) DO UPDATE SET "
+                "last_attempt_at = excluded.last_attempt_at, "
+                "last_success_at = excluded.last_success_at, last_failure_at = NULL, "
+                "consecutive_failures = 0, next_eligible_at = excluded.next_eligible_at, "
+                "last_failure = NULL",
+                (ticker, attempted_iso, attempted_iso, attempted_iso),
+            )
+        return self.kalshi_event_probe_state(ticker)
+
+    def record_kalshi_event_probe_failure(
+        self,
+        *,
+        event_ticker: str,
+        attempted_at: datetime,
+        reason: str,
+        base_backoff_seconds: int,
+        max_backoff_seconds: int,
+    ) -> dict[str, Any]:
+        """Record a failed probe with deterministic bounded exponential backoff."""
+        ticker = self._require_kalshi_event_ticker(event_ticker)
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("event probe failure reason must be non-empty")
+        if (
+            isinstance(base_backoff_seconds, bool)
+            or not isinstance(base_backoff_seconds, int)
+            or base_backoff_seconds <= 0
+        ):
+            raise ValueError("event probe base_backoff_seconds must be positive")
+        if (
+            isinstance(max_backoff_seconds, bool)
+            or not isinstance(max_backoff_seconds, int)
+            or max_backoff_seconds < base_backoff_seconds
+        ):
+            raise ValueError("event probe max_backoff_seconds must cover the base")
+        attempted_iso = _utc_iso(attempted_at)
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT consecutive_failures FROM kalshi_event_probe_state "
+                    "WHERE event_ticker = ?",
+                    (ticker,),
+                ).fetchone()
+                failures = (int(row["consecutive_failures"]) if row else 0) + 1
+                # Saturate the exponent as well as the displayed duration so
+                # extremely long-lived source errors cannot create giant ints.
+                exponent = min(failures - 1, 62)
+                backoff_seconds = min(
+                    base_backoff_seconds * (2**exponent), max_backoff_seconds
+                )
+                attempted_utc = (
+                    attempted_at.replace(tzinfo=timezone.utc)
+                    if attempted_at.tzinfo is None
+                    else attempted_at.astimezone(timezone.utc)
+                )
+                next_eligible = attempted_utc + timedelta(seconds=backoff_seconds)
+                connection.execute(
+                    "INSERT INTO kalshi_event_probe_state "
+                    "(event_ticker, last_attempt_at, last_success_at, last_failure_at, "
+                    "consecutive_failures, next_eligible_at, last_failure) "
+                    "VALUES (?, ?, NULL, ?, ?, ?, ?) "
+                    "ON CONFLICT(event_ticker) DO UPDATE SET "
+                    "last_attempt_at = excluded.last_attempt_at, "
+                    "last_failure_at = excluded.last_failure_at, "
+                    "consecutive_failures = excluded.consecutive_failures, "
+                    "next_eligible_at = excluded.next_eligible_at, "
+                    "last_failure = excluded.last_failure",
+                    (
+                        ticker,
+                        attempted_iso,
+                        attempted_iso,
+                        failures,
+                        _utc_iso(next_eligible),
+                        reason.strip()[:500],
+                    ),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        result = self.kalshi_event_probe_state(ticker)
+        result["backoff_seconds"] = backoff_seconds
+        return result
+
+    def kalshi_event_probe_state(self, event_ticker: str) -> dict[str, Any]:
+        """Return durable targeted-probe state, or fail for an unknown event."""
+        ticker = self._require_kalshi_event_ticker(event_ticker)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT event_ticker, last_attempt_at, last_success_at, last_failure_at, "
+                "consecutive_failures, next_eligible_at, last_failure "
+                "FROM kalshi_event_probe_state WHERE event_ticker = ?",
+                (ticker,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"no Kalshi event probe state for {ticker}")
+        return dict(row)
+
+    @staticmethod
+    def _require_kalshi_event_ticker(event_ticker: str) -> str:
+        if not isinstance(event_ticker, str) or not event_ticker.strip():
+            raise ValueError("Kalshi event_ticker must be non-empty")
+        return event_ticker.strip()
 
     def initialize_political_experimental_paper_account(
         self,
