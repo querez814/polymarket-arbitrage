@@ -393,6 +393,22 @@ def is_political_contract(contract: PlatformContract) -> bool:
     return any(_contains_political_terms(value) for value in provenance)
 
 
+def _is_political_kalshi_event_summary(payload: Mapping[str, Any]) -> bool:
+    """Classify a raw Kalshi event summary without mutating source history.
+
+    The index intentionally persists untouched venue summaries.  Category is
+    authoritative only for Kalshi's explicit political source groups; broad
+    ``Mentions`` rows require independent title or series evidence, so a
+    celebrity-mentions feed cannot quietly enter the political rotation.
+    """
+    category = str(payload.get("category") or "").strip().casefold()
+    if category in {"elections", "politics"}:
+        return True
+    title = str(payload.get("title") or payload.get("event_title") or "")
+    series = str(payload.get("series_ticker") or payload.get("series") or "")
+    return _contains_political_terms(title) or _contains_political_terms(series)
+
+
 def _is_political_lock_candidate(
     contract: PlatformContract, *, now: datetime, policy: PoliticalWatchPolicy
 ) -> bool:
@@ -796,6 +812,60 @@ class PlatformOpportunitySystem:
     @property
     def contracts(self) -> tuple[PlatformContract, ...]:
         return tuple(self._contracts.values())
+
+    def select_kalshi_event_rotation(
+        self, *, now: datetime, limit: int
+    ) -> tuple[str, ...]:
+        """Choose bounded targeted-event probes from durable raw inventory.
+
+        Mandatory reviewed pins and retained/promoted locks are hydrated by a
+        separate path and never consume this rotation.  Eligible raw events
+        are classified against current rules at read time; unprobed rows lead,
+        followed by the oldest successful probe.  Failed rows remain out until
+        their durable retry time so one flaky event cannot monopolize a batch.
+        """
+        if limit <= 0:
+            raise ValueError("Kalshi event rotation limit must be positive")
+        if self.political_watch_policy is None:
+            return ()
+        at = _aware(now)
+        if at is None:
+            raise ValueError("Kalshi event rotation time must be timezone-aware")
+        pins = {
+            pin.split(":", 1)[1]
+            for pin in self.political_watch_policy.reviewed_pinned_event_ids
+            if pin.startswith("kalshi:")
+        }
+        promoted = set(self._political_locks)
+        states = self.store.kalshi_event_probe_states()
+        ranked: list[tuple[int, str, str]] = []
+        for row in self.store.kalshi_event_index_rows(active_only=True):
+            ticker = str(row["event_ticker"])
+            if ticker in pins or ticker in promoted:
+                continue
+            payload = row["payload"]
+            if not isinstance(
+                payload, Mapping
+            ) or not _is_political_kalshi_event_summary(payload):
+                continue
+            state = states.get(ticker)
+            if state is None:
+                ranked.append((0, "", ticker))
+                continue
+            next_eligible = _aware(
+                datetime.fromisoformat(str(state["next_eligible_at"]))
+            )
+            if next_eligible is None or next_eligible > at:
+                continue
+            last_success = state.get("last_success_at")
+            if last_success is None:
+                # A past failure cannot occur here (it would retain a future
+                # backoff); preserve a deterministic fallback if legacy data
+                # has an empty success timestamp.
+                ranked.append((1, str(state["last_attempt_at"]), ticker))
+            else:
+                ranked.append((1, str(last_success), ticker))
+        return tuple(ticker for _, _, ticker in sorted(ranked)[:limit])
 
     def set_fee_schedule(self, contract_id: str, schedule: VenueFeeSchedule) -> None:
         if schedule.venue != contract_id.split(":", 1)[0]:

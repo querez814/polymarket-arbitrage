@@ -846,6 +846,21 @@ class PlatformOpportunityStore:
             raise KeyError(f"no Kalshi event probe state for {ticker}")
         return dict(row)
 
+    def kalshi_event_probe_states(self) -> dict[str, dict[str, Any]]:
+        """Return all durable probe states keyed by raw event ticker.
+
+        Rotation reads this in one query so selection is a snapshot of durable
+        source history, rather than a sequence of per-row reads that could
+        observe a partially updated probe batch.
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT event_ticker, last_attempt_at, last_success_at, "
+                "last_failure_at, consecutive_failures, next_eligible_at, last_failure "
+                "FROM kalshi_event_probe_state"
+            ).fetchall()
+        return {str(row["event_ticker"]): dict(row) for row in rows}
+
     @staticmethod
     def _require_kalshi_event_ticker(event_ticker: str) -> str:
         if not isinstance(event_ticker, str) or not event_ticker.strip():

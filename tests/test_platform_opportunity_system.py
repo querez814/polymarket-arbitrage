@@ -21,6 +21,7 @@ from core.platform_opportunities import (
     CatalystReference,
     MonitoringPolicy,
     PoliticalWatchPolicy,
+    PoliticalEventLock,
     PlatformOpportunitySystem,
     ReplayObservationToken,
     LaneAuthority,
@@ -448,6 +449,118 @@ def test_kalshi_event_probe_state_survives_restart_and_caps_failure_backoff(tmp_
     assert success["consecutive_failures"] == 0
     assert success["next_eligible_at"] == (now + timedelta(minutes=4)).isoformat()
     assert success["last_failure"] is None
+
+
+def test_kalshi_event_rotation_prefers_unprobed_currently_political_rows_across_restart(
+    tmp_path,
+):
+    """Raw index history is classified at selection time and rotates durably."""
+    path = tmp_path / "opportunities.db"
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(path)
+    store.begin_kalshi_event_index_refresh(refresh_id="full-pass", started_at=now)
+    store.record_kalshi_event_index_page(
+        refresh_id="full-pass",
+        events=tuple(
+            {
+                "event_ticker": f"KXROTATE-{index:02d}",
+                "title": f"Election fixture {index}",
+                "category": "Elections",
+            }
+            for index in range(50)
+        )
+        + (
+            {
+                "event_ticker": "KXMENTION-NONPOLITICAL",
+                "title": "Celebrity mentions fixture",
+                "series_ticker": "KXMENTION",
+                "category": "Mentions",
+            },
+            {
+                "event_ticker": "KXMENTION-POLITICAL",
+                "title": "Trump mentions fixture",
+                "series_ticker": "KXMENTION",
+                "category": "Mentions",
+            },
+        ),
+        next_cursor=None,
+        observed_at=now,
+    )
+    store.complete_kalshi_event_index_refresh(refresh_id="full-pass", completed_at=now)
+    system = PlatformOpportunitySystem(
+        store=store,
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=4,
+            reviewed_pinned_event_ids=("kalshi:KXROTATE-00",),
+        ),
+    )
+
+    first = system.select_kalshi_event_rotation(now=now, limit=24)
+    assert "KXROTATE-00" not in first
+    assert "KXMENTION-NONPOLITICAL" not in first
+    assert "KXMENTION-POLITICAL" in first
+    assert len(first) == 24
+    for ticker in first:
+        store.record_kalshi_event_probe_success(event_ticker=ticker, attempted_at=now)
+    store.close()
+
+    restarted = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(path),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=4,
+            reviewed_pinned_event_ids=("kalshi:KXROTATE-00",),
+        ),
+    )
+    second = restarted.select_kalshi_event_rotation(
+        now=now + timedelta(minutes=1), limit=24
+    )
+    assert len(second) == 24
+    assert set(first).isdisjoint(second)
+    assert set(first + second).issubset(
+        {f"KXROTATE-{index:02d}" for index in range(1, 50)} | {"KXMENTION-POLITICAL"}
+    )
+
+
+def test_kalshi_event_rotation_skips_backing_off_rows_and_retained_locks(tmp_path):
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    store.begin_kalshi_event_index_refresh(refresh_id="pass", started_at=now)
+    store.record_kalshi_event_index_page(
+        refresh_id="pass",
+        events=(
+            {"event_ticker": "KXBACKOFF", "category": "Politics"},
+            {"event_ticker": "KXRETAINED", "category": "Politics"},
+            {"event_ticker": "KXREADY", "category": "Politics"},
+        ),
+        next_cursor=None,
+        observed_at=now,
+    )
+    store.complete_kalshi_event_index_refresh(refresh_id="pass", completed_at=now)
+    store.record_kalshi_event_probe_failure(
+        event_ticker="KXBACKOFF",
+        attempted_at=now,
+        reason="429",
+        base_backoff_seconds=60,
+        max_backoff_seconds=60,
+    )
+    system = PlatformOpportunitySystem(
+        store=store,
+        political_watch_policy=PoliticalWatchPolicy(max_events=4),
+    )
+    system._political_locks = {
+        "KXRETAINED": PoliticalEventLock(
+            event_id="KXRETAINED",
+            event_title="Retained",
+            occurrence_at=now,
+            event_start_at=now,
+            event_end_at=now + timedelta(hours=1),
+            locked_until=now + timedelta(hours=2),
+            selected_at=now,
+            contract_ids=(),
+        )
+    }
+
+    assert system.select_kalshi_event_rotation(now=now, limit=24) == ("KXREADY",)
 
 
 def test_political_paper_account_binds_a_canonical_immutable_policy(tmp_path):
