@@ -481,6 +481,26 @@ class PlatformOpportunityStore:
             "valuation_complete": True,
         }
 
+    def political_experimental_paper_account(self, *, cohort_id: str) -> dict[str, int]:
+        """Read the current account state used to size a conservative prefix."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                "realized_pnl_micros FROM political_experimental_paper_accounts "
+                "WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                "political experimental paper account is not initialized"
+            )
+        account = {key: int(row[key]) for key in row.keys()}
+        if account["cash_micros"] + account["reserved_micros"] != (
+            account["starting_cash_micros"] + account["realized_pnl_micros"]
+        ):
+            raise RuntimeError("political experimental paper account identity violated")
+        return account
+
     def political_experimental_paper_events(
         self, *, cohort_id: str
     ) -> list[dict[str, Any]]:

@@ -323,6 +323,14 @@ class PoliticalExperimentalPaperLedger:
             )
         book = self.store.replay_book_state(str(event["state_hash"]))
         fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        account = self.store.political_experimental_paper_account(
+            cohort_id=self.cohort_id
+        )
+        available_debit_micros = min(
+            max_position_reserved_micros,
+            max_total_reserved_micros - int(account["reserved_micros"]),
+            int(account["cash_micros"]),
+        )
         token = book.get(str(signal["side"]))
         asks = token.get("asks", []) if isinstance(token, dict) else []
         if not asks:
@@ -341,16 +349,55 @@ class PoliticalExperimentalPaperLedger:
                 economics={"preflight_reason": "empty_executable_asks"},
             )
         level_economics: list[tuple[str, PoliticalPaperTradeEconomics]] = []
+        unconsumed_levels: list[dict[str, int | str]] = []
         for price, displayed_size in asks:
-            quantity = int(Decimal(str(displayed_size)) * displayed_depth_fraction)
-            if quantity <= 0:
+            eligible_quantity = int(
+                Decimal(str(displayed_size)) * displayed_depth_fraction
+            )
+            if eligible_quantity <= 0:
                 continue
+            # Take the largest whole-contract prefix of this displayed level
+            # that remains affordable.  Pricing a whole level then rejecting
+            # its aggregate debit would falsely make deeper books less
+            # executable than shallow ones.
+            low, high = 0, eligible_quantity
+            while low < high:
+                candidate = (low + high + 1) // 2
+                candidate_economics = self.entry_economics(
+                    quantity=candidate,
+                    displayed_ask=str(price),
+                    fee_schedule=fee_schedule,
+                )
+                if candidate_economics.debit_micros <= available_debit_micros:
+                    low = candidate
+                else:
+                    high = candidate - 1
+            quantity = low
+            if quantity <= 0:
+                unconsumed_levels.append(
+                    {
+                        "displayed_ask": str(price),
+                        "eligible_quantity": eligible_quantity,
+                        "unconsumed_quantity": eligible_quantity,
+                    }
+                )
+                break
             economics = self.entry_economics(
                 quantity=quantity,
                 displayed_ask=str(price),
                 fee_schedule=fee_schedule,
             )
             level_economics.append((str(price), economics))
+            available_debit_micros -= economics.debit_micros
+            if quantity < eligible_quantity:
+                unconsumed_levels.append(
+                    {
+                        "displayed_ask": str(price),
+                        "eligible_quantity": eligible_quantity,
+                        "unconsumed_quantity": eligible_quantity - quantity,
+                    }
+                )
+                break
         if not level_economics:
             return self.store.resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
@@ -389,6 +436,7 @@ class PoliticalExperimentalPaperLedger:
             max_open_positions=max_open_positions,
             economics={
                 "levels": levels,
+                "unconsumed_levels": unconsumed_levels,
                 "balance_change_micros": -debit_micros,
             },
         )

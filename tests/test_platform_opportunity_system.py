@@ -613,6 +613,73 @@ def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_ask
     ]
 
 
+def test_political_paper_fills_an_affordable_prefix_of_deeper_depth(tmp_path):
+    """Control caps bound a book walk; they must not reject it wholesale."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:prefix")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.39, 100]], "asks": [[0.40, 1_000]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.61, 100]]},
+    }
+    source = store.record_replay_observation(
+        cohort_id="cohort:prefix",
+        contract_id="kalshi:KXPREFIX",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:prefix",
+        replay_sequence=source["event"]["sequence"],
+        event_id="event-prefix",
+        milestone_id="milestone-prefix",
+        contract_id="kalshi:KXPREFIX",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=source["state_hash"],
+        fee_hash=source["fee_hash"],
+        features={},
+    )
+    later = store.record_replay_observation(
+        cohort_id="cohort:prefix",
+        contract_id="kalshi:KXPREFIX",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+
+    result = ledger.resolve_pending_signal(
+        signal_id="signal:prefix",
+        replay_sequence=later["event"]["sequence"],
+        attempted_at=NOW + timedelta(seconds=1),
+    )
+
+    assert result["outcome"] == "filled"
+    assert result["payload"]["quantity"] == 58
+    assert result["payload"]["debit_micros"] <= 25_000_000
+    assert result["payload"]["economics"]["unconsumed_levels"] == [
+        {
+            "displayed_ask": "0.4",
+            "eligible_quantity": 100,
+            "unconsumed_quantity": 42,
+        }
+    ]
+
+
 def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill(
     tmp_path,
 ):
