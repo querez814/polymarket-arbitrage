@@ -148,9 +148,12 @@ def test_dashboard_exposes_platform_first_shadow_system():
     payload = state.to_dict()["platform_opportunity"]
     assert payload["execution_authority"] == "none"
     assert payload["catalog"]["contracts"] == 42
+    assert payload["research_pnl"]["authority"] == "shadow_research_only"
     page = TestClient(app).get("/").text
     assert "Platform-First Opportunity System" in page
     assert "updatePlatformOpportunity" in page
+    assert "Political watchlist" in page
+    assert "shadow research only" in page
 
 
 @pytest.mark.asyncio

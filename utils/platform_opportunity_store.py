@@ -430,3 +430,29 @@ class PlatformOpportunityStore:
             "intents": {row["lane"]: int(row["count"]) for row in intents},
             "marks": int(marks),
         }
+
+    def research_mark_summary(self) -> dict[str, Any]:
+        """Return research-only marks split by actual exit and fixed horizon."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT horizon_seconds, COUNT(*) AS marks, "
+                "COUNT(capacity_pnl) AS scored_marks, "
+                "COALESCE(SUM(capacity_pnl), 0.0) AS capacity_pnl "
+                "FROM shadow_marks WHERE capacity_fraction = 0.1 "
+                "GROUP BY horizon_seconds ORDER BY horizon_seconds"
+            ).fetchall()
+        by_horizon = {
+            str(int(row["horizon_seconds"])): {
+                "marks": int(row["marks"]),
+                "scored_marks": int(row["scored_marks"]),
+                "capacity_pnl": float(row["capacity_pnl"]),
+            }
+            for row in rows
+        }
+        return {
+            "authority": "shadow_research_only",
+            "actual_exit": by_horizon.pop(
+                "-1", {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0}
+            ),
+            "horizons": by_horizon,
+        }

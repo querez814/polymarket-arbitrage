@@ -1817,6 +1817,36 @@ class PlatformOpportunitySystem:
 
     def dashboard_summary(self) -> dict:
         counts = self.store.summary()
+        now = datetime.now(timezone.utc)
+        locks = []
+        for lock in sorted(
+            self._political_locks.values(),
+            key=lambda item: (item.occurrence_at, item.event_id),
+        ):
+            state = (
+                "warm"
+                if now < lock.occurrence_at - timedelta(hours=1)
+                else "hot"
+                if now < lock.occurrence_at
+                else "cooldown"
+                if now <= lock.locked_until
+                else "expired"
+            )
+            locks.append(
+                {
+                    "event_id": lock.event_id,
+                    "event_title": lock.event_title,
+                    "occurrence_at": lock.occurrence_at.isoformat(),
+                    "locked_until": lock.locked_until.isoformat(),
+                    "state": state,
+                    "contract_ids": list(lock.contract_ids),
+                    "sampled_contract_ids": [
+                        contract_id
+                        for contract_id in lock.contract_ids
+                        if contract_id in self._sampled_contract_ids
+                    ],
+                }
+            )
         return {
             "enabled": True,
             "mode": "shadow_only",
@@ -1831,4 +1861,7 @@ class PlatformOpportunitySystem:
             "relations": counts["relations"],
             "intents": counts["intents"],
             "marks": counts["marks"],
+            "political_event_locks": locks,
+            "sampled_contract_ids": sorted(self._sampled_contract_ids),
+            "research_pnl": self.store.research_mark_summary(),
         }

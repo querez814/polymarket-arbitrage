@@ -668,6 +668,13 @@ class TradingBotWithDashboard:
             "relations": 0,
             "intents": {},
             "marks": 0,
+            "political_event_locks": [],
+            "sampled_contract_ids": [],
+            "research_pnl": {
+                "authority": "shadow_research_only",
+                "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
+                "horizons": {},
+            },
             "acceptance": {},
             "worker": {"queued": 0, "processed": 0, "dropped": 0, "failures": 0},
         }

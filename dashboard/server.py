@@ -152,6 +152,13 @@ class DashboardState:
             "relations": 0,
             "intents": {},
             "marks": 0,
+            "political_event_locks": [],
+            "sampled_contract_ids": [],
+            "research_pnl": {
+                "authority": "shadow_research_only",
+                "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
+                "horizons": {},
+            },
             "acceptance": {},
             "worker": {"queued": 0, "processed": 0, "dropped": 0, "failures": 0},
         }
@@ -3274,6 +3281,10 @@ def get_embedded_html() -> str:
             const hot = Array.isArray(monitoring.hot) ? monitoring.hot : [];
             const excluded = Array.isArray(monitoring.budget_excluded)
                 ? monitoring.budget_excluded : [];
+            const locks = Array.isArray(opportunity.political_event_locks)
+                ? opportunity.political_event_locks : [];
+            const researchPnl = opportunity.research_pnl || {};
+            const actualExit = researchPnl.actual_exit || {};
             summary.textContent = opportunity.enabled
                 ? `${Number(catalog.contracts || 0)} catalog contracts · ${hot.length} hot · ${Number(monitoring.warm_count || 0)} warm · ${excluded.length} budget-excluded · ${Number(opportunity.relations || 0)} structural relations · execution authority: ${opportunity.execution_authority || 'none'}`
                 : 'Shadow system disabled by configuration';
@@ -3283,6 +3294,10 @@ def get_embedded_html() -> str:
                 ['Locked arbitrage', 'existing execution lane; unchanged'],
                 ['Relative value', `${Number(intents.relative_value || 0)} shadow intents · ${(acceptance.relative_value || {}).passed ? 'pilot gate passed' : 'proof pending'}`],
                 ['Directional reaction', `${Number(intents.directional_reaction || 0)} shadow intents · ${(acceptance.directional_reaction || {}).passed ? 'pilot gate passed' : 'proof pending'}`],
+                ['Political watchlist', locks.length
+                    ? locks.map(lock => `${lock.event_title || lock.event_id} (${lock.state || 'unknown'}; ${Array.isArray(lock.sampled_contract_ids) ? lock.sampled_contract_ids.length : 0}/${Array.isArray(lock.contract_ids) ? lock.contract_ids.length : 0} sampled)`).join(' · ')
+                    : 'No selected political events'],
+                ['Research marks', `actual-exit: ${Number(actualExit.scored_marks || 0)}/${Number(actualExit.marks || 0)} scored · capacity PnL ${Number(actualExit.capacity_pnl || 0).toFixed(3)} · shadow research only`],
                 ['Research worker', `${Number(worker.queued || 0)} queued · ${Number(worker.processed || 0)} processed · ${Number(worker.dropped || 0)} dropped · ${Number(worker.failures || 0)} failures`],
             ].map(row => `<div style="border-left: 2px solid var(--accent-green); padding-left: 0.65rem;">
                 <div style="font-size: 0.82rem; font-weight: 600;">${escapeHtml(row[0])}</div>

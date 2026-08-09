@@ -323,6 +323,21 @@ def test_locked_political_event_is_sampled_at_warm_hot_and_cooldown_cadences(tmp
         for item in cooldown.hot
     ] == [("political_event_lock", "cooldown", 10.0)]
 
+    dashboard = system.dashboard_summary()
+    assert dashboard["political_event_locks"][0]["event_id"] == "election-2026"
+    assert dashboard["political_event_locks"][0]["contract_ids"] == [
+        "polymarket:election"
+    ]
+    assert dashboard["political_event_locks"][0]["sampled_contract_ids"] == [
+        "polymarket:election"
+    ]
+    assert dashboard["sampled_contract_ids"] == ["polymarket:election"]
+    assert dashboard["research_pnl"] == {
+        "authority": "shadow_research_only",
+        "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
+        "horizons": {},
+    }
+
 
 def test_fuzzy_calendar_title_does_not_schedule_unrelated_contract(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
@@ -572,6 +587,12 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
     strategy_marks = [mark for mark in exited.marks if mark.horizon_seconds == -1]
     assert strategy_marks
     assert {mark.reason for mark in strategy_marks} == {"signal_reversal"}
+    research_pnl = store.research_mark_summary()
+    assert research_pnl["authority"] == "shadow_research_only"
+    assert research_pnl["actual_exit"]["marks"] == 1
+    assert research_pnl["actual_exit"]["scored_marks"] == 1
+    assert research_pnl["horizons"]["30"]["marks"] == 1
+    assert research_pnl["horizons"]["30"]["scored_marks"] == 1
 
 
 def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path):
