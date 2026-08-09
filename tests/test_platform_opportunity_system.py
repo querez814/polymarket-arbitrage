@@ -18,6 +18,7 @@ from core.platform_opportunities import (
     PlatformOpportunitySystem,
     StructuralRelation,
     VenueFeeSchedule,
+    _normalized_milestone_metadata,
 )
 from utils.platform_opportunity_store import PlatformOpportunityStore
 
@@ -585,6 +586,14 @@ def test_automatic_political_selection_prefers_explicit_one_off_type_over_volume
     assert [
         lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)
     ] == ["KXSPEECH-26AUG"]
+
+
+def test_normalized_milestone_metadata_is_separator_equivalent_and_stable():
+    """Reviewed one-off types must not vary with Python hash seed ordering."""
+    assert {
+        _normalized_milestone_metadata(value)
+        for value in ("press conference", "press-conference", "press_conference")
+    } == {"press_conference"}
 
 
 def test_polymarket_settlement_metadata_never_creates_a_political_lock(tmp_path):

@@ -404,7 +404,11 @@ _ONE_OFF_MILESTONE_TYPE_QUALITY = {
 
 def _normalized_milestone_metadata(value: str | None) -> str:
     """Normalize reviewed metadata without treating blank fields as evidence."""
-    return "_".join(_word_tokens(value)) if value else ""
+    # Metadata is used as a ranking key, so it must retain source order rather
+    # than inheriting Python's deliberately randomized set iteration order.
+    # Treat whitespace, hyphens, and underscores alike without treating blank
+    # fields as provenance.
+    return "_".join(re.findall(r"[a-z0-9]+", value.casefold())) if value else ""
 
 
 def _reviewed_milestone_quality(contract: PlatformContract) -> tuple[int, int]:
