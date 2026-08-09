@@ -741,12 +741,25 @@ class PoliticalExperimentalPaperLedger:
             )
         level_economics: list[tuple[str, PoliticalPaperTradeEconomics]] = []
         unconsumed_levels: list[dict[str, int | str]] = []
+        first_eligible_economics: PoliticalPaperTradeEconomics | None = None
         for price, displayed_size in asks:
             eligible_quantity = int(
                 Decimal(str(displayed_size)) * displayed_depth_fraction
             )
             if eligible_quantity <= 0:
                 continue
+            if first_eligible_economics is None:
+                # Keep one authoritative whole-contract quote even when no
+                # contract fits the remaining account budget.  Passing that
+                # quote through the atomic store transition lets its existing
+                # cap/cash/open-position precedence record the truthful
+                # blocker instead of misreporting a capital shortfall as a
+                # fractional-depth failure.
+                first_eligible_economics = self.entry_economics(
+                    quantity=1,
+                    displayed_ask=str(price),
+                    fee_schedule=fee_schedule,
+                )
             # Take the largest whole-contract prefix of this displayed level
             # that remains affordable.  Pricing a whole level then rejecting
             # its aggregate debit would falsely make deeper books less
@@ -790,6 +803,25 @@ class PoliticalExperimentalPaperLedger:
                 )
                 break
         if not level_economics:
+            if first_eligible_economics is not None:
+                return self.store._resolve_political_experimental_pending_signal(
+                    cohort_id=self.cohort_id,
+                    signal_id=signal_id,
+                    replay_sequence=replay_sequence,
+                    attempted_at=attempted_at,
+                    quantity=1,
+                    debit_micros=first_eligible_economics.debit_micros,
+                    max_total_reserved_micros=max_total_reserved_micros,
+                    max_position_reserved_micros=max_position_reserved_micros,
+                    max_open_positions=max_open_positions,
+                    economics={
+                        "sizing_context": {
+                            "minimum_whole_contract_debit_micros": (
+                                first_eligible_economics.debit_micros
+                            )
+                        },
+                    },
+                )
             return self.store._resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,

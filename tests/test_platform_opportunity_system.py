@@ -743,6 +743,75 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     }
 
 
+def test_political_paper_reports_cash_shortfall_not_fractional_depth(tmp_path):
+    """An affordable-depth failure is a capital blocker, never a depth blocker."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:cash")
+    ledger.initialize(
+        starting_cash_micros=420_000,
+        initialized_at=NOW,
+        policy={
+            "max_total_reserved_micros": 100_000_000,
+            "max_position_reserved_micros": 25_000_000,
+            "max_open_positions": 4,
+            "entry_depth_fraction": "0.10",
+        },
+    )
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.39, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:cash",
+        contract_id="kalshi:KXCASH",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:cash",
+        replay_sequence=first["event"]["sequence"],
+        event_id="event-1",
+        milestone_id="milestone-1",
+        contract_id="kalshi:KXCASH",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=first["state_hash"],
+        fee_hash=first["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    later = store.record_replay_observation(
+        cohort_id="cohort:cash",
+        contract_id="kalshi:KXCASH",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+
+    result = ledger.process_observation(replay_sequence=later["event"]["sequence"])[0]
+
+    assert result["outcome"] == "no_fill"
+    assert result["reason"] == "insufficient_cash"
+    assert result["payload"]["quantity"] == 1
+    assert result["payload"]["debit_micros"] == 430_000
+    assert result["payload"]["economics"] == {
+        "sizing_context": {"minimum_whole_contract_debit_micros": 430_000}
+    }
+
+
 def test_political_paper_process_observation_exits_max_hold_without_caller_choice(
     tmp_path,
 ):
