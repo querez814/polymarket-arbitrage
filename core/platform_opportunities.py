@@ -836,6 +836,10 @@ class PlatformOpportunitySystem:
         received_at: datetime | None = None,
     ) -> None:
         """Persist transport-successful reads separately from assignment state."""
+        if not self.store.replay_evidence_status(cohort_id=self.cohort_id)[
+            "cohort_valid"
+        ]:
+            return
         self.store.record_successful_observation(
             cohort_id=self.cohort_id,
             contract_id=contract_id,
@@ -1778,6 +1782,13 @@ class PlatformOpportunitySystem:
     ) -> ObservationResult:
         """Observe one book and return quickly; persistence can run off-thread."""
         observed_at = _aware(observed_at) or observed_at
+        # A failed replay cohort cannot yield research marks or fresh signals.
+        # Keeping this guard at the system boundary also prevents direct callers
+        # from bypassing the worker's evidence-before-scoring order.
+        if not self.store.replay_evidence_status(cohort_id=self.cohort_id)[
+            "cohort_valid"
+        ]:
+            return ObservationResult((), ())
         features = self._book_features(book, observed_at)
         if features is not None:
             recent_mids = [item.mid for item in self._features[contract_id]]

@@ -394,6 +394,16 @@ class PlatformOpportunityStore:
         heartbeat_seconds = 30 if lock_phase in {"hot", "event_live"} else 300
         with self._lock, self._connection:
             connection = self._connection
+            status = connection.execute(
+                "SELECT cohort_valid, degraded_reason "
+                "FROM platform_replay_evidence_status WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+            if status is not None and not bool(status["cohort_valid"]):
+                raise ReplayEvidenceCapacityError(
+                    "replay evidence cohort is already invalid: "
+                    f"{status['degraded_reason'] or 'unknown'}"
+                )
             existing_book = connection.execute(
                 "SELECT captured_bytes FROM normalized_book_states WHERE state_hash = ?",
                 (state_hash,),

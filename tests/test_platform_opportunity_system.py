@@ -186,6 +186,47 @@ def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_
     }
 
 
+def test_invalid_replay_cohort_cannot_count_or_score_later_observations(tmp_path):
+    """A failed evidence cohort stays fail-closed even on direct system calls."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db", replay_byte_cap=1)
+    system = PlatformOpportunitySystem(
+        store=store, lane_authorities=_lane_authorities("directional_reaction")
+    )
+    close = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    system.set_fee_schedule("polymarket:p1", _zero_fee())
+
+    with pytest.raises(ReplayEvidenceCapacityError, match="byte cap"):
+        system.persist_replay_observation(
+            "polymarket:p1",
+            _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+            observed_at=NOW,
+            request_started_at=NOW,
+            received_at=NOW,
+            fee_schedule=_zero_fee(),
+        )
+
+    system.record_successful_observation(
+        "polymarket:p1", observed_at=NOW + timedelta(seconds=1)
+    )
+    assert system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=NOW + timedelta(seconds=1),
+    ).intents == ()
+    assert system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+        observed_at=NOW + timedelta(seconds=6),
+    ).intents == ()
+    assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {}
+    assert system.store.intent_rows(cohort_id=system.cohort_id) == []
+
+
 def test_replay_evidence_cap_accounts_for_sqlite_store_and_wal_bytes(tmp_path):
     """The configured cap is physical store capacity, not payload-only capacity."""
     path = tmp_path / "opportunities.db"
