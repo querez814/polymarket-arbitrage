@@ -207,6 +207,11 @@ class TradingBotWithDashboard:
         self._political_paper_ttl_task = None
         self._platform_poly_client = None
         self._platform_kalshi_client = None
+        # Catalog discovery is deliberately isolated from the hot book/fee
+        # pool.  A catalog retry, backoff, or circuit state must not locally
+        # queue behind (or starve) the short-lived evidence reads.
+        self._platform_poly_catalog_client = None
+        self._platform_kalshi_catalog_client = None
         self._platform_hot_task = None
         self._platform_catalog_task = None
         self._platform_hot_assignments = ()
@@ -950,6 +955,16 @@ class TradingBotWithDashboard:
                 dry_run=True,
             )
             await self._platform_poly_client.connect()
+            self._platform_poly_catalog_client = PolymarketClient(
+                rest_url=self.config.api.polymarket_rest_url,
+                ws_url=self.config.api.polymarket_ws_url,
+                gamma_url=self.config.api.gamma_api_url,
+                timeout=self.config.api.timeout_seconds,
+                max_retries=self.config.api.max_retries,
+                retry_delay=self.config.api.retry_delay_seconds,
+                dry_run=True,
+            )
+            await self._platform_poly_catalog_client.connect()
         if self.config.mode.kalshi_enabled:
             self._platform_kalshi_client = KalshiClient(
                 base_url=self.config.api.kalshi_api_url,
@@ -958,6 +973,13 @@ class TradingBotWithDashboard:
                 dry_run=True,
             )
             await self._platform_kalshi_client.__aenter__()
+            self._platform_kalshi_catalog_client = KalshiClient(
+                base_url=self.config.api.kalshi_api_url,
+                timeout=self.config.api.timeout_seconds,
+                max_retries=self.config.api.max_retries,
+                dry_run=True,
+            )
+            await self._platform_kalshi_catalog_client.__aenter__()
         self._platform_hot_task = asyncio.create_task(
             self._platform_hot_sampling_loop(),
             name="platform_opportunity_hot_sampler",
@@ -1051,9 +1073,15 @@ class TradingBotWithDashboard:
         if self._platform_poly_client:
             await self._platform_poly_client.disconnect()
             self._platform_poly_client = None
+        if self._platform_poly_catalog_client:
+            await self._platform_poly_catalog_client.disconnect()
+            self._platform_poly_catalog_client = None
         if self._platform_kalshi_client:
             await self._platform_kalshi_client.__aexit__(None, None, None)
             self._platform_kalshi_client = None
+        if self._platform_kalshi_catalog_client:
+            await self._platform_kalshi_catalog_client.__aexit__(None, None, None)
+            self._platform_kalshi_catalog_client = None
         if self.platform_opportunity_store:
             self.platform_opportunity_store.close()
             self.platform_opportunity_store = None
@@ -1093,9 +1121,9 @@ class TradingBotWithDashboard:
             "complete": False,
             "stop_reason": "dedicated_source_unavailable",
         }
-        if self._platform_poly_client is not None:
+        if self._platform_poly_catalog_client is not None:
             try:
-                poly_markets = await self._platform_poly_client.list_all_markets_keyset(
+                poly_markets = await self._platform_poly_catalog_client.list_all_markets_keyset(
                     closed=False,
                     filters={"active": "true"},
                     max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
@@ -1104,7 +1132,7 @@ class TradingBotWithDashboard:
                     wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
                 )
                 poly_catalog_status = dict(
-                    self._platform_poly_client.last_catalog_status
+                    self._platform_poly_catalog_client.last_catalog_status
                 )
             except Exception as exc:
                 logger.warning("polymarket platform catalog refresh failed: %s", exc)
@@ -1125,9 +1153,9 @@ class TradingBotWithDashboard:
                 else "dedicated_source_unavailable"
             ),
         }
-        if self._platform_kalshi_client is not None:
+        if self._platform_kalshi_catalog_client is not None:
             try:
-                ordinary_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
+                ordinary_kalshi = await self._platform_kalshi_catalog_client.list_full_market_catalog(
                     status="open",
                     mve_filter="exclude",
                     max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
@@ -1135,7 +1163,9 @@ class TradingBotWithDashboard:
                     max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
                     wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
                 )
-                ordinary_status = dict(self._platform_kalshi_client.last_catalog_status)
+                ordinary_status = dict(
+                    self._platform_kalshi_catalog_client.last_catalog_status
+                )
             except Exception as exc:
                 logger.warning("kalshi platform catalog refresh failed: %s", exc)
                 ordinary_status = {
@@ -1289,7 +1319,7 @@ class TradingBotWithDashboard:
         itself exhausts the active refresh.
         """
         system = self.platform_opportunity_system
-        client = self._platform_kalshi_client
+        client = self._platform_kalshi_catalog_client
         if system is None or client is None:
             return {
                 "status": "unavailable",
@@ -1407,7 +1437,7 @@ class TradingBotWithDashboard:
             status["complete"] = True
             status["stop_reason"] = "not_requested"
             return [], [], status
-        client = self._platform_kalshi_client
+        client = self._platform_kalshi_catalog_client
         if client is None:
             for detail in status["events"].values():
                 detail.update(
@@ -1476,7 +1506,7 @@ class TradingBotWithDashboard:
         a transient failure), including across a process restart.
         """
         system = self.platform_opportunity_system
-        client = self._platform_kalshi_client
+        client = self._platform_kalshi_catalog_client
         status = {
             "eligible_event_tickers": 0,
             "attempted_event_tickers": 0,
@@ -1587,7 +1617,7 @@ class TradingBotWithDashboard:
             "milestones": 0,
             "errors": {},
         }
-        if self._platform_kalshi_client is None:
+        if self._platform_kalshi_catalog_client is None:
             return [], {**empty_status, "status": "dedicated_source_unavailable"}
 
         automatic = sorted(
@@ -1617,7 +1647,7 @@ class TradingBotWithDashboard:
                 return cached_value[1]
             try:
                 async with semaphore:
-                    milestones = await self._platform_kalshi_client.list_all_milestones(
+                    milestones = await self._platform_kalshi_catalog_client.list_all_milestones(
                         max_pages=policy.political_milestone_max_pages_per_event,
                         max_milestones=policy.political_milestone_max_results_per_event,
                         related_event_ticker=event_ticker,

@@ -116,7 +116,7 @@ async def test_kalshi_event_index_refresh_resumes_cursor_and_retires_only_on_exh
             return next(self.pages)
 
     client = Client()
-    bot._platform_kalshi_client = client
+    bot._platform_kalshi_catalog_client = client
 
     bounded = await bot._refresh_kalshi_event_index(now=now)
 
@@ -180,7 +180,7 @@ async def test_kalshi_event_index_refresh_failure_preserves_active_inventory(tmp
         async def list_events_page(self, **_kwargs):
             raise RuntimeError("429 backoff")
 
-    bot._platform_kalshi_client = Client()
+    bot._platform_kalshi_catalog_client = Client()
 
     result = await bot._refresh_kalshi_event_index(now=now + timedelta(minutes=1))
 
@@ -231,7 +231,7 @@ async def test_kalshi_rotation_probe_persists_complete_and_failed_targets(tmp_pa
                 milestones=(),
             )
 
-    bot._platform_kalshi_client = Client()
+    bot._platform_kalshi_catalog_client = Client()
     markets, milestones, status = await bot._rotated_kalshi_event_targets(now=now)
 
     assert [market.ticker for market in markets] == ["KXROTATE-A-T1"]
@@ -1137,14 +1137,17 @@ async def test_platform_catalog_uses_only_ordinary_kalshi_inventory():
             )
 
     bot = TradingBotWithDashboard(BotConfig())
-    bot._platform_kalshi_client = KalshiCatalog()
+    bot._platform_kalshi_catalog_client = KalshiCatalog()
+    # The hot pool intentionally has no catalog API.  A catalog backoff must
+    # never cause a fallback that competes with short book/fee evidence reads.
+    bot._platform_kalshi_client = object()
     bot.platform_opportunity_worker = Worker()
 
     await bot._refresh_platform_catalog()
 
     assert [
         call["mve_filter"]
-        for call in bot._platform_kalshi_client.calls
+        for call in bot._platform_kalshi_catalog_client.calls
         if "mve_filter" in call
     ] == ["exclude"]
     assert [
@@ -1152,6 +1155,37 @@ async def test_platform_catalog_uses_only_ordinary_kalshi_inventory():
         for market in bot.platform_opportunity_worker.received["kalshi_markets"]
     ] == ["KXPOL-1"]
     assert dashboard_state.platform_opportunity["catalog"]["multivariate_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_platform_catalog_uses_dedicated_polymarket_pool_not_hot_pool():
+    class CatalogClient:
+        last_catalog_status = {"complete": False, "stop_reason": "market_budget"}
+
+        async def list_all_markets_keyset(self, **_kwargs):
+            return []
+
+    class Worker:
+        async def refresh_catalog(self, **_kwargs):
+            return SimpleNamespace(
+                catalog_contracts=0,
+                revisions_written=0,
+                monitoring=SimpleNamespace(hot=(), warm=(), budget_excluded=()),
+            )
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._platform_poly_catalog_client = CatalogClient()
+    bot._platform_poly_client = object()
+    bot.platform_opportunity_worker = Worker()
+
+    await bot._refresh_platform_catalog()
+
+    assert (
+        dashboard_state.platform_opportunity["catalog"]["source_status"]["polymarket"][
+            "stop_reason"
+        ]
+        == "market_budget"
+    )
 
 
 @pytest.mark.asyncio
@@ -1227,7 +1261,7 @@ async def test_platform_catalog_fetches_exact_political_milestones_and_passes_th
         "kalshi:KXTRUMPMENTION-26AUG10"
     ]
     bot = TradingBotWithDashboard(config)
-    bot._platform_kalshi_client = KalshiCatalog()
+    bot._platform_kalshi_catalog_client = KalshiCatalog()
     bot.platform_opportunity_worker = Worker()
 
     await bot._refresh_platform_catalog()
@@ -1306,7 +1340,7 @@ async def test_mandatory_targets_override_ordinary_rows_and_missing_target_canno
         "kalshi:KXSCRSENS-26",
     ]
     bot = TradingBotWithDashboard(config)
-    bot._platform_kalshi_client = KalshiCatalog()
+    bot._platform_kalshi_catalog_client = KalshiCatalog()
     bot.platform_opportunity_worker = Worker()
 
     await bot._refresh_platform_catalog()
@@ -1502,7 +1536,7 @@ async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_
     )
     worker = PlatformOpportunityWorker(system)
     client = CatalogClient()
-    bot._platform_kalshi_client = client
+    bot._platform_kalshi_catalog_client = client
     bot.platform_opportunity_system = system
     bot.platform_opportunity_worker = worker
     monkeypatch.setattr(bot, "_platform_catalyst_references", lambda: [])
