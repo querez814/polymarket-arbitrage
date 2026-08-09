@@ -1333,7 +1333,9 @@ def test_structural_relation_is_retained_when_sampling_capacity_excludes_a_leg(
     assert set(relations[0].contract_ids) == {"polymarket:p3", "polymarket:p4"}
 
 
-def test_disabled_directional_lane_collects_features_without_creating_an_intent(tmp_path):
+def test_disabled_directional_lane_collects_features_without_creating_an_intent(
+    tmp_path,
+):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db")
     )
@@ -1615,10 +1617,10 @@ def test_acceptance_is_per_lane_and_fails_closed_before_preregistered_sample(tmp
     report = system.acceptance_report("directional_reaction")
 
     assert report.lane == "directional_reaction"
-    assert report.passed is False
     assert "fewer_than_50_event_clusters" in report.reasons
     assert "fewer_than_200_intents" in report.reasons
-    assert report.authority == "shadow_only"
+    assert report.research_threshold_passed is False
+    assert report.execution_authority == "none"
 
 
 def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):

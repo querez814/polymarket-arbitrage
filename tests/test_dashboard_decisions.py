@@ -157,6 +157,8 @@ def test_dashboard_exposes_platform_first_shadow_system():
     assert "updatePlatformOpportunity" in page
     assert "Political watchlist" in page
     assert "shadow research only" in page
+    assert "research_threshold_passed" in page
+    assert "execution authority:" in page
 
 
 @pytest.mark.asyncio

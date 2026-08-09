@@ -635,8 +635,8 @@ class AcceptancePolicy:
 @dataclass(frozen=True)
 class AcceptanceReport:
     lane: str
-    passed: bool
-    authority: str
+    research_threshold_passed: bool
+    execution_authority: Literal["none"]
     event_clusters: int
     intents: int
     scored_intents: int
@@ -2307,8 +2307,10 @@ class PlatformOpportunitySystem:
             reasons.append("lower_95_clustered_bootstrap_not_positive")
         return AcceptanceReport(
             lane=lane,
-            passed=not reasons,
-            authority="bounded_live_pilot_eligible" if not reasons else "shadow_only",
+            # Research thresholds are diagnostic evidence only. They never
+            # authorize order submission or simulated execution authority.
+            research_threshold_passed=not reasons,
+            execution_authority="none",
             event_clusters=len(scored_clusters),
             intents=len(intents),
             scored_intents=len(scored_intents),
