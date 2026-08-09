@@ -202,6 +202,7 @@ class TradingBotWithDashboard:
         self.platform_opportunity_system = None
         self.platform_opportunity_worker = None
         self.political_experimental_paper_ledger = None
+        self._political_paper_ttl_task = None
         self._platform_poly_client = None
         self._platform_kalshi_client = None
         self._platform_hot_task = None
@@ -853,6 +854,10 @@ class TradingBotWithDashboard:
             dashboard_state.platform_opportunity["political_experimental_paper"][
                 "snapshot"
             ] = ledger.snapshot()
+            self._political_paper_ttl_task = asyncio.create_task(
+                self._political_paper_ttl_sweeper(),
+                name="political_experimental_paper_ttl_sweeper",
+            )
 
         def publish(payload: dict) -> None:
             catalog = payload.pop("catalog", None)
@@ -987,9 +992,48 @@ class TradingBotWithDashboard:
                 }
             )
 
+    async def _sweep_political_paper_ttl_once(
+        self, *, as_of: datetime | None = None
+    ) -> list[dict]:
+        """Expire causal signals without requiring a later book observation."""
+        ledger = self.political_experimental_paper_ledger
+        if ledger is None:
+            return []
+        expired = await asyncio.to_thread(
+            ledger.expire_pending,
+            as_of=as_of or datetime.now(timezone.utc),
+        )
+        if expired:
+            dashboard_state.platform_opportunity["political_experimental_paper"][
+                "snapshot"
+            ] = await asyncio.to_thread(ledger.snapshot)
+        return expired
+
+    async def _political_paper_ttl_sweeper(self) -> None:
+        """Run a bounded TTL check independently of completed book reads."""
+        interval_seconds = max(
+            0.1,
+            min(
+                1.0,
+                self.config.platform_opportunity.political_paper_signal_ttl_seconds / 2,
+            ),
+        )
+        while True:
+            try:
+                await self._sweep_political_paper_ttl_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Political experimental-paper TTL sweep failed")
+            await asyncio.sleep(interval_seconds)
+
     async def _shutdown_platform_opportunity_system(self) -> None:
         """Clean up any partially initialized research-only resources."""
-        for task in (self._platform_catalog_task, self._platform_hot_task):
+        for task in (
+            self._political_paper_ttl_task,
+            self._platform_catalog_task,
+            self._platform_hot_task,
+        ):
             if task:
                 task.cancel()
                 try:
@@ -998,6 +1042,7 @@ class TradingBotWithDashboard:
                     pass
         self._platform_catalog_task = None
         self._platform_hot_task = None
+        self._political_paper_ttl_task = None
         if self.platform_opportunity_worker:
             await self.platform_opportunity_worker.stop()
             self.platform_opportunity_worker = None

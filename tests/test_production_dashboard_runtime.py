@@ -752,9 +752,49 @@ async def test_platform_runtime_initializes_isolated_political_paper_ledger(tmp_
         ]
         == "none"
     )
+    assert bot._political_paper_ttl_task is not None
 
     await bot._shutdown_platform_opportunity_system()
     assert bot.political_experimental_paper_ledger is None
+    assert bot._political_paper_ttl_task is None
+
+
+@pytest.mark.asyncio
+async def test_platform_runtime_ttl_sweep_uses_the_isolated_ledger_and_refreshes_snapshot(
+    tmp_path, monkeypatch
+):
+    """The runtime can terminally consume expired signals without another read."""
+    config = BotConfig()
+    config.api.polymarket_platform = "us"
+    config.mode.kalshi_enabled = False
+    config.platform_opportunity.enabled = True
+    config.platform_opportunity.political_experimental_paper_enabled = True
+    config.platform_opportunity.catalog_path = str(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(config)
+    await bot._configure_platform_opportunity_system()
+
+    ledger = bot.political_experimental_paper_ledger
+    assert ledger is not None
+    as_of = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    calls = []
+    monkeypatch.setattr(
+        ledger,
+        "expire_pending",
+        lambda *, as_of: calls.append(as_of) or [{"signal_id": "ttl-signal"}],
+    )
+    monkeypatch.setattr(ledger, "snapshot", lambda: {"ttl_swept": True})
+
+    assert await bot._sweep_political_paper_ttl_once(as_of=as_of) == [
+        {"signal_id": "ttl-signal"}
+    ]
+    # The started sweeper may have made its initial wall-clock pass before
+    # this explicit deterministic test pass; the supplied clock is preserved.
+    assert as_of in calls
+    assert dashboard_state.platform_opportunity["political_experimental_paper"][
+        "snapshot"
+    ] == {"ttl_swept": True}
+
+    await bot._shutdown_platform_opportunity_system()
 
 
 @pytest.mark.asyncio
