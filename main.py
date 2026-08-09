@@ -36,22 +36,21 @@ from utils.config_loader import (
 from utils.logging_utils import setup_logging, performance_logger
 from utils.paper_trade_store import PaperTradeStore
 
-
 logger = logging.getLogger(__name__)
 
 
 class TradingBot:
     """
     Main trading bot orchestrator.
-    
+
     Coordinates all components and manages the trading lifecycle.
     """
-    
+
     def __init__(self, config: BotConfig):
         self.config = config
         self._running = False
         self._shutdown_event = asyncio.Event()
-        
+
         # Components (initialized in start())
         self.client: Optional[BasePolymarketClient] = None
         self.data_feed: Optional[DataFeed] = None
@@ -60,12 +59,12 @@ class TradingBot:
         self.risk_manager: Optional[RiskManager] = None
         self.portfolio: Optional[Portfolio] = None
         self.paper_trade_store: Optional[PaperTradeStore] = None
-        
+
         # Statistics
         self._start_time: Optional[datetime] = None
         self._update_count = 0
         self._signal_count = 0
-    
+
     async def start(self) -> None:
         """Initialize and start all components."""
         logger.info("=" * 60)
@@ -73,7 +72,7 @@ class TradingBot:
         logger.info("=" * 60)
         logger.info(f"Mode: {'DRY RUN' if self.config.is_dry_run else 'LIVE'}")
         logger.info(f"Markets: {self.config.trading.markets or 'Auto-discover'}")
-        
+
         self._start_time = datetime.utcnow()
         self._running = True
 
@@ -81,16 +80,14 @@ class TradingBot:
             self.paper_trade_store = PaperTradeStore(
                 self.config.monitoring.paper_trade_db_path
             )
-        
+
         # Initialize API client
         self.client = create_polymarket_client(self.config)
         await self.client.connect()
-        
+
         # Initialize portfolio
         initial_balance = (
-            self.config.mode.dry_run_initial_balance 
-            if self.config.is_dry_run 
-            else 0.0
+            self.config.mode.dry_run_initial_balance if self.config.is_dry_run else 0.0
         )
         self.portfolio = Portfolio(initial_balance=initial_balance)
         if self.config.is_live:
@@ -99,27 +96,29 @@ class TradingBot:
                 self.portfolio.cash_balance = live_balance
                 self.portfolio.initial_balance = live_balance
                 logger.info(f"Live USDC balance synced: ${live_balance:.2f}")
-        
+
         # Initialize risk manager
-        self.risk_manager = RiskManager(RiskConfig(
-            max_order_notional=self.config.risk.max_order_notional,
-            max_open_orders=self.config.risk.max_open_orders,
-            max_open_positions=self.config.risk.max_open_positions,
-            max_order_attempts_per_minute=self.config.risk.max_order_attempts_per_minute,
-            max_daily_order_attempts=self.config.risk.max_daily_order_attempts,
-            max_position_per_market=self.config.risk.max_position_per_market,
-            max_global_exposure=self.config.risk.max_global_exposure,
-            max_daily_loss=self.config.risk.max_daily_loss,
-            max_drawdown_pct=self.config.risk.max_drawdown_pct,
-            trade_only_high_volume=self.config.risk.trade_only_high_volume,
-            min_24h_volume=self.config.risk.min_24h_volume,
-            whitelist=self.config.risk.whitelist,
-            blacklist=self.config.risk.blacklist,
-            kill_switch_enabled=self.config.risk.kill_switch_enabled,
-            auto_unwind_on_breach=self.config.risk.auto_unwind_on_breach,
-            strategy_exposure_limits=self.config.risk.strategy_exposure_limits,
-        ))
-        
+        self.risk_manager = RiskManager(
+            RiskConfig(
+                max_order_notional=self.config.risk.max_order_notional,
+                max_open_orders=self.config.risk.max_open_orders,
+                max_open_positions=self.config.risk.max_open_positions,
+                max_order_attempts_per_minute=self.config.risk.max_order_attempts_per_minute,
+                max_daily_order_attempts=self.config.risk.max_daily_order_attempts,
+                max_position_per_market=self.config.risk.max_position_per_market,
+                max_global_exposure=self.config.risk.max_global_exposure,
+                max_daily_loss=self.config.risk.max_daily_loss,
+                max_drawdown_pct=self.config.risk.max_drawdown_pct,
+                trade_only_high_volume=self.config.risk.trade_only_high_volume,
+                min_24h_volume=self.config.risk.min_24h_volume,
+                whitelist=self.config.risk.whitelist,
+                blacklist=self.config.risk.blacklist,
+                kill_switch_enabled=self.config.risk.kill_switch_enabled,
+                auto_unwind_on_breach=self.config.risk.auto_unwind_on_breach,
+                strategy_exposure_limits=self.config.risk.strategy_exposure_limits,
+            )
+        )
+
         # Initialize execution engine
         self.execution_engine = ExecutionEngine(
             client=self.client,
@@ -142,24 +141,26 @@ class TradingBot:
             paper_trade_store=self.paper_trade_store,
         )
         await self.execution_engine.start()
-        
+
         # Initialize arbitrage engine
-        self.arb_engine = ArbEngine(ArbConfig(
-            min_edge=self.config.trading.min_edge,
-            bundle_arb_enabled=self.config.trading.bundle_arb_enabled,
-            min_spread=self.config.trading.min_spread,
-            mm_enabled=self.config.trading.mm_enabled,
-            tick_size=self.config.trading.tick_size,
-            mm_one_sided_enabled=self.config.trading.mm_one_sided_enabled,
-            default_order_size=self.config.trading.default_order_size,
-            min_order_size=self.config.trading.min_order_size,
-            max_order_size=self.config.trading.max_order_size,
-            edge_size_multiplier=self.config.trading.edge_size_multiplier,
-            max_liquidity_fraction=self.config.trading.max_liquidity_fraction,
-            bundle_cooldown_seconds=self.config.trading.bundle_cooldown_seconds,
-            mm_cooldown_seconds=self.config.trading.mm_cooldown_seconds,
-        ))
-        
+        self.arb_engine = ArbEngine(
+            ArbConfig(
+                min_edge=self.config.trading.min_edge,
+                bundle_arb_enabled=self.config.trading.bundle_arb_enabled,
+                min_spread=self.config.trading.min_spread,
+                mm_enabled=self.config.trading.mm_enabled,
+                tick_size=self.config.trading.tick_size,
+                mm_one_sided_enabled=self.config.trading.mm_one_sided_enabled,
+                default_order_size=self.config.trading.default_order_size,
+                min_order_size=self.config.trading.min_order_size,
+                max_order_size=self.config.trading.max_order_size,
+                edge_size_multiplier=self.config.trading.edge_size_multiplier,
+                max_liquidity_fraction=self.config.trading.max_liquidity_fraction,
+                bundle_cooldown_seconds=self.config.trading.bundle_cooldown_seconds,
+                mm_cooldown_seconds=self.config.trading.mm_cooldown_seconds,
+            )
+        )
+
         # Initialize data feed
         market_ids = self.config.trading.markets.copy()
         self.data_feed = DataFeed(
@@ -170,121 +171,118 @@ class TradingBot:
             config=self.config,
         )
         await self.data_feed.start()
-        
+
         # Wait for initial data
         logger.info("Waiting for market data...")
         if not await self.data_feed.wait_for_data(timeout=30.0):
             logger.warning("Timeout waiting for initial data, proceeding anyway")
-        
+
         logger.info("Bot started successfully!")
         logger.info("-" * 60)
-        
+
         # Start monitoring loop
         asyncio.create_task(self._monitoring_loop())
-        
+
         # Start fill simulation for dry run
         if self.config.is_dry_run and self.config.mode.simulate_fills:
             asyncio.create_task(self._simulate_fills())
-    
+
     def _on_market_update(self, market_id: str, market_state) -> None:
         """Callback for market state updates."""
         self._update_count += 1
-        
+
         # Check risk limits
         if not self.risk_manager.within_global_limits():
             logger.warning("Risk limits exceeded, skipping analysis")
             return
-        
+
         # Analyze for opportunities
         signals = self.arb_engine.analyze(market_state)
-        
+
         for signal in signals:
             self._signal_count += 1
             # Submit signal asynchronously
             asyncio.create_task(self.execution_engine.submit_signal(signal))
-    
+
     async def _monitoring_loop(self) -> None:
         """Periodic monitoring and logging."""
         interval = self.config.monitoring.snapshot_interval
-        
+
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                
+
                 # Log portfolio snapshot
                 pnl = self.portfolio.get_pnl()
                 exposure = self.portfolio.get_total_exposure()
                 positions = len(self.portfolio.get_all_positions())
                 open_orders = self.execution_engine.open_order_count
-                
+
                 performance_logger.log_snapshot(pnl, exposure, positions, open_orders)
-                
+
                 # Update risk manager
-                self.risk_manager.update_pnl(
-                    pnl["realized_pnl"],
-                    pnl["unrealized_pnl"]
-                )
-                
+                self.risk_manager.update_pnl(pnl["realized_pnl"], pnl["unrealized_pnl"])
+
                 # Log statistics
                 arb_stats = self.arb_engine.get_stats()
                 exec_stats = self.execution_engine.get_stats()
                 risk_summary = self.risk_manager.get_summary()
-                
+
                 logger.info(
                     f"Stats | Updates: {self._update_count} | "
                     f"Signals: {self._signal_count} | "
                     f"Orders: {exec_stats.orders_placed} placed, {exec_stats.orders_filled} filled | "
                     f"PnL: ${pnl['total_pnl']:.2f}"
                 )
-                
+
                 if risk_summary["kill_switch_triggered"]:
                     logger.critical("KILL SWITCH ACTIVE - Trading halted")
-                    
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Monitoring error: {e}")
-    
+
     async def _simulate_fills(self) -> None:
         """Simulate order fills in dry run mode."""
         import random
-        
+
         while self._running:
             try:
                 await asyncio.sleep(2.0)  # Check every 2 seconds
-                
+
                 # Get open orders
                 orders = self.execution_engine.get_open_orders()
-                
+
                 for order in orders:
                     # Random chance of fill
                     if random.random() < self.config.mode.fill_probability:
                         trade = self.client.simulate_fill(order.order_id)
                         if trade:
                             self.execution_engine.handle_fill(trade)
-                            
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Fill simulation error: {e}")
-    
+
     async def stop(self) -> None:
         """Stop all components gracefully."""
         logger.info("Shutting down...")
         self._running = False
-        
+
         if self.data_feed:
             await self.data_feed.stop()
-        
+
         if self.execution_engine:
             await self.execution_engine.stop()
-        
+
         if self.client:
             await self.client.disconnect()
 
         if self.paper_trade_store:
             self.paper_trade_store.close()
-        
+
         # Final summary
         if self.portfolio:
             summary = self.portfolio.get_summary()
@@ -297,19 +295,19 @@ class TradingBot:
             logger.info(f"Total Trades: {summary['total_trades']}")
             logger.info(f"Win Rate: {summary['win_rate']:.1%}")
             logger.info(f"Total Volume: ${summary['total_volume']:.2f}")
-        
+
         if self.arb_engine:
             stats = self.arb_engine.get_stats()
             logger.info("-" * 60)
             logger.info(f"Bundle Opportunities: {stats.bundle_opportunities_detected}")
             logger.info(f"MM Opportunities: {stats.mm_opportunities_detected}")
             logger.info(f"Signals Generated: {stats.signals_generated}")
-        
+
         logger.info("=" * 60)
         logger.info("Bot stopped")
-        
+
         self._shutdown_event.set()
-    
+
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
@@ -317,47 +315,56 @@ class TradingBot:
 
 async def run_backtest(config: BotConfig, duration: float = 300.0) -> None:
     """Run a backtest simulation."""
-    from utils.backtest import BacktestConfig, BacktestEngine, run_backtest as _run_backtest
-    
+    from utils.backtest import (
+        BacktestConfig,
+        BacktestEngine,
+        run_backtest as _run_backtest,
+    )
+
     logger.info("Starting backtest mode...")
-    
+
     # Create components
     portfolio = Portfolio(initial_balance=config.mode.dry_run_initial_balance)
-    
-    risk_manager = RiskManager(RiskConfig(
-        max_order_notional=config.risk.max_order_notional,
-        max_open_orders=config.risk.max_open_orders,
-        max_open_positions=config.risk.max_open_positions,
-        max_order_attempts_per_minute=config.risk.max_order_attempts_per_minute,
-        max_daily_order_attempts=config.risk.max_daily_order_attempts,
-        max_position_per_market=config.risk.max_position_per_market,
-        max_global_exposure=config.risk.max_global_exposure,
-        max_daily_loss=config.risk.max_daily_loss,
-        max_drawdown_pct=config.risk.max_drawdown_pct,
-        strategy_exposure_limits=config.risk.strategy_exposure_limits,
-    ))
-    
-    arb_engine = ArbEngine(ArbConfig(
-        min_edge=config.trading.min_edge,
-        bundle_arb_enabled=config.trading.bundle_arb_enabled,
-        min_spread=config.trading.min_spread,
-        mm_enabled=config.trading.mm_enabled,
-        tick_size=config.trading.tick_size,
-        default_order_size=config.trading.default_order_size,
-        min_order_size=config.trading.min_order_size,
-        max_order_size=config.trading.max_order_size,
-        edge_size_multiplier=config.trading.edge_size_multiplier,
-        max_liquidity_fraction=config.trading.max_liquidity_fraction,
-        bundle_cooldown_seconds=config.trading.bundle_cooldown_seconds,
-        mm_cooldown_seconds=config.trading.mm_cooldown_seconds,
-    ))
-    
+
+    risk_manager = RiskManager(
+        RiskConfig(
+            max_order_notional=config.risk.max_order_notional,
+            max_open_orders=config.risk.max_open_orders,
+            max_open_positions=config.risk.max_open_positions,
+            max_order_attempts_per_minute=config.risk.max_order_attempts_per_minute,
+            max_daily_order_attempts=config.risk.max_daily_order_attempts,
+            max_position_per_market=config.risk.max_position_per_market,
+            max_global_exposure=config.risk.max_global_exposure,
+            max_daily_loss=config.risk.max_daily_loss,
+            max_drawdown_pct=config.risk.max_drawdown_pct,
+            strategy_exposure_limits=config.risk.strategy_exposure_limits,
+        )
+    )
+
+    arb_engine = ArbEngine(
+        ArbConfig(
+            min_edge=config.trading.min_edge,
+            bundle_arb_enabled=config.trading.bundle_arb_enabled,
+            min_spread=config.trading.min_spread,
+            mm_enabled=config.trading.mm_enabled,
+            tick_size=config.trading.tick_size,
+            default_order_size=config.trading.default_order_size,
+            min_order_size=config.trading.min_order_size,
+            max_order_size=config.trading.max_order_size,
+            edge_size_multiplier=config.trading.edge_size_multiplier,
+            max_liquidity_fraction=config.trading.max_liquidity_fraction,
+            bundle_cooldown_seconds=config.trading.bundle_cooldown_seconds,
+            mm_cooldown_seconds=config.trading.mm_cooldown_seconds,
+        )
+    )
+
     # Use placeholder client for execution
     from utils.config_loader import get_default_config
+
     demo_config = get_default_config()
     client = create_polymarket_client(demo_config)
     await client.connect()
-    
+
     execution_engine = ExecutionEngine(
         client=client,
         risk_manager=risk_manager,
@@ -365,17 +372,17 @@ async def run_backtest(config: BotConfig, duration: float = 300.0) -> None:
         config=ExecutionConfig(dry_run=True),
     )
     await execution_engine.start()
-    
+
     # Run backtest
     backtest_config = BacktestConfig(
         initial_balance=config.mode.dry_run_initial_balance,
         simulate_fills=True,
         fill_probability=config.mode.fill_probability,
     )
-    
+
     # Generate market IDs
     market_ids = config.trading.markets or [f"market_{i}" for i in range(3)]
-    
+
     result = await _run_backtest(
         config=backtest_config,
         market_ids=market_ids,
@@ -385,10 +392,10 @@ async def run_backtest(config: BotConfig, duration: float = 300.0) -> None:
         portfolio=portfolio,
         duration_seconds=duration,
     )
-    
+
     await execution_engine.stop()
     await client.disconnect()
-    
+
     return result
 
 
@@ -400,7 +407,7 @@ async def main_async(args: argparse.Namespace) -> None:
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
         sys.exit(1)
-    
+
     # Override mode from command line and revalidate the effective config. This
     # prevents --live from bypassing the live-only checks performed at load time.
     try:
@@ -413,29 +420,29 @@ async def main_async(args: argparse.Namespace) -> None:
     except Exception as e:
         logger.error(f"Invalid effective config: {e}")
         sys.exit(1)
-    
+
     # Run backtest if requested
     if args.backtest:
         await run_backtest(config, duration=args.backtest_duration)
         return
-    
+
     # Create and run the bot
     bot = TradingBot(config)
-    
+
     # Set up signal handlers for graceful shutdown
     loop = asyncio.get_event_loop()
-    
+
     def signal_handler():
         logger.info("Received shutdown signal")
         asyncio.create_task(bot.stop())
-    
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, signal_handler)
         except NotImplementedError:
             # Windows doesn't support add_signal_handler
             pass
-    
+
     try:
         await bot.start()
         await bot.wait_for_shutdown()
@@ -459,49 +466,42 @@ Examples:
   python main.py --live             Run in live trading mode
   python main.py --backtest         Run backtest simulation
   python main.py -c custom.yaml     Use custom config file
-        """
+        """,
     )
-    
+
     parser.add_argument(
-        "-c", "--config",
+        "-c",
+        "--config",
         default="config.yaml",
-        help="Path to configuration file (default: config.yaml)"
+        help="Path to configuration file (default: config.yaml)",
     )
-    
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        help="Run in live trading mode"
-    )
-    
+
+    parser.add_argument("--live", action="store_true", help="Run in live trading mode")
+
     parser.add_argument(
         "--dry-run",
         action="store_true",
         dest="dry_run",
-        help="Run in dry-run mode (default)"
+        help="Run in dry-run mode (default)",
     )
-    
+
     parser.add_argument(
-        "--backtest",
-        action="store_true",
-        help="Run backtest simulation"
+        "--backtest", action="store_true", help="Run backtest simulation"
     )
-    
+
     parser.add_argument(
         "--backtest-duration",
         type=float,
         default=300.0,
-        help="Backtest duration in simulated seconds (default: 300)"
+        help="Backtest duration in simulated seconds (default: 300)",
     )
-    
+
     parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose logging"
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
-    
+
     args = parser.parse_args()
-    
+
     # Load the selected profile before creating handlers so profile-specific
     # log files never first appear under the default logs/ directory.
     try:
@@ -517,7 +517,7 @@ Examples:
         trades_log_file=logging_config.trades_log_file,
         opportunities_log_file=logging_config.opportunities_log_file,
     )
-    
+
     # Run the async main
     try:
         asyncio.run(main_async(args))

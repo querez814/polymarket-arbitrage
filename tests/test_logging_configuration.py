@@ -51,9 +51,7 @@ def test_entrypoint_configures_profile_log_paths_before_runtime(
 
     monkeypatch.setattr(module, "setup_logging", capture_logging)
     monkeypatch.setattr(module.asyncio, "run", stop_before_runtime)
-    monkeypatch.setattr(
-        sys, "argv", [module_name, "--config", str(config_path)]
-    )
+    monkeypatch.setattr(sys, "argv", [module_name, "--config", str(config_path)])
 
     module.main()
 

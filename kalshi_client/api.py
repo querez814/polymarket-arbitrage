@@ -859,7 +859,9 @@ class KalshiClient:
             if (
                 not isinstance(related, list)
                 or not related
-                or not all(isinstance(value, str) and value.strip() for value in related)
+                or not all(
+                    isinstance(value, str) and value.strip() for value in related
+                )
             ):
                 return None
             start_time = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
@@ -874,7 +876,9 @@ class KalshiClient:
             if end_time is not None and end_time.tzinfo is None:
                 return None
             primary = data.get("primary_event_tickers", [])
-            if not isinstance(primary, list) or not all(isinstance(value, str) for value in primary):
+            if not isinstance(primary, list) or not all(
+                isinstance(value, str) for value in primary
+            ):
                 return None
             source_id = data.get("source_id")
             return KalshiMilestone(
@@ -885,8 +889,14 @@ class KalshiClient:
                 start_time=start_time.astimezone(timezone.utc),
                 end_time=end_time.astimezone(timezone.utc) if end_time else None,
                 related_event_tickers=tuple(value.strip() for value in related),
-                primary_event_tickers=tuple(value.strip() for value in primary if value.strip()),
-                source_id=source_id.strip() if isinstance(source_id, str) and source_id.strip() else None,
+                primary_event_tickers=tuple(
+                    value.strip() for value in primary if value.strip()
+                ),
+                source_id=(
+                    source_id.strip()
+                    if isinstance(source_id, str) and source_id.strip()
+                    else None
+                ),
             )
         except (TypeError, ValueError):
             return None

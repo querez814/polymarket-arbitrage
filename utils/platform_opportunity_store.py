@@ -374,14 +374,22 @@ class PlatformOpportunityStore:
                             or len(level) != 2
                             or not all(isinstance(item, (int, float)) for item in level)
                         ):
-                            raise ValueError("normalized book levels must be numeric pairs")
+                            raise ValueError(
+                                "normalized book levels must be numeric pairs"
+                            )
                         price, size = float(level[0]), float(level[1])
-                        if not all(math.isfinite(item) and item > 0 for item in (price, size)):
-                            raise ValueError("normalized book levels must be finite positive")
+                        if not all(
+                            math.isfinite(item) and item > 0 for item in (price, size)
+                        ):
+                            raise ValueError(
+                                "normalized book levels must be finite positive"
+                            )
                         if prior is not None and (
                             price > prior if descending else price < prior
                         ):
-                            raise ValueError("normalized book levels are not best-to-worst")
+                            raise ValueError(
+                                "normalized book levels are not best-to-worst"
+                            )
                         prior = price
         encoded = _json(payload).encode("utf-8")
         compressed = zlib.compress(encoded, level=9)
@@ -398,7 +406,12 @@ class PlatformOpportunityStore:
                 f"INSERT OR IGNORE INTO {table} "
                 f"({hash_column}, schema_version, compressed_payload, captured_bytes) "
                 "VALUES (?, ?, ?, ?)",
-                (payload_hash, int(payload["schema_version"]), compressed, len(compressed)),
+                (
+                    payload_hash,
+                    int(payload["schema_version"]),
+                    compressed,
+                    len(compressed),
+                ),
             )
         return payload_hash
 
@@ -420,7 +433,9 @@ class PlatformOpportunityStore:
             kind="fee schedule",
         )
 
-    def _replay_payload(self, *, table: str, hash_column: str, payload_hash: str) -> dict[str, Any]:
+    def _replay_payload(
+        self, *, table: str, hash_column: str, payload_hash: str
+    ) -> dict[str, Any]:
         with self._lock:
             row = self._connection.execute(
                 f"SELECT compressed_payload FROM {table} WHERE {hash_column} = ?",
@@ -428,16 +443,22 @@ class PlatformOpportunityStore:
             ).fetchone()
         if row is None:
             raise KeyError(payload_hash)
-        return json.loads(zlib.decompress(bytes(row["compressed_payload"])).decode("utf-8"))
+        return json.loads(
+            zlib.decompress(bytes(row["compressed_payload"])).decode("utf-8")
+        )
 
     def replay_book_state(self, state_hash: str) -> dict[str, Any]:
         return self._replay_payload(
-            table="normalized_book_states", hash_column="state_hash", payload_hash=state_hash
+            table="normalized_book_states",
+            hash_column="state_hash",
+            payload_hash=state_hash,
         )
 
     def replay_fee_schedule(self, fee_hash: str) -> dict[str, Any]:
         return self._replay_payload(
-            table="normalized_fee_schedules", hash_column="fee_hash", payload_hash=fee_hash
+            table="normalized_fee_schedules",
+            hash_column="fee_hash",
+            payload_hash=fee_hash,
         )
 
     def replay_evidence_counts(self) -> dict[str, int]:
@@ -535,9 +556,8 @@ class PlatformOpportunityStore:
                 "SELECT captured_bytes FROM normalized_fee_schedules WHERE fee_hash = ?",
                 (fee_hash,),
             ).fetchone()
-            added_bytes = (
-                (0 if existing_book is not None else len(compressed_book))
-                + (0 if existing_fee is not None else len(compressed_fee))
+            added_bytes = (0 if existing_book is not None else len(compressed_book)) + (
+                0 if existing_fee is not None else len(compressed_fee)
             )
             # Account for the actual SQLite allocation and WAL, not just
             # compressed payload bytes. Two pages conservatively cover a new
@@ -601,7 +621,11 @@ class PlatformOpportunityStore:
                         (cohort_id,),
                     ).fetchone()[0]
                 )
-                kind = "change" if prior is None or str(prior["state_hash"]) != state_hash else "heartbeat"
+                kind = (
+                    "change"
+                    if prior is None or str(prior["state_hash"]) != state_hash
+                    else "heartbeat"
+                )
                 connection.execute(
                     "INSERT INTO platform_replay_observation_events "
                     "(cohort_id, sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
@@ -915,14 +939,31 @@ class PlatformOpportunityStore:
             )
 
     def active_political_event_locks(self, *, now: datetime) -> list[dict[str, Any]]:
-        """Return only locks that still own their full observation window."""
+        """Return active locks using the dashboard/store's mapping contract.
+
+        Early v2 rows encoded the dataclass tuple as a JSON list of pairs.
+        Normalize only that legacy representation at the persistence boundary so
+        callers never need to guess whether ``selected_contract`` is a list or
+        mapping.  The underlying stored payload remains readable during this
+        deliberate migration path.
+        """
         with self._lock:
             rows = self._connection.execute(
                 "SELECT payload_json FROM political_event_locks WHERE locked_until >= ? "
                 "ORDER BY occurrence_at, event_id",
                 (_utc_iso(now),),
             ).fetchall()
-        return [json.loads(row["payload_json"]) for row in rows]
+        locks: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            selected_contract = payload.get("selected_contract")
+            if isinstance(selected_contract, list) and all(
+                isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+                for item in selected_contract
+            ):
+                payload["selected_contract"] = dict(selected_contract)
+            locks.append(payload)
+        return locks
 
     def record_relations(
         self,

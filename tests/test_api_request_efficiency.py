@@ -616,19 +616,25 @@ def test_kalshi_milestone_parser_rejects_naive_or_unlinked_records():
     )
     assert valid is not None
     assert valid.start_time.tzinfo == timezone.utc
-    assert KalshiClient._parse_milestone(
-        {
-            "id": "bad-clock",
-            "title": "President speaks",
-            "start_date": "2026-08-10T22:30:00",
-            "related_event_tickers": ["KXSPEECH"],
-        }
-    ) is None
-    assert KalshiClient._parse_milestone(
-        {
-            "id": "unlinked",
-            "title": "President speaks",
-            "start_date": "2026-08-10T22:30:00Z",
-            "related_event_tickers": [],
-        }
-    ) is None
+    assert (
+        KalshiClient._parse_milestone(
+            {
+                "id": "bad-clock",
+                "title": "President speaks",
+                "start_date": "2026-08-10T22:30:00",
+                "related_event_tickers": ["KXSPEECH"],
+            }
+        )
+        is None
+    )
+    assert (
+        KalshiClient._parse_milestone(
+            {
+                "id": "unlinked",
+                "title": "President speaks",
+                "start_date": "2026-08-10T22:30:00Z",
+                "related_event_tickers": [],
+            }
+        )
+        is None
+    )

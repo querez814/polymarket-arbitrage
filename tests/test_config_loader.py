@@ -110,7 +110,10 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
         config.production.execution_journal_path
         == "data/political_v2_execution_journal.sqlite3"
     )
-    assert config.production.operator_state_path == "data/political_v2_operator_state.sqlite3"
+    assert (
+        config.production.operator_state_path
+        == "data/political_v2_operator_state.sqlite3"
+    )
     assert config.platform_opportunity.reviewed_pinned_event_ids == [
         "kalshi:KXTRUMPMENTION-26AUG10",
         "kalshi:KXTRUMPSAY-26AUG10",
@@ -132,9 +135,16 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     assert config.platform_opportunity.political_paper_entry_depth_fraction == 0.10
     assert config.platform_opportunity.political_paper_signal_ttl_seconds == 10
     assert config.platform_opportunity.political_paper_min_hold_seconds == 2
-    assert config.platform_opportunity.political_paper_max_book_request_latency_seconds == 2
-    assert config.platform_opportunity.political_paper_max_fee_fetch_latency_seconds == 2
-    assert config.platform_opportunity.political_paper_max_fee_schedule_age_seconds == 60
+    assert (
+        config.platform_opportunity.political_paper_max_book_request_latency_seconds
+        == 2
+    )
+    assert (
+        config.platform_opportunity.political_paper_max_fee_fetch_latency_seconds == 2
+    )
+    assert (
+        config.platform_opportunity.political_paper_max_fee_schedule_age_seconds == 60
+    )
     assert config.platform_opportunity.political_paper_one_open_position_per_contract
     assert config.platform_opportunity.political_paper_one_open_position_per_base_lane
 

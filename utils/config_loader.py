@@ -272,9 +272,9 @@ class PlatformOpportunityConfig:
     slippage_per_contract: float = 0.002
     # Research lanes are fail-closed unless a profile explicitly declares
     # their limited forward-study authority.
-    directional_reaction_authority: Literal[
-        "disabled", "forward_only_unvalidated"
-    ] = "disabled"
+    directional_reaction_authority: Literal["disabled", "forward_only_unvalidated"] = (
+        "disabled"
+    )
     relative_value_authority: Literal["disabled", "forward_only_unvalidated"] = (
         "disabled"
     )

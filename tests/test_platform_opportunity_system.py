@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.models import (
     Market,
@@ -118,14 +120,18 @@ def test_political_experimental_paper_account_is_idempotent_and_cent_exact(tmp_p
         initialized_at=NOW + timedelta(seconds=1),
     )
 
-    assert first == second == {
-        "starting_cash_micros": 1_000_000_000,
-        "cash_micros": 1_000_000_000,
-        "reserved_micros": 0,
-        "realized_pnl_micros": 0,
-        "open_positions": 0,
-        "valuation_complete": True,
-    }
+    assert (
+        first
+        == second
+        == {
+            "starting_cash_micros": 1_000_000_000,
+            "cash_micros": 1_000_000_000,
+            "reserved_micros": 0,
+            "realized_pnl_micros": 0,
+            "open_positions": 0,
+            "valuation_complete": True,
+        }
+    )
     assert store.political_experimental_paper_events(cohort_id=cohort_id) == [
         {
             "sequence": 1,
@@ -186,9 +192,7 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
 
 def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_path):
     """Capacity loss is durable, visible, and cannot create a scored observation."""
-    store = PlatformOpportunityStore(
-        tmp_path / "opportunities.db", replay_byte_cap=1
-    )
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db", replay_byte_cap=1)
     book = {
         "schema_version": 1,
         "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
@@ -250,16 +254,22 @@ def test_invalid_replay_cohort_cannot_count_or_score_later_observations(tmp_path
     system.record_successful_observation(
         "polymarket:p1", observed_at=NOW + timedelta(seconds=1)
     )
-    assert system.observe_book(
-        "polymarket:p1",
-        _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
-        observed_at=NOW + timedelta(seconds=1),
-    ).intents == ()
-    assert system.observe_book(
-        "polymarket:p1",
-        _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
-        observed_at=NOW + timedelta(seconds=6),
-    ).intents == ()
+    assert (
+        system.observe_book(
+            "polymarket:p1",
+            _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+            observed_at=NOW + timedelta(seconds=1),
+        ).intents
+        == ()
+    )
+    assert (
+        system.observe_book(
+            "polymarket:p1",
+            _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+            observed_at=NOW + timedelta(seconds=6),
+        ).intents
+        == ()
+    )
     assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {}
     assert system.store.intent_rows(cohort_id=system.cohort_id) == []
 
@@ -300,7 +310,9 @@ def test_replay_evidence_cap_accounts_for_sqlite_store_and_wal_bytes(tmp_path):
     }
 
 
-def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(tmp_path):
+def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(
+    tmp_path,
+):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     book = {
         "schema_version": 1,
@@ -341,16 +353,18 @@ def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(t
 
     events = store.replay_observation_events(cohort_id="cohort:test")
     assert [
-        (event["sequence"], event["kind"], event["state_hash"])
-        for event in events
+        (event["sequence"], event["kind"], event["state_hash"]) for event in events
     ] == [
         (1, "change", events[0]["state_hash"]),
         (2, "heartbeat", events[0]["state_hash"]),
         (3, "change", events[2]["state_hash"]),
     ]
-    assert store.observation_telemetry(cohort_id="cohort:test")["kalshi:KXTEST"][
-        "observation_count"
-    ] == 4
+    assert (
+        store.observation_telemetry(cohort_id="cohort:test")["kalshi:KXTEST"][
+            "observation_count"
+        ]
+        == 4
+    )
 
 
 def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
@@ -815,14 +829,19 @@ def test_automatic_political_locks_dedupe_a_shared_reviewed_milestone(tmp_path):
 
     locks = store.active_political_event_locks(now=NOW)
     assert len(locks) == 2
-    assert sum(
-        lock["selected_contract"]["milestone_id"] == "shared-sc-primary"
-        for lock in locks
-    ) == 1
+    assert (
+        sum(
+            lock["selected_contract"]["milestone_id"] == "shared-sc-primary"
+            for lock in locks
+        )
+        == 1
+    )
     assert {lock["event_id"] for lock in locks} & {"KXTOMORROW-26"}
 
 
-def test_week_long_live_political_milestone_cannot_displace_short_horizon_event(tmp_path):
+def test_week_long_live_political_milestone_cannot_displace_short_horizon_event(
+    tmp_path,
+):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(
         store=store,
@@ -876,9 +895,9 @@ def test_week_long_live_political_milestone_cannot_displace_short_horizon_event(
         observed_at=NOW,
     )
 
-    assert [lock["event_id"] for lock in store.active_political_event_locks(now=NOW)] == [
-        "KXTOMORROW-26"
-    ]
+    assert [
+        lock["event_id"] for lock in store.active_political_event_locks(now=NOW)
+    ] == ["KXTOMORROW-26"]
 
 
 def test_reviewed_pinned_kalshi_event_beats_automatic_volume_ranking(tmp_path):

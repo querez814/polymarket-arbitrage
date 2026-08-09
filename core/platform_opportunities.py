@@ -407,8 +407,7 @@ def _is_political_lock_candidate(
         and contract.event_start_at is not None
         and contract.event_end_at is not None
         and contract.event_end_at > contract.event_start_at
-        and contract.event_end_at - contract.event_start_at
-        <= policy.max_event_duration
+        and contract.event_end_at - contract.event_start_at <= policy.max_event_duration
         and contract.event_start_at <= now + policy.lookahead
         and contract.event_end_at > now
     )
@@ -759,10 +758,13 @@ class PlatformOpportunitySystem:
     @staticmethod
     def _normalized_replay_book(book: OrderBook) -> dict:
         """Project the unified model to its replayable, bounded depth only."""
+
         def levels(token: TokenType, side: str) -> list[list[float]]:
-            source = getattr(book, token.value).bids if side == "bids" else getattr(
-                book, token.value
-            ).asks
+            source = (
+                getattr(book, token.value).bids
+                if side == "bids"
+                else getattr(book, token.value).asks
+            )
             ordered = sorted(
                 (
                     (float(level.price), float(level.size))
@@ -779,8 +781,14 @@ class PlatformOpportunitySystem:
 
         return {
             "schema_version": 1,
-            "yes": {"bids": levels(TokenType.YES, "bids"), "asks": levels(TokenType.YES, "asks")},
-            "no": {"bids": levels(TokenType.NO, "bids"), "asks": levels(TokenType.NO, "asks")},
+            "yes": {
+                "bids": levels(TokenType.YES, "bids"),
+                "asks": levels(TokenType.YES, "asks"),
+            },
+            "no": {
+                "bids": levels(TokenType.NO, "bids"),
+                "asks": levels(TokenType.NO, "asks"),
+            },
         }
 
     def _observation_lock_phase(self, contract_id: str, observed_at: datetime) -> str:

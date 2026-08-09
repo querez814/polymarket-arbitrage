@@ -11,7 +11,6 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
-
 _FAMILY_TERMS = {
     "speech": ("speech", "address", "remarks", "debate"),
     "vote": ("vote", "votes", "ballot", "referendum", "primary"),
@@ -92,28 +91,36 @@ def select_archive_candidates(
             token_ids = _string_list(market.get("clobTokenIds"))
             if len(token_ids) != 2 or not all(token_ids):
                 continue
-            binary_markets.append((float(market.get("volumeNum") or market.get("volume") or 0), market, token_ids))
+            binary_markets.append(
+                (
+                    float(market.get("volumeNum") or market.get("volume") or 0),
+                    market,
+                    token_ids,
+                )
+            )
         if not binary_markets:
             continue
         _, market, token_ids = max(binary_markets, key=lambda row: row[0])
-        candidates.append({
-            "event_id": "polymarket-event-" + str(event.get("id", "")),
-            "family": family,
-            "title": title,
-            "market_id": str(market.get("id", "")),
-            "market_question": str(market.get("question", "")),
-            "yes_token_id": token_ids[0],
-            "no_token_id": token_ids[1],
-            "archive_provenance": {
-                "source": "gamma-api.polymarket.com/events",
-                "tag_id": 2,
-                "event_end_date": event.get("endDate"),
-                "market_closed_time": market.get("closedTime"),
-                "archive_cutoff": cutoff.isoformat().replace("+00:00", "Z"),
-            },
-            "occurrence_at": None,
-            "occurrence_status": "requires_authoritative_event_source",
-        })
+        candidates.append(
+            {
+                "event_id": "polymarket-event-" + str(event.get("id", "")),
+                "family": family,
+                "title": title,
+                "market_id": str(market.get("id", "")),
+                "market_question": str(market.get("question", "")),
+                "yes_token_id": token_ids[0],
+                "no_token_id": token_ids[1],
+                "archive_provenance": {
+                    "source": "gamma-api.polymarket.com/events",
+                    "tag_id": 2,
+                    "event_end_date": event.get("endDate"),
+                    "market_closed_time": market.get("closedTime"),
+                    "archive_cutoff": cutoff.isoformat().replace("+00:00", "Z"),
+                },
+                "occurrence_at": None,
+                "occurrence_status": "requires_authoritative_event_source",
+            }
+        )
         if len(candidates) >= max_events:
             break
     return candidates

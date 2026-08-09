@@ -4,7 +4,6 @@ import pytest
 
 from utils.political_event_study import EventSpec, PricePoint, run_price_only_study
 
-
 UTC = timezone.utc
 OCCURRENCE = datetime(2026, 7, 1, 18, tzinfo=UTC)
 

@@ -33,17 +33,21 @@ def _read_events(manifest_path: Path) -> list[EventSpec]:
                 price = record.get("price")
                 if price is None:
                     continue
-                points.append(PricePoint(
-                    timestamp=parse_timestamp(record["timestamp"]),
-                    price=float(price),
-                    source=str(record.get("source", "unknown")),
-                ))
-        result.append(EventSpec(
-            event_id=str(item["event_id"]),
-            family=str(item["family"]),
-            occurrence_at=parse_timestamp(item["occurrence_at"]),
-            points=points,
-        ))
+                points.append(
+                    PricePoint(
+                        timestamp=parse_timestamp(record["timestamp"]),
+                        price=float(price),
+                        source=str(record.get("source", "unknown")),
+                    )
+                )
+        result.append(
+            EventSpec(
+                event_id=str(item["event_id"]),
+                family=str(item["family"]),
+                occurrence_at=parse_timestamp(item["occurrence_at"]),
+                points=points,
+            )
+        )
     return result
 
 
@@ -54,7 +58,19 @@ def _write_csv(path: Path, result: dict) -> None:
         for split in ("train", "holdout")
         for trade in result[split]["trades"]
     ]
-    fields = ["split", "event_id", "family", "direction", "baseline_price", "entry_price", "exit_price", "signal", "gross_probability_points", "assumed_round_trip_cost", "net_probability_points"]
+    fields = [
+        "split",
+        "event_id",
+        "family",
+        "direction",
+        "baseline_price",
+        "entry_price",
+        "exit_price",
+        "signal",
+        "gross_probability_points",
+        "assumed_round_trip_cost",
+        "net_probability_points",
+    ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -65,7 +81,8 @@ def _write_html(path: Path, result: dict, manifest: Path) -> None:
     coverage = result["coverage"]
     holdout = result["holdout"]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"""<!doctype html>
+    path.write_text(
+        f"""<!doctype html>
 <html><head><meta charset=\"utf-8\"><title>Political Event Price Study</title>
 <style>body{{font:16px system-ui;max-width:900px;margin:40px auto;line-height:1.5}}.warning{{background:#fff3cd;padding:16px;border-left:5px solid #b7791f}}table{{border-collapse:collapse}}td,th{{border:1px solid #ddd;padding:8px;text-align:left}}</style></head>
 <body><h1>Political Event Price Study</h1>
@@ -80,7 +97,9 @@ def _write_html(path: Path, result: dict, manifest: Path) -> None:
 <tr><td>Holdout cumulative net probability points</td><td>{holdout['cumulative_net_probability_points']:.4f}</td></tr>
 <tr><td>Holdout max drawdown (probability points)</td><td>{holdout['max_drawdown_probability_points']:.4f}</td></tr></table>
 <h2>Method</h2><p>Threshold selection is restricted to the chronological training event clusters. The later clusters are held out. Assumed round-trip cost is {result['parameters']['assumed_round_trip_cost']:.4f}; it is a sensitivity input, not a reconstructed fee or fill.</p>
-</body></html>""", encoding="utf-8")
+</body></html>""",
+        encoding="utf-8",
+    )
 
 
 def main() -> int:
@@ -106,7 +125,9 @@ def main() -> int:
         point_tolerance_minutes=args.point_tolerance_minutes,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "political_price_study.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (args.output_dir / "political_price_study.json").write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     _write_csv(args.output_dir / "political_price_study_trades.csv", result)
     _write_html(args.output_dir / "political_price_study.html", result, args.manifest)
     print("Wrote price-only research artifacts to", args.output_dir)

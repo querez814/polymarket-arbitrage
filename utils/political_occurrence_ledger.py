@@ -27,7 +27,11 @@ def _isoformat_utc(value: str) -> str:
 def _validated_entry(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         raise ValueError("occurrence ledger entries must be objects")
-    missing = [field for field in REQUIRED_LEDGER_FIELDS if not str(entry.get(field, "")).strip()]
+    missing = [
+        field
+        for field in REQUIRED_LEDGER_FIELDS
+        if not str(entry.get(field, "")).strip()
+    ]
     if missing:
         raise ValueError("occurrence ledger entry missing " + ", ".join(missing))
     source_url = str(entry["source_url"]).strip()
@@ -45,13 +49,17 @@ def _validated_entry(entry: Any) -> dict[str, str]:
     }
 
 
-def index_authoritative_occurrences(entries: Iterable[dict[str, Any]]) -> dict[str, dict[str, str]]:
+def index_authoritative_occurrences(
+    entries: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
     """Validate and index a ledger, rejecting ambiguous duplicate evidence."""
     indexed: dict[str, dict[str, str]] = {}
     for raw_entry in entries:
         entry = _validated_entry(raw_entry)
         if entry["event_id"] in indexed:
-            raise ValueError("occurrence ledger has duplicate event_id " + entry["event_id"])
+            raise ValueError(
+                "occurrence ledger has duplicate event_id " + entry["event_id"]
+            )
         indexed[entry["event_id"]] = entry
     return indexed
 

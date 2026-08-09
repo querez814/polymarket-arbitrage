@@ -56,7 +56,9 @@ async def test_worker_drains_queued_observations_before_shutdown():
 
 
 @pytest.mark.asyncio
-async def test_worker_persists_exact_kalshi_milestone_window_in_political_lock(tmp_path):
+async def test_worker_persists_exact_kalshi_milestone_window_in_political_lock(
+    tmp_path,
+):
     """The real dashboard worker must carry exact milestone evidence to the store."""
     start = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)
     end = datetime(2026, 8, 10, 23, 15, tzinfo=timezone.utc)
@@ -107,15 +109,15 @@ async def test_worker_persists_exact_kalshi_milestone_window_in_political_lock(t
 
 
 @pytest.mark.asyncio
-async def test_worker_persists_successful_empty_depth_observation_across_restart(tmp_path):
+async def test_worker_persists_successful_empty_depth_observation_across_restart(
+    tmp_path,
+):
     """An assigned contract is not an observation until its book read completes."""
     path = tmp_path / "opportunities.db"
     system = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
     worker = PlatformOpportunityWorker(system)
     observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
-    schedule = VenueFeeSchedule(
-        "polymarket", "none", 0, 1, 0, observed_at, "test"
-    )
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
 
     await worker.start()
     assert worker.submit_book(
@@ -157,9 +159,7 @@ async def test_worker_persists_local_book_request_and_receipt_times(tmp_path):
     worker = PlatformOpportunityWorker(system)
     request_started_at = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
     received_at = request_started_at.replace(second=1)
-    schedule = VenueFeeSchedule(
-        "polymarket", "none", 0, 1, 0, received_at, "test"
-    )
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, received_at, "test")
 
     await worker.start()
     assert worker.submit_book(
@@ -190,9 +190,7 @@ async def test_worker_persists_replay_event_before_scoring_an_observation(tmp_pa
     worker = PlatformOpportunityWorker(system)
     request_started_at = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
     received_at = request_started_at.replace(second=1)
-    schedule = VenueFeeSchedule(
-        "polymarket", "none", 0, 1, 0, received_at, "test"
-    )
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, received_at, "test")
 
     await worker.start()
     assert worker.submit_book(
