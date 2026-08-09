@@ -364,6 +364,32 @@ def is_political_contract(contract: PlatformContract) -> bool:
     return any(_contains_political_terms(value) for value in provenance)
 
 
+def _is_political_lock_candidate(
+    contract: PlatformContract, *, now: datetime, policy: PoliticalWatchPolicy
+) -> bool:
+    """Admit only bounded, venue-proven event windows to political locks."""
+    if (
+        not contract.active
+        or not is_political_contract(contract)
+        or _is_combo_contract(contract)
+    ):
+        return False
+    if contract.venue == "kalshi":
+        return bool(
+            contract.occurrence_evidence == "exact_venue_milestone"
+            and contract.milestone_relationship_role == "primary"
+            and contract.event_start_at is not None
+            and contract.event_end_at is not None
+            and contract.event_end_at > contract.event_start_at
+            and contract.event_start_at <= now + policy.lookahead
+            and contract.event_end_at > now
+        )
+    scheduled_at = contract.occurrence_at or contract.catalyst_at
+    return bool(
+        scheduled_at is not None and now <= scheduled_at <= now + policy.lookahead
+    )
+
+
 def _is_combo_contract(contract: PlatformContract) -> bool:
     """MVE/combo bundles are not single political-event contracts."""
     text = " ".join(
@@ -769,26 +795,7 @@ class PlatformOpportunitySystem:
 
         candidates: dict[str, list[PlatformContract]] = defaultdict(list)
         for contract in self._contracts.values():
-            if (
-                contract.active
-                and (contract.occurrence_at or contract.catalyst_at) is not None
-                and (contract.occurrence_at or contract.catalyst_at) >= now
-                and (contract.occurrence_at or contract.catalyst_at)
-                <= now + policy.lookahead
-                and is_political_contract(contract)
-                and not _is_combo_contract(contract)
-                # A Kalshi political lock is accepted only from an exact,
-                # end-bounded milestone.  A start alone cannot define when
-                # live-event polling ends, so pins fail closed as well.
-                and (
-                    contract.venue != "kalshi"
-                    or (
-                        contract.occurrence_at is not None
-                        and contract.event_start_at is not None
-                        and contract.event_end_at is not None
-                    )
-                )
-            ):
+            if _is_political_lock_candidate(contract, now=now, policy=policy):
                 candidates[contract.event_id].append(contract)
         ranked = sorted(
             candidates.items(),
@@ -963,6 +970,12 @@ class PlatformOpportunitySystem:
                 if contract.event_id in item.primary_event_tickers
             ]
             if primary_candidates:
+                if any(
+                    item.end_time is None or item.end_time <= item.start_time
+                    for item in primary_candidates
+                ):
+                    enriched.append(contract)
+                    continue
                 primary_windows = {
                     (item.start_time, item.end_time) for item in primary_candidates
                 }

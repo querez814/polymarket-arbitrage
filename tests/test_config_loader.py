@@ -102,7 +102,8 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     )
     assert config.monitoring.paper_trade_db_path == "data/political_v2_paper_trades.db"
     assert config.platform_opportunity.reviewed_pinned_event_ids == [
-        "kalshi:KXTRUMPMENTION-26AUG10"
+        "kalshi:KXTRUMPMENTION-26AUG10",
+        "kalshi:KXTRUMPSAY-26AUG10",
     ]
 
 

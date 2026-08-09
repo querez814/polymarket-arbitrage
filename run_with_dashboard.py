@@ -1016,7 +1016,11 @@ class TradingBotWithDashboard:
                 milestone
                 for milestone in milestones
                 if event_ticker in milestone.related_event_tickers
-                and now <= milestone.start_time <= lookahead
+                and event_ticker in milestone.primary_event_tickers
+                and milestone.end_time is not None
+                and milestone.end_time > milestone.start_time
+                and milestone.start_time <= lookahead
+                and milestone.end_time > now
             )
             self._platform_milestone_cache[event_ticker] = (time.monotonic(), exact)
             return exact

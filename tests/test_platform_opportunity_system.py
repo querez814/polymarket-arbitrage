@@ -799,6 +799,127 @@ def test_kalshi_unrelated_milestone_cannot_schedule_contract(tmp_path):
     assert contract.catalyst_at == expiration
 
 
+def test_kalshi_political_lock_requires_valid_primary_end_bounded_milestone(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(max_events=3),
+    )
+    start = NOW + timedelta(hours=1)
+    markets = [
+        _kalshi(
+            "KXRELATED-26-A",
+            "Will the President mention immigration?",
+            event_ticker="KXRELATED-26",
+        ),
+        _kalshi(
+            "KXOPEN-26-A",
+            "Will the President mention immigration?",
+            event_ticker="KXOPEN-26",
+        ),
+        _kalshi(
+            "KXINVALID-26-A",
+            "Will the President mention immigration?",
+            event_ticker="KXINVALID-26",
+        ),
+    ]
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=markets,
+        kalshi_milestones=[
+            KalshiMilestone(
+                milestone_id="related-only",
+                title="President remarks",
+                category="Politics",
+                milestone_type="speech",
+                start_time=start,
+                end_time=start + timedelta(minutes=30),
+                related_event_tickers=("KXRELATED-26",),
+                primary_event_tickers=(),
+            ),
+            KalshiMilestone(
+                milestone_id="open-ended",
+                title="President remarks",
+                category="Politics",
+                milestone_type="speech",
+                start_time=start,
+                end_time=None,
+                related_event_tickers=("KXOPEN-26",),
+                primary_event_tickers=("KXOPEN-26",),
+            ),
+            KalshiMilestone(
+                milestone_id="end-before-start",
+                title="President remarks",
+                category="Politics",
+                milestone_type="speech",
+                start_time=start,
+                end_time=start - timedelta(minutes=1),
+                related_event_tickers=("KXINVALID-26",),
+                primary_event_tickers=("KXINVALID-26",),
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    related = next(
+        contract
+        for contract in system.contracts
+        if contract.event_id == "KXRELATED-26"
+    )
+    assert related.milestone_relationship_role == "related"
+    assert system.store.active_political_event_locks(now=NOW) == []
+
+
+def test_exact_primary_milestone_already_live_locks_and_restores_after_restart(tmp_path):
+    db_path = tmp_path / "opportunities.db"
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=1,
+        reviewed_pinned_event_ids=("kalshi:KXTRUMPSAY-26AUG10",),
+    )
+    start = NOW - timedelta(minutes=15)
+    end = NOW + timedelta(minutes=30)
+    market = _kalshi(
+        "KXTRUMPSAY-26AUG10-A",
+        "Will Trump say immigration?",
+        event_ticker="KXTRUMPSAY-26AUG10",
+    )
+    milestone = KalshiMilestone(
+        milestone_id="trump-say-live",
+        title="Trump remarks",
+        category="Politics",
+        milestone_type="speech",
+        start_time=start,
+        end_time=end,
+        related_event_tickers=("KXTRUMPSAY-26AUG10",),
+        primary_event_tickers=("KXTRUMPSAY-26AUG10",),
+    )
+    original = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(db_path), political_watch_policy=policy
+    )
+    first = original.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[market],
+        kalshi_milestones=[milestone],
+        observed_at=NOW,
+    ).monitoring
+    assert [(item.reason, item.cadence) for item in first.hot] == [
+        ("political_event_lock", "event")
+    ]
+
+    resumed = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(db_path), political_watch_policy=policy
+    )
+    restored = resumed.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[],
+        kalshi_milestones=[],
+        observed_at=NOW + timedelta(minutes=1),
+    ).monitoring
+    assert [(item.contract_id, item.cadence) for item in restored.hot] == [
+        ("kalshi:KXTRUMPSAY-26AUG10-A", "event")
+    ]
+
+
 def test_only_machine_checkable_structure_authorizes_relative_value(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)
