@@ -135,13 +135,16 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     assert first_fee == second_fee
     assert store.replay_book_state(first_state) == book
     assert store.replay_fee_schedule(first_fee) == fee
-    assert store.replay_evidence_counts() == {
+    counts = store.replay_evidence_counts()
+    assert counts == {
         "book_states": 1,
         "fee_schedules": 1,
-        "captured_bytes": store.replay_evidence_counts()["captured_bytes"],
+        "captured_bytes": counts["captured_bytes"],
+        "store_bytes": counts["store_bytes"],
         "byte_cap": 4 * 1024**3,
     }
-    assert store.replay_evidence_counts()["captured_bytes"] > 0
+    assert counts["captured_bytes"] > 0
+    assert counts["store_bytes"] >= counts["captured_bytes"]
 
 
 def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_path):
@@ -168,14 +171,52 @@ def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_
             received_at=NOW,
         )
 
-    assert store.replay_evidence_counts() == {
+    counts = store.replay_evidence_counts()
+    assert counts == {
         "book_states": 0,
         "fee_schedules": 0,
         "captured_bytes": 0,
+        "store_bytes": counts["store_bytes"],
         "byte_cap": 1,
     }
     assert store.replay_observation_events(cohort_id="cohort:capped") == []
     assert store.replay_evidence_status(cohort_id="cohort:capped") == {
+        "cohort_valid": False,
+        "degraded_reason": "replay_evidence_byte_cap_exceeded",
+    }
+
+
+def test_replay_evidence_cap_accounts_for_sqlite_store_and_wal_bytes(tmp_path):
+    """The configured cap is physical store capacity, not payload-only capacity."""
+    path = tmp_path / "opportunities.db"
+    # The normalized payload itself is well below 10 KiB. A payload-only cap
+    # would accept it, while the initialized SQLite/WAL store already exceeds
+    # this physical budget and must fail closed.
+    physical_cap = 10 * 1024
+    store = PlatformOpportunityStore(path, replay_byte_cap=physical_cap)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    fee = {"schema_version": 1, "venue": "kalshi", "fee_type": "none"}
+
+    with pytest.raises(ReplayEvidenceCapacityError, match="byte cap"):
+        store.record_replay_observation(
+            cohort_id="cohort:physical-cap",
+            contract_id="kalshi:KXTEST",
+            normalized_book=book,
+            fee_schedule=fee,
+            lock_phase="hot",
+            observed_at=NOW,
+            request_started_at=NOW,
+            received_at=NOW,
+        )
+
+    counts = store.replay_evidence_counts()
+    assert counts["store_bytes"] > physical_cap
+    assert counts["captured_bytes"] == 0
+    assert store.replay_evidence_status(cohort_id="cohort:physical-cap") == {
         "cohort_valid": False,
         "degraded_reason": "replay_evidence_byte_cap_exceeded",
     }

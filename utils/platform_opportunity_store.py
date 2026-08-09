@@ -329,8 +329,22 @@ class PlatformOpportunityStore:
             "book_states": int(books[0]),
             "fee_schedules": int(fees[0]),
             "captured_bytes": int(books[1]) + int(fees[1]),
+            "store_bytes": self._sqlite_store_bytes(),
             "byte_cap": self.replay_byte_cap,
         }
+
+    def _sqlite_store_bytes(self) -> int:
+        """Return a conservative physical footprint for the SQLite evidence store.
+
+        The main database can have allocated pages that are larger than its
+        logical payloads, and WAL mode keeps recently committed pages beside
+        it.  Both consume the configured replay-storage budget.
+        """
+        page_count = int(self._connection.execute("PRAGMA page_count").fetchone()[0])
+        page_size = int(self._connection.execute("PRAGMA page_size").fetchone()[0])
+        wal_path = Path(f"{self.path}-wal")
+        wal_bytes = wal_path.stat().st_size if wal_path.exists() else 0
+        return page_count * page_size + wal_bytes
 
     def replay_evidence_status(self, *, cohort_id: str) -> dict[str, Any]:
         """Return the fail-closed validity of one cohort's replay evidence."""
@@ -388,20 +402,19 @@ class PlatformOpportunityStore:
                 "SELECT captured_bytes FROM normalized_fee_schedules WHERE fee_hash = ?",
                 (fee_hash,),
             ).fetchone()
-            current_bytes = int(
-                connection.execute(
-                    "SELECT COALESCE(SUM(captured_bytes), 0) FROM normalized_book_states"
-                ).fetchone()[0]
-            ) + int(
-                connection.execute(
-                    "SELECT COALESCE(SUM(captured_bytes), 0) FROM normalized_fee_schedules"
-                ).fetchone()[0]
-            )
             added_bytes = (
                 (0 if existing_book is not None else len(compressed_book))
                 + (0 if existing_fee is not None else len(compressed_fee))
             )
-            if current_bytes + added_bytes > self.replay_byte_cap:
+            # Account for the actual SQLite allocation and WAL, not just
+            # compressed payload bytes. Two pages conservatively cover a new
+            # event plus any payload/index page split before the next WAL
+            # checkpoint, so we fail closed before exceeding the quota.
+            page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+            projected_store_bytes = (
+                self._sqlite_store_bytes() + added_bytes + 2 * page_size
+            )
+            if projected_store_bytes > self.replay_byte_cap:
                 connection.execute(
                     "INSERT INTO platform_replay_evidence_status "
                     "(cohort_id, cohort_valid, degraded_reason) VALUES (?, 0, ?) "
