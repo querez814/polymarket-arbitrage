@@ -274,8 +274,10 @@ class PoliticalExperimentalPaperLedger:
         The resolver is intentionally supplied only a replay sequence.  It
         rehydrates that sequence's exact persisted book and fee schedule, so a
         runtime caller cannot sneak raw adapter depth into a paper fill.
-        Multi-level IOC aggregation and exits build on this one-level causal
-        opening boundary in a later slice.
+        Every qualifying canonical ask can contribute only its configured
+        whole-contract fraction.  Per-level pricing and balance rounding are
+        retained with the one causal fill attempt; callers never supply a
+        synthetic aggregate price or depth total.
         """
         if not Decimal("0") < displayed_depth_fraction <= Decimal("1"):
             raise ValueError("displayed depth fraction must be in (0, 1]")
@@ -338,9 +340,18 @@ class PoliticalExperimentalPaperLedger:
                 max_open_positions=max_open_positions,
                 economics={"preflight_reason": "empty_executable_asks"},
             )
-        price, displayed_size = asks[0]
-        quantity = int(Decimal(str(displayed_size)) * displayed_depth_fraction)
-        if quantity <= 0:
+        level_economics: list[tuple[str, PoliticalPaperTradeEconomics]] = []
+        for price, displayed_size in asks:
+            quantity = int(Decimal(str(displayed_size)) * displayed_depth_fraction)
+            if quantity <= 0:
+                continue
+            economics = self.entry_economics(
+                quantity=quantity,
+                displayed_ask=str(price),
+                fee_schedule=fee_schedule,
+            )
+            level_economics.append((str(price), economics))
+        if not level_economics:
             return self.store.resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,
@@ -353,23 +364,31 @@ class PoliticalExperimentalPaperLedger:
                 max_open_positions=max_open_positions,
                 economics={"preflight_reason": "fractional_or_zero_executable_depth"},
             )
-        economics = self.entry_economics(
-            quantity=quantity, displayed_ask=str(price), fee_schedule=fee_schedule
-        )
+        quantity = sum(economics.quantity for _, economics in level_economics)
+        debit_micros = sum(economics.debit_micros for _, economics in level_economics)
+        levels = [
+            {
+                "displayed_ask": displayed_ask,
+                "quantity": economics.quantity,
+                "effective_price": economics.effective_price,
+                "raw_fee": economics.raw_fee,
+                "rounded_trade_fee": economics.rounded_trade_fee,
+                "balance_change_micros": economics.balance_change_micros,
+            }
+            for displayed_ask, economics in level_economics
+        ]
         return self.store.resolve_political_experimental_pending_signal(
             cohort_id=self.cohort_id,
             signal_id=signal_id,
             replay_sequence=replay_sequence,
             attempted_at=attempted_at,
             quantity=quantity,
-            debit_micros=economics.debit_micros,
+            debit_micros=debit_micros,
             max_total_reserved_micros=max_total_reserved_micros,
             max_position_reserved_micros=max_position_reserved_micros,
             max_open_positions=max_open_positions,
             economics={
-                "effective_price": economics.effective_price,
-                "raw_fee": economics.raw_fee,
-                "rounded_trade_fee": economics.rounded_trade_fee,
-                "balance_change_micros": economics.balance_change_micros,
+                "levels": levels,
+                "balance_change_micros": -debit_micros,
             },
         )

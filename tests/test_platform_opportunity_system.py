@@ -472,6 +472,91 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     }
 
 
+def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_asks(
+    tmp_path,
+):
+    """A causal entry may walk several canonical asks, never raw depth."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(
+        store=store, cohort_id="cohort:multi-level"
+    )
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {
+            "bids": [[0.39, 100]],
+            "asks": [[0.40, 50], [0.50, 100]],
+        },
+        "no": {"bids": [[0.49, 100]], "asks": [[0.61, 100]]},
+    }
+    signal_event = store.record_replay_observation(
+        cohort_id="cohort:multi-level",
+        contract_id="kalshi:KXMULTI",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:multi-level",
+        replay_sequence=signal_event["event"]["sequence"],
+        event_id="event-1",
+        milestone_id="milestone-1",
+        contract_id="kalshi:KXMULTI",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=signal_event["state_hash"],
+        fee_hash=signal_event["fee_hash"],
+        features={},
+    )
+    fill_event = store.record_replay_observation(
+        cohort_id="cohort:multi-level",
+        contract_id="kalshi:KXMULTI",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+
+    result = ledger.resolve_pending_signal(
+        signal_id="signal:multi-level",
+        replay_sequence=fill_event["event"]["sequence"],
+        attempted_at=NOW + timedelta(seconds=1),
+    )
+
+    assert result["outcome"] == "filled"
+    assert result["payload"]["quantity"] == 15
+    assert result["payload"]["debit_micros"] == 7_420_000
+    assert result["payload"]["economics"]["levels"] == [
+        {
+            "displayed_ask": "0.4",
+            "quantity": 5,
+            "effective_price": "0.41",
+            "raw_fee": "0.084665",
+            "rounded_trade_fee": "0.0847",
+            "balance_change_micros": -2_140_000,
+        },
+        {
+            "displayed_ask": "0.5",
+            "quantity": 10,
+            "effective_price": "0.51",
+            "raw_fee": "0.17493",
+            "rounded_trade_fee": "0.175",
+            "balance_change_micros": -5_280_000,
+        },
+    ]
+
+
 def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill(
     tmp_path,
 ):
