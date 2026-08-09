@@ -845,11 +845,16 @@ class PlatformOpportunitySystem:
         request_started_at: datetime | None,
         received_at: datetime | None,
         fee_schedule: VenueFeeSchedule,
+        book_received_at: datetime | None = None,
+        fee_request_started_at: datetime | None = None,
+        fee_received_at: datetime | None = None,
     ) -> dict:
         """Durably link canonical book/fee evidence before any scoring occurs."""
         observed = _aware(observed_at) or observed_at
         request_started = _aware(request_started_at)
         received = _aware(received_at)
+        fee_request_started = _aware(fee_request_started_at)
+        fee_received = _aware(fee_received_at)
         return self.store.record_replay_observation(
             cohort_id=self.cohort_id,
             contract_id=contract_id,
@@ -857,15 +862,18 @@ class PlatformOpportunitySystem:
             fee_schedule={
                 "schema_version": 1,
                 **asdict(fee_schedule),
-                # A fee metadata read is complete before its paired book is
-                # admitted.  Retain that receipt fact rather than letting a
-                # later paper fill silently infer fee-fetch timing.
-                "fetched_at": received or observed,
+                # This is the actual fee read receipt.  It is intentionally
+                # separate from the book receipt: the sampler reads the book
+                # first and may fetch or reuse fee metadata afterward.
+                "fetched_at": fee_received or fee_schedule.observed_at,
             },
             lock_phase=self._observation_lock_phase(contract_id, observed),
             observed_at=observed,
             request_started_at=request_started,
             received_at=received,
+            book_received_at=_aware(book_received_at),
+            fee_request_started_at=fee_request_started,
+            fee_received_at=fee_received,
         )
 
     def replay_book_for_state_hash(

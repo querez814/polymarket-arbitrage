@@ -205,7 +205,9 @@ class TradingBotWithDashboard:
         self._platform_catalog_task = None
         self._platform_hot_assignments = ()
         self._platform_catalog_refreshed_at: datetime | None = None
-        self._platform_fee_cache: dict[str, tuple[VenueFeeSchedule, float]] = {}
+        self._platform_fee_cache: dict[
+            str, tuple[VenueFeeSchedule, float, datetime, datetime]
+        ] = {}
         self._platform_book_read_failures = 0
         self._platform_fee_failures = 0
         self._platform_milestone_cache: dict[str, tuple[float, tuple]] = {}
@@ -1151,8 +1153,8 @@ class TradingBotWithDashboard:
             async def fee_schedule(assignment):
                 cached = self._platform_fee_cache.get(assignment.contract_id)
                 if cached is not None and cached[1] > time.monotonic():
-                    return cached[0]
-                observed_at = datetime.now(timezone.utc)
+                    return cached[0], cached[2], cached[3]
+                fee_request_started_at = datetime.now(timezone.utc)
                 if assignment.venue == "polymarket":
                     if self._platform_poly_client is None:
                         raise RuntimeError("Polymarket research client unavailable")
@@ -1165,7 +1167,7 @@ class TradingBotWithDashboard:
                         market.condition_id
                     )
                     schedule = polymarket_fee_schedule_from_market_info(
-                        info, observed_at=observed_at
+                        info, observed_at=datetime.now(timezone.utc)
                     )
                 else:
                     if self._platform_kalshi_client is None:
@@ -1176,14 +1178,17 @@ class TradingBotWithDashboard:
                     schedule = kalshi_fee_schedule_from_metadata(
                         fee_type=metadata.fee_type,
                         multiplier=metadata.fee_multiplier,
-                        observed_at=observed_at,
+                        observed_at=datetime.now(timezone.utc),
                         source=metadata.source,
                     )
+                fee_received_at = datetime.now(timezone.utc)
                 self._platform_fee_cache[assignment.contract_id] = (
                     schedule,
                     time.monotonic() + 300.0,
+                    fee_request_started_at,
+                    fee_received_at,
                 )
-                return schedule
+                return schedule, fee_request_started_at, fee_received_at
 
             async def fetch(assignment):
                 request_started_at = datetime.now(timezone.utc)
@@ -1216,10 +1221,22 @@ class TradingBotWithDashboard:
                         assignment.contract_id,
                         exc_info=True,
                     )
-                    return assignment, None, None, None, None
+                    return assignment, None, None, None, None, None, None, None
                 try:
-                    schedule = await fee_schedule(assignment)
-                    return assignment, book, schedule, request_started_at, received_at
+                    schedule, fee_request_started_at, fee_received_at = (
+                        await fee_schedule(assignment)
+                    )
+                    evidence_received_at = max(received_at, fee_received_at)
+                    return (
+                        assignment,
+                        book,
+                        schedule,
+                        request_started_at,
+                        received_at,
+                        fee_request_started_at,
+                        fee_received_at,
+                        evidence_received_at,
+                    )
                 except Exception:
                     self._platform_fee_failures += 1
                     self._record_platform_observation_failure(
@@ -1235,10 +1252,19 @@ class TradingBotWithDashboard:
                         assignment.contract_id,
                         exc_info=True,
                     )
-                    return assignment, None, None, None, None
+                    return assignment, None, None, None, None, None, None, None
 
             results = await asyncio.gather(*(fetch(item) for item in due))
-            for assignment, book, schedule, request_started_at, received_at in results:
+            for (
+                assignment,
+                book,
+                schedule,
+                request_started_at,
+                book_received_at,
+                fee_request_started_at,
+                fee_received_at,
+                received_at,
+            ) in results:
                 next_due[assignment.contract_id] = time.monotonic() + max(
                     self.config.platform_opportunity.hot_poll_seconds,
                     assignment.interval_seconds,
@@ -1254,6 +1280,9 @@ class TradingBotWithDashboard:
                         request_started_at=request_started_at,
                         received_at=received_at,
                         fee_schedule=schedule,
+                        book_received_at=book_received_at,
+                        fee_request_started_at=fee_request_started_at,
+                        fee_received_at=fee_received_at,
                     )
 
     def _record_platform_observation_failure(

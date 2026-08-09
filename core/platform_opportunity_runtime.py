@@ -29,6 +29,9 @@ class BookEnvelope:
     request_started_at: datetime | None
     received_at: datetime | None
     fee_schedule: VenueFeeSchedule
+    book_received_at: datetime | None = None
+    fee_request_started_at: datetime | None = None
+    fee_received_at: datetime | None = None
 
 
 class PlatformOpportunityWorker:
@@ -77,6 +80,9 @@ class PlatformOpportunityWorker:
         request_started_at: datetime | None = None,
         received_at: datetime | None = None,
         fee_schedule: VenueFeeSchedule,
+        book_received_at: datetime | None = None,
+        fee_request_started_at: datetime | None = None,
+        fee_received_at: datetime | None = None,
     ) -> bool:
         """Never wait in a feed/execution callback; drop visibly if saturated."""
         try:
@@ -88,6 +94,9 @@ class PlatformOpportunityWorker:
                     request_started_at,
                     received_at,
                     fee_schedule,
+                    book_received_at,
+                    fee_request_started_at,
+                    fee_received_at,
                 )
             )
             return True
@@ -152,6 +161,9 @@ class PlatformOpportunityWorker:
                             request_started_at=envelope.request_started_at,
                             received_at=envelope.received_at,
                             fee_schedule=envelope.fee_schedule,
+                            book_received_at=envelope.book_received_at,
+                            fee_request_started_at=envelope.fee_request_started_at,
+                            fee_received_at=envelope.fee_received_at,
                         )
                         replay_book = getattr(
                             self.system, "replay_book_for_state_hash", None

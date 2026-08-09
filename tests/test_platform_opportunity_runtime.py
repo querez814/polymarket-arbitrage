@@ -219,11 +219,52 @@ async def test_worker_persists_replay_event_before_scoring_an_observation(tmp_pa
         "fee_hash": event["fee_hash"],
         "request_started_at": "2026-08-09T12:00:00+00:00",
         "received_at": "2026-08-09T12:00:01+00:00",
+        "book_received_at": None,
+        "book_latency_ms": 1000,
+        "fee_request_started_at": None,
+        "fee_received_at": None,
+        "fee_latency_ms": None,
         "venue_timestamp": None,
         "timestamp_provenance": "local_request_receipt",
     }
     assert system.store.replay_book_state(event["state_hash"])["yes"]["bids"] == []
     assert system.store.replay_fee_schedule(event["fee_hash"])["venue"] == "polymarket"
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_independent_book_and_fee_read_timing(tmp_path):
+    """Replay retains real fee provenance and later combined evidence receipt."""
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    worker = PlatformOpportunityWorker(system)
+    book_request = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    book_receipt = book_request.replace(second=1)
+    fee_request = book_request.replace(second=2)
+    fee_receipt = book_request.replace(second=4)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, fee_receipt, "test")
+
+    await worker.start()
+    assert worker.submit_book(
+        "polymarket:timed-evidence",
+        OrderBook(market_id="timed-evidence"),
+        observed_at=fee_receipt,
+        request_started_at=book_request,
+        received_at=fee_receipt,
+        book_received_at=book_receipt,
+        fee_request_started_at=fee_request,
+        fee_received_at=fee_receipt,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+
+    [event] = system.store.replay_observation_events(cohort_id=system.cohort_id)
+    assert event["received_at"] == "2026-08-09T12:00:04+00:00"
+    assert event["book_received_at"] == "2026-08-09T12:00:01+00:00"
+    assert event["book_latency_ms"] == 1000
+    assert event["fee_request_started_at"] == "2026-08-09T12:00:02+00:00"
+    assert event["fee_received_at"] == "2026-08-09T12:00:04+00:00"
+    assert event["fee_latency_ms"] == 2000
+    fee = system.store.replay_fee_schedule(event["fee_hash"])
+    assert fee["fetched_at"] == "2026-08-09T12:00:04+00:00"
 
 
 @pytest.mark.asyncio

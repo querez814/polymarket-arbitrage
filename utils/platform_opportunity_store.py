@@ -178,6 +178,11 @@ class PlatformOpportunityStore:
                     fee_hash TEXT NOT NULL REFERENCES normalized_fee_schedules(fee_hash),
                     request_started_at TEXT,
                     received_at TEXT NOT NULL,
+                    book_received_at TEXT,
+                    book_latency_ms INTEGER,
+                    fee_request_started_at TEXT,
+                    fee_received_at TEXT,
+                    fee_latency_ms INTEGER,
                     venue_timestamp TEXT,
                     timestamp_provenance TEXT NOT NULL,
                     PRIMARY KEY(cohort_id, sequence)
@@ -265,6 +270,24 @@ class PlatformOpportunityStore:
                     "UPDATE platform_observations SET first_observed_at = last_observed_at "
                     "WHERE first_observed_at IS NULL"
                 )
+            replay_columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(platform_replay_observation_events)"
+                )
+            }
+            for name, definition in (
+                ("book_received_at", "TEXT"),
+                ("book_latency_ms", "INTEGER"),
+                ("fee_request_started_at", "TEXT"),
+                ("fee_received_at", "TEXT"),
+                ("fee_latency_ms", "INTEGER"),
+            ):
+                if name not in replay_columns:
+                    self._connection.execute(
+                        "ALTER TABLE platform_replay_observation_events "
+                        f"ADD COLUMN {name} {definition}"
+                    )
 
     def close(self) -> None:
         with self._lock:
@@ -786,6 +809,9 @@ class PlatformOpportunityStore:
         observed_at: datetime,
         request_started_at: datetime | None,
         received_at: datetime | None,
+        book_received_at: datetime | None = None,
+        fee_request_started_at: datetime | None = None,
+        fee_received_at: datetime | None = None,
     ) -> dict[str, Any]:
         """Atomically retain canonical evidence before a book is scored.
 
@@ -806,6 +832,24 @@ class PlatformOpportunityStore:
         receipt = received_at or observed_at
         receipt_iso = _utc_iso(receipt)
         request_iso = _utc_iso(request_started_at) if request_started_at else None
+        book_receipt_iso = _utc_iso(book_received_at) if book_received_at else None
+        fee_request_iso = (
+            _utc_iso(fee_request_started_at) if fee_request_started_at else None
+        )
+        fee_receipt_iso = _utc_iso(fee_received_at) if fee_received_at else None
+
+        def latency_ms(start: datetime | None, end: datetime | None) -> int | None:
+            if start is None or end is None:
+                return None
+            milliseconds = int((end - start).total_seconds() * 1000)
+            if milliseconds < 0:
+                raise ValueError("replay request receipt timing is not causal")
+            return milliseconds
+
+        book_latency_ms = latency_ms(
+            request_started_at, book_received_at or received_at
+        )
+        fee_latency_ms = latency_ms(fee_request_started_at, fee_received_at)
         with self._lock, self._connection:
             connection = self._connection
             status = connection.execute(
@@ -897,8 +941,9 @@ class PlatformOpportunityStore:
             connection.execute(
                 "INSERT INTO platform_replay_observation_events "
                 "(cohort_id, sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
-                "request_started_at, received_at, venue_timestamp, timestamp_provenance) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                "request_started_at, received_at, book_received_at, book_latency_ms, "
+                "fee_request_started_at, fee_received_at, fee_latency_ms, venue_timestamp, "
+                "timestamp_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
                 (
                     cohort_id,
                     sequence,
@@ -909,6 +954,11 @@ class PlatformOpportunityStore:
                     fee_hash,
                     request_iso,
                     receipt_iso,
+                    book_receipt_iso,
+                    book_latency_ms,
+                    fee_request_iso,
+                    fee_receipt_iso,
+                    fee_latency_ms,
                     "local_request_receipt" if request_iso else "local_observed_at",
                 ),
             )
@@ -921,6 +971,11 @@ class PlatformOpportunityStore:
                 "fee_hash": fee_hash,
                 "request_started_at": request_iso,
                 "received_at": receipt_iso,
+                "book_received_at": book_receipt_iso,
+                "book_latency_ms": book_latency_ms,
+                "fee_request_started_at": fee_request_iso,
+                "fee_received_at": fee_receipt_iso,
+                "fee_latency_ms": fee_latency_ms,
                 "venue_timestamp": None,
                 "timestamp_provenance": (
                     "local_request_receipt" if request_iso else "local_observed_at"
@@ -941,7 +996,9 @@ class PlatformOpportunityStore:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
-                "request_started_at, received_at, venue_timestamp, timestamp_provenance "
+                "request_started_at, received_at, book_received_at, book_latency_ms, "
+                "fee_request_started_at, fee_received_at, fee_latency_ms, venue_timestamp, "
+                "timestamp_provenance "
                 "FROM platform_replay_observation_events WHERE cohort_id = ? "
                 "ORDER BY sequence",
                 (cohort_id,),

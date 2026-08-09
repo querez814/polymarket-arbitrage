@@ -15,6 +15,7 @@ from core.platform_opportunities import (
     MonitoringAssignment,
     PlatformOpportunitySystem,
     PoliticalWatchPolicy,
+    VenueFeeSchedule,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
 from core.production_runtime import ProductionArbitrageRuntime
@@ -136,8 +137,21 @@ async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
         request_started_at,
         received_at,
         fee_schedule,
+        book_received_at,
+        fee_request_started_at,
+        fee_received_at,
     ):
-        submitted.append((contract_id, observed_at, request_started_at, received_at))
+        submitted.append(
+            (
+                contract_id,
+                observed_at,
+                request_started_at,
+                received_at,
+                book_received_at,
+                fee_request_started_at,
+                fee_received_at,
+            )
+        )
         bot._running = False
         return True
 
@@ -165,8 +179,14 @@ async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
             interval_seconds=0.0,
         ),
     )
+    cached_at = datetime.now(timezone.utc)
     bot._platform_fee_cache = {
-        assignment.contract_id: (object(), float("inf"))
+        assignment.contract_id: (
+            VenueFeeSchedule("kalshi", "none", 0, 1, 0, cached_at, "test"),
+            float("inf"),
+            cached_at,
+            cached_at,
+        )
         for assignment in bot._platform_hot_assignments
     }
     bot.config.platform_opportunity.hot_poll_seconds = 0.0
@@ -192,8 +212,18 @@ async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
 
     assert calls == 1
     assert [item[0] for item in submitted] == ["kalshi:later"]
-    _, observed_at, request_started_at, received_at = submitted[0]
+    (
+        _,
+        observed_at,
+        request_started_at,
+        received_at,
+        book_received_at,
+        fee_request_started_at,
+        fee_received_at,
+    ) = submitted[0]
     assert request_started_at <= received_at == observed_at
+    assert book_received_at <= received_at
+    assert fee_request_started_at <= fee_received_at <= received_at
     assert dashboard_state.platform_opportunity["status"] == "degraded"
     system.store.close()
 
