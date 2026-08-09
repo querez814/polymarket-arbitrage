@@ -2417,6 +2417,14 @@ class PlatformOpportunitySystem:
         )
         clusters = {row["event_cluster_id"] for row in intents}
         reasons: list[str] = []
+        replay_status = self.store.replay_evidence_status(cohort_id=self.cohort_id)
+        # A cohort whose normalized replay chain is incomplete or over capacity
+        # cannot support a research threshold conclusion.  Keep this check in
+        # the report itself (rather than only at signal creation) so a caller
+        # reading an older cohort after a later failure also sees the durable,
+        # sticky evidence boundary.
+        if not replay_status["cohort_valid"]:
+            reasons.append("replay_evidence_invalid")
         policy = self.acceptance_policy
         if len(clusters) < policy.min_event_clusters:
             reasons.append(f"fewer_than_{policy.min_event_clusters}_event_clusters")

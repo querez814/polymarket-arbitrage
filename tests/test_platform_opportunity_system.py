@@ -304,6 +304,35 @@ def test_invalid_replay_cohort_cannot_count_or_score_later_observations(tmp_path
     assert system.store.intent_rows(cohort_id=system.cohort_id) == []
 
 
+def test_invalid_replay_cohort_fails_closed_in_acceptance_report(tmp_path):
+    """A capacity-invalid replay chain cannot pass research acceptance."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db", replay_byte_cap=1)
+    system = PlatformOpportunitySystem(store=store)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    fee = {"schema_version": 1, "venue": "kalshi", "fee_type": "none"}
+
+    with pytest.raises(ReplayEvidenceCapacityError, match="byte cap"):
+        store.record_replay_observation(
+            cohort_id=system.cohort_id,
+            contract_id="kalshi:KXTEST",
+            normalized_book=book,
+            fee_schedule=fee,
+            lock_phase="hot",
+            observed_at=NOW,
+            request_started_at=NOW,
+            received_at=NOW,
+        )
+
+    report = system.acceptance_report("directional_reaction")
+
+    assert report.research_threshold_passed is False
+    assert "replay_evidence_invalid" in report.reasons
+
+
 def test_replay_evidence_cap_accounts_for_sqlite_store_and_wal_bytes(tmp_path):
     """The configured cap is physical store capacity, not payload-only capacity."""
     path = tmp_path / "opportunities.db"
