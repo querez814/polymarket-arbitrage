@@ -820,13 +820,38 @@ class PlatformOpportunitySystem:
         for contract in self._contracts.values():
             if _is_political_lock_candidate(contract, now=now, policy=policy):
                 candidates[contract.event_id].append(contract)
-        ranked = sorted(
-            candidates.items(),
-            key=lambda item: (
-                -max(contract.volume + contract.liquidity for contract in item[1]),
-                item[0],
-            ),
-        )
+
+        def automatic_event_rank(
+            item: tuple[str, list[PlatformContract]],
+        ) -> tuple[datetime, int, float, str]:
+            """Rank reviewed event windows before commercial metadata.
+
+            Each candidate has already passed exact-primary occurrence
+            admission.  The nearest occurrence takes precedence so a large,
+            far-future market cannot crowd out tomorrow's collection window.
+            Among equally near events, more complete reviewed milestone
+            source/type metadata wins; liquidity and volume remain only the
+            final automatic tiebreaker before a stable event identifier.
+            """
+            event_id, contracts = item
+            event_start_at = min(
+                contract.event_start_at
+                for contract in contracts
+                if contract.event_start_at is not None
+            )
+            reviewed_metadata = max(
+                int(contract.milestone_source_id is not None)
+                + int(contract.milestone_type is not None)
+                + int(contract.milestone_category is not None)
+                + int(contract.milestone_provenance is not None)
+                for contract in contracts
+            )
+            commercial_score = max(
+                contract.volume + contract.liquidity for contract in contracts
+            )
+            return (event_start_at, -reviewed_metadata, -commercial_score, event_id)
+
+        ranked = sorted(candidates.items(), key=automatic_event_rank)
         # Pins are reviewed event identities, not a separate eligibility path:
         # they must first pass the same active/political/exact-milestone/window
         # gates above.  Once eligible they consume a normal watchlist slot,

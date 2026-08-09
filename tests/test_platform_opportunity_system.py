@@ -401,6 +401,72 @@ def test_reviewed_pinned_kalshi_event_beats_automatic_volume_ranking(tmp_path):
     ] == ["KXTRUMPMENTION-26AUG10"]
 
 
+def test_automatic_political_selection_prefers_nearest_event_before_volume(tmp_path):
+    """A far, liquid event cannot displace tomorrow's reviewed occurrence."""
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=1,
+            max_contracts_per_event=1,
+            lookahead=timedelta(days=7),
+        ),
+    )
+    tomorrow = NOW + timedelta(days=1)
+    far = NOW + timedelta(days=6, hours=23)
+
+    refresh = system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXTOMORROW-26AUG-T1",
+                "Will the President speak tomorrow?",
+                event_ticker="KXTOMORROW-26AUG",
+                volume=100,
+            ),
+            _kalshi(
+                "KXFAR-26AUG-T1",
+                "Will the President speak next week?",
+                event_ticker="KXFAR-26AUG",
+                volume=1_000_000,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "tomorrow-speech",
+                "President remarks tomorrow",
+                "Politics",
+                "political_speech",
+                tomorrow,
+                tomorrow + timedelta(minutes=30),
+                ("KXTOMORROW-26AUG",),
+                ("KXTOMORROW-26AUG",),
+                "reviewed-calendar",
+            ),
+            KalshiMilestone(
+                "far-speech",
+                "President remarks next week",
+                "Politics",
+                "political_speech",
+                far,
+                far + timedelta(minutes=30),
+                ("KXFAR-26AUG",),
+                ("KXFAR-26AUG",),
+                "reviewed-calendar",
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    assert [
+        item.contract_id
+        for item in refresh.monitoring.warm
+        if item.reason == "political_event_lock"
+    ] == ["kalshi:KXTOMORROW-26AUG-T1"]
+    assert [
+        lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)
+    ] == ["KXTOMORROW-26AUG"]
+
+
 def test_polymarket_settlement_metadata_never_creates_a_political_lock(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(
