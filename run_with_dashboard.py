@@ -846,7 +846,6 @@ class TradingBotWithDashboard:
         elif self.data_feed is not None:
             poly_markets = list(self.data_feed._markets.values())
         ordinary_kalshi = []
-        multivariate_kalshi = []
         kalshi_not_applicable = not self.config.mode.kalshi_enabled
         ordinary_status = {
             "complete": kalshi_not_applicable,
@@ -856,7 +855,6 @@ class TradingBotWithDashboard:
                 else "dedicated_source_unavailable"
             ),
         }
-        multivariate_status = dict(ordinary_status)
         if self._platform_kalshi_client is not None:
             ordinary_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
                 status="open",
@@ -867,20 +865,9 @@ class TradingBotWithDashboard:
                 wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
             )
             ordinary_status = dict(self._platform_kalshi_client.last_catalog_status)
-            multivariate_kalshi = await self._platform_kalshi_client.list_full_market_catalog(
-                status="open",
-                mve_filter="only",
-                max_markets=self.config.platform_opportunity.catalog_max_markets_per_venue,
-                max_pages=self.config.platform_opportunity.catalog_max_pages,
-                max_decoded_bytes=self.config.platform_opportunity.catalog_max_decoded_bytes,
-                wall_time_seconds=self.config.platform_opportunity.catalog_wall_time_seconds,
-            )
-            multivariate_status = dict(self._platform_kalshi_client.last_catalog_status)
         elif self._kalshi_markets:
             ordinary_kalshi = list(self._kalshi_markets)
-        kalshi_by_ticker = {
-            market.ticker: market for market in [*ordinary_kalshi, *multivariate_kalshi]
-        }
+        kalshi_by_ticker = {market.ticker: market for market in ordinary_kalshi}
         refresh = await worker.refresh_catalog(
             polymarket_markets=poly_markets,
             kalshi_markets=list(kalshi_by_ticker.values()),
@@ -890,7 +877,6 @@ class TradingBotWithDashboard:
                 for status in (
                     poly_catalog_status,
                     ordinary_status,
-                    multivariate_status,
                 )
             ),
             observed_at=now,
@@ -925,17 +911,16 @@ class TradingBotWithDashboard:
                     "revisions_written": refresh.revisions_written,
                     "polymarket": len(poly_markets),
                     "kalshi": len(kalshi_by_ticker),
+                    "multivariate_requests": 0,
                     "source_status": {
                         "polymarket": poly_catalog_status,
                         "kalshi_ordinary": ordinary_status,
-                        "kalshi_multivariate": multivariate_status,
                     },
                     "possibly_truncated": not all(
                         bool(status.get("complete"))
                         for status in (
                             poly_catalog_status,
                             ordinary_status,
-                            multivariate_status,
                         )
                     ),
                 },

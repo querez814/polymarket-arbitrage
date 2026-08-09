@@ -11,6 +11,7 @@ from core.cross_platform_arb import MarketPair
 from core.event_contracts import EventPairLink
 from core.event_lane import EventLanePolicy, EventLaneScheduler
 from core.pair_monitoring import PairTierMonitor
+from dashboard.server import dashboard_state
 from utils.config_loader import BotConfig
 from utils.task_supervision import RestartingTaskSupervisor
 from polymarket_client.models import (
@@ -20,6 +21,7 @@ from polymarket_client.models import (
     TokenOrderBook,
     TokenType,
 )
+from kalshi_client.models import KalshiMarket
 
 
 @pytest.mark.asyncio
@@ -470,8 +472,6 @@ async def test_bot_shutdown_continues_when_no_active_paper_run_exists(tmp_path):
 
 @pytest.mark.asyncio
 async def test_shadow_startup_failure_degrades_without_aborting_bot(monkeypatch):
-    from dashboard.server import dashboard_state
-
     bot = TradingBotWithDashboard(BotConfig())
 
     async def fail():
@@ -487,6 +487,51 @@ async def test_shadow_startup_failure_degrades_without_aborting_bot(monkeypatch)
         "research disk unavailable"
         in dashboard_state.platform_opportunity["last_error"]
     )
+
+
+@pytest.mark.asyncio
+async def test_platform_catalog_uses_only_ordinary_kalshi_inventory():
+    """Political discovery must not fetch or persist the MVE-only inventory."""
+
+    class KalshiCatalog:
+        def __init__(self):
+            self.calls = []
+            self.last_catalog_status = {"complete": True, "stop_reason": "complete"}
+
+        async def list_full_market_catalog(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                KalshiMarket(
+                    ticker="KXPOL-1",
+                    event_ticker="KXPOL",
+                    series_ticker="KXPOL",
+                    title="Political event",
+                    event_title="Political event",
+                )
+            ]
+
+    class Worker:
+        async def refresh_catalog(self, **kwargs):
+            self.received = kwargs
+            return SimpleNamespace(
+                catalog_contracts=len(kwargs["kalshi_markets"]),
+                revisions_written=1,
+                monitoring=SimpleNamespace(hot=(), warm=(), budget_excluded=()),
+            )
+
+    bot = TradingBotWithDashboard(BotConfig())
+    bot._platform_kalshi_client = KalshiCatalog()
+    bot.platform_opportunity_worker = Worker()
+
+    await bot._refresh_platform_catalog()
+
+    assert [call["mve_filter"] for call in bot._platform_kalshi_client.calls] == [
+        "exclude"
+    ]
+    assert [market.ticker for market in bot.platform_opportunity_worker.received["kalshi_markets"]] == [
+        "KXPOL-1"
+    ]
+    assert dashboard_state.platform_opportunity["catalog"]["multivariate_requests"] == 0
 
 
 @pytest.mark.asyncio
