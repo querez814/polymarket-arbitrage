@@ -301,6 +301,25 @@ class PoliticalEventLock:
     locked_until: datetime
     selected_at: datetime
     contract_ids: tuple[str, ...]
+    # Preserve the exact reviewed evidence that selected this event.  The
+    # current catalog is deliberately bounded and may no longer retain a
+    # selected contract when the lock is restored after a partial refresh.
+    selected_contract: tuple[tuple[str, str | None], ...] = ()
+
+
+def _selected_contract_metadata(
+    contract: PlatformContract,
+) -> tuple[tuple[str, str | None], ...]:
+    """Return the auditable reviewed fields for a political lock selection."""
+    return (
+        ("contract_id", contract.contract_id),
+        ("milestone_id", contract.milestone_id),
+        ("milestone_category", contract.milestone_category),
+        ("milestone_type", contract.milestone_type),
+        ("milestone_source_id", contract.milestone_source_id),
+        ("milestone_relationship_role", contract.milestone_relationship_role),
+        ("milestone_provenance", contract.milestone_provenance),
+    )
 
 
 def _event_pin_id(contract: PlatformContract) -> str:
@@ -813,6 +832,23 @@ class PlatformOpportunitySystem:
             return
         retained: dict[str, PoliticalEventLock] = {}
         for payload in self.store.active_political_event_locks(now=now):
+            stored_selected_contract = payload.get("selected_contract")
+            if isinstance(stored_selected_contract, Mapping):
+                selected_contract = tuple(
+                    (
+                        str(key),
+                        value if isinstance(value, str) or value is None else str(value),
+                    )
+                    for key, value in stored_selected_contract.items()
+                )
+            elif isinstance(stored_selected_contract, list):
+                selected_contract = tuple(
+                    (str(item[0]), item[1] if item[1] is None else str(item[1]))
+                    for item in stored_selected_contract
+                    if isinstance(item, list) and len(item) == 2
+                )
+            else:
+                selected_contract = ()
             lock = PoliticalEventLock(
                 event_id=str(payload["event_id"]),
                 event_title=str(payload["event_title"]),
@@ -845,6 +881,7 @@ class PlatformOpportunitySystem:
                     _aware(datetime.fromisoformat(str(payload["selected_at"]))) or now
                 ),
                 contract_ids=tuple(str(item) for item in payload["contract_ids"]),
+                selected_contract=selected_contract,
             )
             current = [
                 self._contracts[contract_id]
@@ -949,6 +986,7 @@ class PlatformOpportunitySystem:
                     contract.contract_id
                     for contract in contracts[: policy.max_contracts_per_event]
                 ),
+                selected_contract=_selected_contract_metadata(contracts[0]),
             )
             retained[event_id] = lock
             self.store.upsert_political_event_lock(lock)
@@ -2286,6 +2324,8 @@ class PlatformOpportunitySystem:
                     "event_start_at": lock.event_start_at.isoformat(),
                     "event_end_at": lock.event_end_at.isoformat(),
                     "locked_until": lock.locked_until.isoformat(),
+                    "selected_at": lock.selected_at.isoformat(),
+                    "selected_contract": dict(lock.selected_contract),
                     "state": state,
                     "contract_ids": list(lock.contract_ids),
                     "sampled_contract_ids": [

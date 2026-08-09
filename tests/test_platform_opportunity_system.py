@@ -1258,6 +1258,18 @@ def test_exact_primary_milestone_already_live_locks_and_restores_after_restart(
         ("kalshi:KXTRUMPSAY-26AUG10-A", "event_live")
     ]
 
+    [lock] = resumed.dashboard_summary()["political_event_locks"]
+    assert lock["selected_at"] == NOW.isoformat()
+    assert lock["selected_contract"] == {
+        "contract_id": "kalshi:KXTRUMPSAY-26AUG10-A",
+        "milestone_id": "trump-say-live",
+        "milestone_category": "Politics",
+        "milestone_type": "speech",
+        "milestone_source_id": None,
+        "milestone_relationship_role": "primary",
+        "milestone_provenance": "kalshi.milestone:trump-say-live:source_id=",
+    }
+
 
 def test_only_machine_checkable_structure_authorizes_relative_value(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
