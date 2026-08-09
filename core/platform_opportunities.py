@@ -1281,7 +1281,11 @@ class PlatformOpportunitySystem:
         )
         if not aligned or features.spread > 0.08:
             return ObservationResult(relation_result.intents, tuple(marks))
-        direction = "yes" if momentum > 0 else "no"
+        # The same signed composite that cleared the entry threshold chooses
+        # direction.  Momentum is deliberately only one input: deriving the
+        # side from it alone could emit NO after strongly positive imbalance,
+        # flow, or lead-lag evidence had qualified a YES reaction.
+        direction = "yes" if composite > 0 else "no"
         last = self._last_intent_at.get((contract_id, direction))
         if last is not None and observed_at - last < timedelta(minutes=10):
             return ObservationResult(relation_result.intents, tuple(marks))

@@ -742,6 +742,35 @@ def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
     assert system.store.intent_rows(lane="directional_reaction") == []
 
 
+def test_directional_intent_uses_signed_composite_not_momentum_alone(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    close = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    system.set_fee_schedule("polymarket:p1", _zero_fee())
+
+    system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.51, ask=0.53, bid_size=100, ask_size=100),
+        observed_at=NOW,
+    )
+    emitted = system.observe_book(
+        "polymarket:p1",
+        # Mid-price momentum is negative (-0.2¢), but the strongly positive
+        # imbalance produces a positive qualifying composite (+0.0127).
+        _book("p1", bid=0.508, ask=0.528, bid_size=1_000, ask_size=10),
+        observed_at=NOW + timedelta(seconds=5),
+    )
+
+    assert len(emitted.intents) == 1
+    assert emitted.intents[0].direction == "yes"
+
+
 def test_zero_exit_capacity_records_insufficient_depth_marks_without_crashing(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db")
