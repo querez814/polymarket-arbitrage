@@ -150,6 +150,43 @@ def test_political_experimental_paper_account_is_idempotent_and_cent_exact(tmp_p
     ]
 
 
+def test_political_paper_ordinary_account_trade_economics_match_binding_fixture(
+    tmp_path,
+):
+    """Political paper uses per-fill Kalshi fees and conservative cent balances."""
+    ledger = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        cohort_id="political-v2-economics",
+    )
+
+    entry = ledger.entry_economics(quantity=10, displayed_ask="0.40")
+    assert entry.effective_price == "0.41"
+    assert entry.raw_fee == "0.16933"
+    assert entry.rounded_trade_fee == "0.1694"
+    assert entry.balance_change_micros == -4_270_000
+
+    first_exit = ledger.exit_economics(quantity=4, displayed_bid="0.55")
+    assert first_exit.effective_price == "0.54"
+    assert first_exit.raw_fee == "0.069552"
+    assert first_exit.rounded_trade_fee == "0.0696"
+    assert first_exit.balance_change_micros == 2_090_000
+    assert (
+        first_exit.proportional_basis_micros(
+            total_basis_micros=4_270_000, total_quantity=10
+        )
+        == 1_708_000
+    )
+
+    final_exit = ledger.exit_economics(quantity=6, displayed_bid="0.55")
+    assert final_exit.balance_change_micros == 3_130_000
+    assert (
+        first_exit.balance_change_micros
+        + final_exit.balance_change_micros
+        - entry.debit_micros
+        == 950_000
+    )
+
+
 def test_political_paper_account_initialization_serializes_connections_and_rejects_drift(
     tmp_path,
 ):
