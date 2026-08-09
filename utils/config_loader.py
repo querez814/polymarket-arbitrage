@@ -279,6 +279,9 @@ class PlatformOpportunityConfig:
         "disabled"
     )
     max_shadow_notional: float = 100.0
+    # Bounded normalized replay storage; capacity exhaustion invalidates the
+    # affected cohort rather than silently dropping causal book evidence.
+    replay_evidence_byte_cap: int = 4 * 1024**3
     min_event_clusters: int = 50
     min_intents: int = 200
     max_research_drawdown: float = 50.0

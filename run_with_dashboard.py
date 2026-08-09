@@ -701,7 +701,10 @@ class TradingBotWithDashboard:
         }
         if not policy.enabled:
             return
-        self.platform_opportunity_store = PlatformOpportunityStore(policy.catalog_path)
+        self.platform_opportunity_store = PlatformOpportunityStore(
+            policy.catalog_path,
+            replay_byte_cap=policy.replay_evidence_byte_cap,
+        )
         self.platform_opportunity_system = PlatformOpportunitySystem(
             store=self.platform_opportunity_store,
             monitoring_policy=MonitoringPolicy(

@@ -2537,6 +2537,10 @@ class PlatformOpportunitySystem:
                     "local_request_receipt" if all_timed else "local_observed_at"
                 ),
             },
+            "replay_evidence": {
+                **self.store.replay_evidence_counts(),
+                **self.store.replay_evidence_status(cohort_id=self.cohort_id),
+            },
             "observation_failures": {
                 contract_id: observation_failures[contract_id]
                 for contract_id in sorted(self._sampled_contract_ids)

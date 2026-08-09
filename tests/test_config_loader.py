@@ -123,6 +123,7 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     )
     assert config.platform_opportunity.relative_value_authority == "disabled"
     assert config.platform_opportunity.slippage_per_contract == 0.01
+    assert config.platform_opportunity.replay_evidence_byte_cap == 4 * 1024**3
 
 
 def test_political_v2_profile_disables_legacy_discovery_and_semantic_runtime():

@@ -21,7 +21,10 @@ from core.platform_opportunities import (
     VenueFeeSchedule,
     _normalized_milestone_metadata,
 )
-from utils.platform_opportunity_store import PlatformOpportunityStore
+from utils.platform_opportunity_store import (
+    PlatformOpportunityStore,
+    ReplayEvidenceCapacityError,
+)
 
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=timezone.utc)
 
@@ -136,8 +139,46 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
         "book_states": 1,
         "fee_schedules": 1,
         "captured_bytes": store.replay_evidence_counts()["captured_bytes"],
+        "byte_cap": 4 * 1024**3,
     }
     assert store.replay_evidence_counts()["captured_bytes"] > 0
+
+
+def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_path):
+    """Capacity loss is durable, visible, and cannot create a scored observation."""
+    store = PlatformOpportunityStore(
+        tmp_path / "opportunities.db", replay_byte_cap=1
+    )
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    fee = {"schema_version": 1, "venue": "kalshi", "fee_type": "none"}
+
+    with pytest.raises(ReplayEvidenceCapacityError, match="byte cap"):
+        store.record_replay_observation(
+            cohort_id="cohort:capped",
+            contract_id="kalshi:KXTEST",
+            normalized_book=book,
+            fee_schedule=fee,
+            lock_phase="hot",
+            observed_at=NOW,
+            request_started_at=NOW,
+            received_at=NOW,
+        )
+
+    assert store.replay_evidence_counts() == {
+        "book_states": 0,
+        "fee_schedules": 0,
+        "captured_bytes": 0,
+        "byte_cap": 1,
+    }
+    assert store.replay_observation_events(cohort_id="cohort:capped") == []
+    assert store.replay_evidence_status(cohort_id="cohort:capped") == {
+        "cohort_valid": False,
+        "degraded_reason": "replay_evidence_byte_cap_exceeded",
+    }
 
 
 def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(tmp_path):

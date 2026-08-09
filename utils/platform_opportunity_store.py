@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
+class ReplayEvidenceCapacityError(RuntimeError):
+    """A cohort cannot remain replay-valid after its durable evidence cap is hit."""
+
+
 def _utc_iso(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -41,8 +45,11 @@ def _json(value: Any) -> str:
 class PlatformOpportunityStore:
     """Thread-safe SQLite store for catalog revisions and shadow evidence."""
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, replay_byte_cap: int = 4 * 1024**3):
+        if replay_byte_cap <= 0:
+            raise ValueError("replay_byte_cap must be positive")
         self.path = Path(path)
+        self.replay_byte_cap = int(replay_byte_cap)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(
@@ -173,6 +180,11 @@ class PlatformOpportunityStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_platform_replay_events_contract
                     ON platform_replay_observation_events(cohort_id, contract_id, sequence);
+                CREATE TABLE IF NOT EXISTS platform_replay_evidence_status (
+                    cohort_id TEXT PRIMARY KEY,
+                    cohort_valid INTEGER NOT NULL CHECK(cohort_valid IN (0, 1)),
+                    degraded_reason TEXT
+                );
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -317,6 +329,22 @@ class PlatformOpportunityStore:
             "book_states": int(books[0]),
             "fee_schedules": int(fees[0]),
             "captured_bytes": int(books[1]) + int(fees[1]),
+            "byte_cap": self.replay_byte_cap,
+        }
+
+    def replay_evidence_status(self, *, cohort_id: str) -> dict[str, Any]:
+        """Return the fail-closed validity of one cohort's replay evidence."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT cohort_valid, degraded_reason "
+                "FROM platform_replay_evidence_status WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+        if row is None:
+            return {"cohort_valid": True, "degraded_reason": None}
+        return {
+            "cohort_valid": bool(row["cohort_valid"]),
+            "degraded_reason": row["degraded_reason"],
         }
 
     def record_replay_observation(
@@ -352,6 +380,41 @@ class PlatformOpportunityStore:
         heartbeat_seconds = 30 if lock_phase in {"hot", "event_live"} else 300
         with self._lock, self._connection:
             connection = self._connection
+            existing_book = connection.execute(
+                "SELECT captured_bytes FROM normalized_book_states WHERE state_hash = ?",
+                (state_hash,),
+            ).fetchone()
+            existing_fee = connection.execute(
+                "SELECT captured_bytes FROM normalized_fee_schedules WHERE fee_hash = ?",
+                (fee_hash,),
+            ).fetchone()
+            current_bytes = int(
+                connection.execute(
+                    "SELECT COALESCE(SUM(captured_bytes), 0) FROM normalized_book_states"
+                ).fetchone()[0]
+            ) + int(
+                connection.execute(
+                    "SELECT COALESCE(SUM(captured_bytes), 0) FROM normalized_fee_schedules"
+                ).fetchone()[0]
+            )
+            added_bytes = (
+                (0 if existing_book is not None else len(compressed_book))
+                + (0 if existing_fee is not None else len(compressed_fee))
+            )
+            if current_bytes + added_bytes > self.replay_byte_cap:
+                connection.execute(
+                    "INSERT INTO platform_replay_evidence_status "
+                    "(cohort_id, cohort_valid, degraded_reason) VALUES (?, 0, ?) "
+                    "ON CONFLICT(cohort_id) DO UPDATE SET cohort_valid = 0, "
+                    "degraded_reason = excluded.degraded_reason",
+                    (cohort_id, "replay_evidence_byte_cap_exceeded"),
+                )
+                # Commit the fail-closed status before raising so restart and
+                # dashboard consumers cannot mistake this cohort for valid.
+                connection.commit()
+                raise ReplayEvidenceCapacityError(
+                    "replay evidence byte cap exceeded before observation persistence"
+                )
             connection.execute(
                 "INSERT OR IGNORE INTO normalized_book_states "
                 "(state_hash, schema_version, compressed_payload, captured_bytes) "

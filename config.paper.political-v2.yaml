@@ -75,6 +75,7 @@ platform_opportunity:
   relative_value_authority: disabled
   slippage_per_contract: 0.01
   max_shadow_notional: 100
+  replay_evidence_byte_cap: 4294967296
   min_event_clusters: 50
   min_intents: 200
   max_research_drawdown: 50
