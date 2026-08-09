@@ -983,27 +983,21 @@ class PlatformOpportunitySystem:
             }
             for venue in coverage
         }
+        previous_by_venue = {
+            venue: {
+                contract_id: _stored_contract(payload)
+                for contract_id, payload in self.store.current_contract_payloads_for_venue(
+                    venue
+                ).items()
+            }
+            for venue in coverage
+        }
         discovered: dict[str, PlatformContract] = {}
-        coverage_summary: dict[str, dict[str, int | str]] = {}
         for venue, status in coverage.items():
             incoming = incoming_by_venue[venue]
             failed = status["status"] == "failure"
-            retained: dict[str, PlatformContract] = {}
-            if failed:
-                retained = {
-                    contract_id: _stored_contract(payload)
-                    for contract_id, payload in self.store.current_contract_payloads_for_venue(
-                        venue
-                    ).items()
-                }
+            retained = previous_by_venue[venue] if failed else {}
             discovered.update(retained if failed else incoming)
-            coverage_summary[venue] = {
-                "status": str(status["status"]),
-                "reason": str(status["reason"]),
-                "incoming": len(incoming),
-                "retained": len(retained),
-                "replaced": len(incoming) if not failed else 0,
-            }
         # A bounded/partial response is a new eligibility cohort, not a delta.
         # Retaining every previously seen row turned repeated truncated pulls
         # into a 556k-row stale catalog.  The only permitted carry-over is an
@@ -1024,15 +1018,49 @@ class PlatformOpportunitySystem:
             for contract_id in lock.get("contract_ids", ())
         )
         if retained_lock_ids:
-            previous = self.store.latest_contract_payloads(
+            retained_lock_payloads = self.store.latest_contract_payloads(
                 retained_lock_ids - set(discovered)
             )
             discovered.update(
                 {
                     contract_id: _stored_contract(payload)
-                    for contract_id, payload in previous.items()
+                    for contract_id, payload in retained_lock_payloads.items()
                 }
             )
+        coverage_summary: dict[str, dict[str, int | str]] = {}
+        for venue, status in coverage.items():
+            previous = previous_by_venue[venue]
+            effective = {
+                contract_id: contract
+                for contract_id, contract in discovered.items()
+                if contract.venue == venue
+            }
+            retained_ids = previous.keys() & effective.keys()
+            unchanged = sum(
+                previous[contract_id].revision_hash
+                == effective[contract_id].revision_hash
+                for contract_id in retained_ids
+            )
+            coverage_summary[venue] = {
+                "status": str(status["status"]),
+                "reason": str(status["reason"]),
+                # A failed fetch has no trustworthy incoming cohort, even if
+                # an adapter happened to return stale rows alongside its error.
+                "incoming": (
+                    0
+                    if status["status"] == "failure"
+                    else len(incoming_by_venue[venue])
+                ),
+                "effective": len(effective),
+                "retained": len(retained_ids),
+                "unchanged": unchanged,
+                "added": len(effective.keys() - previous.keys()),
+                "updated": len(retained_ids) - unchanged,
+                "retired": len(previous.keys() - effective.keys()),
+                # Compatibility name: exactly the number of prior current
+                # rows displaced from this venue's effective cohort.
+                "replaced": len(previous.keys() - effective.keys()),
+            }
         self._contracts = discovered
         self._snapshot_complete = all(
             status["status"] == "complete" for status in coverage.values()

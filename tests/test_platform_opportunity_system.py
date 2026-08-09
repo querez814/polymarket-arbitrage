@@ -126,6 +126,32 @@ def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
     assert first.catalog_contracts == 3
     assert first.revisions_written == 3
     assert second.revisions_written == 0
+    assert second.venue_coverage == {
+        "polymarket": {
+            "status": "complete",
+            "reason": "complete",
+            "incoming": 2,
+            "effective": 2,
+            "retained": 2,
+            "unchanged": 2,
+            "added": 0,
+            "updated": 0,
+            "retired": 0,
+            "replaced": 0,
+        },
+        "kalshi": {
+            "status": "complete",
+            "reason": "complete",
+            "incoming": 1,
+            "effective": 1,
+            "retained": 1,
+            "unchanged": 1,
+            "added": 0,
+            "updated": 0,
+            "retired": 0,
+            "replaced": 0,
+        },
+    }
     assert len(second.monitoring.hot) == 2
     assert len(second.monitoring.budget_excluded) == 1
     assert second.monitoring.budget_excluded[0].reason == "hot_lane_capacity"
@@ -238,7 +264,12 @@ def test_venue_scoped_coverage_retains_only_failed_venue_cohort(tmp_path):
         "status": "failure",
         "reason": "network_error",
         "incoming": 0,
+        "effective": 1,
         "retained": 1,
+        "unchanged": 1,
+        "added": 0,
+        "updated": 0,
+        "retired": 0,
         "replaced": 0,
     }
 
