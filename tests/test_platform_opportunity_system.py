@@ -1408,7 +1408,7 @@ def test_invalid_replay_cohort_cannot_count_or_score_later_observations(tmp_path
         "polymarket:p1", observed_at=NOW + timedelta(seconds=1)
     )
     assert (
-        system.observe_book(
+        system._observe_book(
             "polymarket:p1",
             _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
             observed_at=NOW + timedelta(seconds=1),
@@ -1416,7 +1416,7 @@ def test_invalid_replay_cohort_cannot_count_or_score_later_observations(tmp_path
         == ()
     )
     assert (
-        system.observe_book(
+        system._observe_book(
             "polymarket:p1",
             _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
             observed_at=NOW + timedelta(seconds=6),
@@ -2881,13 +2881,13 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
     system.set_fee_schedule(contract_id, _zero_fee("kalshi"))
 
     # Warm samples become the baseline but are not allowed to create signals.
-    system.observe_book(
+    system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
     assert (
-        system.observe_book(
+        system._observe_book(
             contract_id,
             _book(market.ticker, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
             observed_at=NOW + timedelta(seconds=5),
@@ -2895,7 +2895,7 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
         == ()
     )
 
-    hot = system.observe_book(
+    hot = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.53, ask=0.55, bid_size=300, ask_size=50),
         observed_at=start - timedelta(minutes=30),
@@ -2905,7 +2905,7 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
         seconds=10
     )
 
-    live = system.observe_book(
+    live = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.49, ask=0.51, bid_size=50, ask_size=300),
         observed_at=start + timedelta(minutes=1),
@@ -2915,12 +2915,12 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
 
     # A reaction near the reviewed event end cannot spill into cooldown,
     # even though the configured signal TTL would otherwise extend past it.
-    system.observe_book(
+    system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=end - timedelta(seconds=6),
     )
-    ending = system.observe_book(
+    ending = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
         observed_at=end - timedelta(seconds=5),
@@ -2928,12 +2928,12 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
     assert [intent.direction for intent in ending.intents] == ["yes"]
     assert ending.intents[0].expires_at == end
 
-    cooldown = system.observe_book(
+    cooldown = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.53, ask=0.55, bid_size=300, ask_size=50),
         observed_at=end + timedelta(minutes=1),
     )
-    expired = system.observe_book(
+    expired = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.49, ask=0.51, bid_size=50, ask_size=300),
         observed_at=end + policy.cooldown_after + timedelta(seconds=1),
@@ -3008,6 +3008,25 @@ def test_political_replay_context_derives_only_the_durable_reviewed_lock(tmp_pat
     }
 
 
+def test_public_decision_boundary_rejects_unpersisted_raw_books(tmp_path):
+    """Only a durable replay token may enter the political decision path."""
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(max_events=1),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
+    )
+
+    with pytest.raises(AttributeError):
+        system.observe_book(  # type: ignore[attr-defined]
+            "kalshi:KXTRUMPMENTION-26AUG10-A",
+            _book("KXTRUMPMENTION-26AUG10-A", bid=0.49, ask=0.51),
+            observed_at=NOW,
+        )
+
+    assert system.store.replay_observation_events(cohort_id=system.cohort_id) == []
+    assert system.store.intent_rows(cohort_id=system.cohort_id) == []
+
+
 def test_political_reaction_rearms_after_typed_short_interval_and_restart(tmp_path):
     """Political causal signals do not inherit the legacy ten-minute cooldown."""
     path = tmp_path / "opportunities.db"
@@ -3064,18 +3083,18 @@ def test_political_reaction_rearms_after_typed_short_interval_and_restart(tmp_pa
     )
     assert changed_rearm.cohort_id != system.cohort_id
     hot = start - timedelta(minutes=30)
-    system.observe_book(
+    system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
-    first = system.observe_book(
+    first = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.53, ask=0.55, bid_size=300, ask_size=50),
         observed_at=hot,
     )
     assert [intent.direction for intent in first.intents] == ["yes"]
-    suppressed = system.observe_book(
+    suppressed = system._observe_book(
         contract_id,
         _book(market.ticker, bid=0.55, ask=0.57, bid_size=300, ask_size=50),
         observed_at=hot + timedelta(seconds=2),
@@ -3083,12 +3102,12 @@ def test_political_reaction_rearms_after_typed_short_interval_and_restart(tmp_pa
     assert suppressed.intents == ()
 
     restarted = system_for(PlatformOpportunityStore(path))
-    restarted.observe_book(
+    restarted._observe_book(
         contract_id,
         _book(market.ticker, bid=0.55, ask=0.57, bid_size=300, ask_size=50),
         observed_at=hot + timedelta(seconds=5, milliseconds=900),
     )
-    rearmed = restarted.observe_book(
+    rearmed = restarted._observe_book(
         contract_id,
         _book(market.ticker, bid=0.57, ask=0.59, bid_size=300, ask_size=50),
         observed_at=hot + timedelta(seconds=6),
@@ -3423,12 +3442,12 @@ def test_disabled_directional_lane_collects_features_without_creating_an_intent(
         observed_at=NOW,
     )
     system.set_fee_schedule("polymarket:p1", _zero_fee())
-    system.observe_book(
+    system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
-    result = system.observe_book(
+    result = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
         observed_at=NOW + timedelta(seconds=5),
@@ -3456,14 +3475,14 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
     system.set_fee_schedule("polymarket:p1", _zero_fee())
 
     assert (
-        system.observe_book(
+        system._observe_book(
             "polymarket:p1",
             _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
             observed_at=NOW,
         ).intents
         == ()
     )
-    emitted = system.observe_book(
+    emitted = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
         observed_at=NOW + timedelta(seconds=5),
@@ -3482,7 +3501,7 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
         == []
     )
 
-    scored = system.observe_book(
+    scored = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.57, ask=0.59, bid_size=200, ask_size=100),
         observed_at=NOW + timedelta(seconds=36),
@@ -3493,7 +3512,7 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
     assert all(mark.net_return is not None and mark.net_return > 0 for mark in marks)
     assert len(store.intent_rows(lane="depth_imbalance_reaction_experimental_v1")) == 1
 
-    exited = system.observe_book(
+    exited = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.54, ask=0.56, bid_size=25, ask_size=250),
         observed_at=NOW + timedelta(seconds=40),
@@ -3520,12 +3539,12 @@ def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path)
         kalshi_markets=[],
         observed_at=NOW,
     )
-    system.observe_book(
+    system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
-    result = system.observe_book(
+    result = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
         observed_at=NOW + timedelta(seconds=5),
@@ -3547,12 +3566,12 @@ def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
     )
     system.set_fee_schedule("polymarket:p1", _zero_fee())
 
-    system.observe_book(
+    system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
-    result = system.observe_book(
+    result = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.49, ask=0.51, bid_size=20, ask_size=300),
         observed_at=NOW + timedelta(seconds=5),
@@ -3577,12 +3596,12 @@ def test_directional_intent_uses_signed_composite_not_momentum_alone(tmp_path):
     )
     system.set_fee_schedule("polymarket:p1", _zero_fee())
 
-    system.observe_book(
+    system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.51, ask=0.53, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
-    emitted = system.observe_book(
+    emitted = system._observe_book(
         "polymarket:p1",
         # Mid-price momentum is negative (-0.2¢), but the strongly positive
         # imbalance produces a positive qualifying composite (+0.0127).
@@ -3606,19 +3625,19 @@ def test_zero_exit_capacity_records_insufficient_depth_marks_without_crashing(tm
         observed_at=NOW,
     )
     system.set_fee_schedule("polymarket:p1", _zero_fee())
-    system.observe_book(
+    system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=NOW,
     )
-    emitted = system.observe_book(
+    emitted = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
         observed_at=NOW + timedelta(seconds=5),
     )
     assert len(emitted.intents) == 1
 
-    scored = system.observe_book(
+    scored = system._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.57, ask=0.59, bid_size=0, ask_size=250),
         observed_at=NOW + timedelta(seconds=36),
@@ -3650,32 +3669,32 @@ def test_relative_value_lane_is_disabled_before_residual_signal_can_create_inten
     system.set_fee_schedule("polymarket:p4", _zero_fee())
 
     # Establish the observed structural residual, then compress it sharply.
-    system.observe_book(
+    system._observe_book(
         "polymarket:p3",
         _book("p3", bid=0.59, ask=0.61, bid_size=200, ask_size=200),
         observed_at=NOW,
     )
-    system.observe_book(
+    system._observe_book(
         "polymarket:p4",
         _book("p4", bid=0.49, ask=0.51, bid_size=200, ask_size=200),
         observed_at=NOW,
     )
-    system.observe_book(
+    system._observe_book(
         "polymarket:p3",
         _book("p3", bid=0.60, ask=0.62, bid_size=200, ask_size=200),
         observed_at=NOW + timedelta(seconds=2),
     )
-    system.observe_book(
+    system._observe_book(
         "polymarket:p4",
         _book("p4", bid=0.50, ask=0.52, bid_size=200, ask_size=200),
         observed_at=NOW + timedelta(seconds=2),
     )
-    system.observe_book(
+    system._observe_book(
         "polymarket:p3",
         _book("p3", bid=0.55, ask=0.57, bid_size=200, ask_size=200),
         observed_at=NOW + timedelta(seconds=4),
     )
-    emitted = system.observe_book(
+    emitted = system._observe_book(
         "polymarket:p4",
         _book("p4", bid=0.52, ask=0.54, bid_size=200, ask_size=200),
         observed_at=NOW + timedelta(seconds=4),
@@ -3732,12 +3751,12 @@ def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
         observed_at=restart_now,
     )
     first.set_fee_schedule("polymarket:p1", _zero_fee())
-    first.observe_book(
+    first._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
         observed_at=restart_now,
     )
-    emitted = first.observe_book(
+    emitted = first._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
         observed_at=restart_now + timedelta(seconds=5),
@@ -3756,7 +3775,7 @@ def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
         observed_at=restart_now + timedelta(seconds=10),
     )
     second.set_fee_schedule("polymarket:p1", _zero_fee())
-    scored = second.observe_book(
+    scored = second._observe_book(
         "polymarket:p1",
         _book("p1", bid=0.48, ask=0.50, bid_size=20, ask_size=300),
         observed_at=restart_now + timedelta(seconds=40),
@@ -3848,14 +3867,14 @@ def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
             observed_at=NOW,
         )
         system.set_fee_schedule(contract_id, _zero_fee())
-        system.observe_book(
+        system._observe_book(
             contract_id,
             _book(market_id, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
             observed_at=NOW,
         )
         assert (
             len(
-                system.observe_book(
+                system._observe_book(
                     contract_id,
                     _book(market_id, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
                     observed_at=NOW + timedelta(seconds=5),
@@ -3864,7 +3883,7 @@ def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
             == 1
         )
 
-    first.observe_book(
+    first._observe_book(
         "polymarket:first",
         _book("first", bid=0.57, ask=0.59, bid_size=200, ask_size=100),
         observed_at=NOW + timedelta(seconds=36),

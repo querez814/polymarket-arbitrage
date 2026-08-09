@@ -957,7 +957,7 @@ class PlatformOpportunitySystem:
                 "canonical replay token has invalid fee or timing"
             ) from exc
         self.set_fee_schedule(contract_id, schedule)
-        return self.observe_book(contract_id, book, observed_at=received_at)
+        return self._observe_book(contract_id, book, observed_at=received_at)
 
     def political_replay_context(self, token: ReplayObservationToken) -> dict[str, str]:
         """Derive immutable reviewed-lock attribution for one replay token.
@@ -1995,7 +1995,7 @@ class PlatformOpportunitySystem:
         levels = token.asks.levels if entry else token.bids.levels
         return tuple((float(level.price), float(level.size)) for level in levels)
 
-    def observe_book(
+    def _observe_book(
         self,
         contract_id: str,
         book: OrderBook,
@@ -2004,7 +2004,12 @@ class PlatformOpportunitySystem:
         trade_flow: float = 0.0,
         lead_price: float | None = None,
     ) -> ObservationResult:
-        """Observe one book and return quickly; persistence can run off-thread."""
+        """Score an already-canonical book; public runtime entry is token-only.
+
+        This intentionally private primitive exists for isolated scorer tests.
+        Production callers must persist an observation and invoke
+        :meth:`observe_replay_token`, which reloads canonical evidence first.
+        """
         observed_at = _aware(observed_at) or observed_at
         # A failed replay cohort cannot yield research marks or fresh signals.
         # Keeping this guard at the system boundary also prevents direct callers
