@@ -120,6 +120,7 @@ class PlatformOpportunityStore:
                     cohort_id TEXT NOT NULL,
                     contract_id TEXT NOT NULL,
                     observation_count INTEGER NOT NULL,
+                    first_observed_at TEXT NOT NULL,
                     last_observed_at TEXT NOT NULL,
                     last_request_started_at TEXT,
                     last_received_at TEXT,
@@ -154,6 +155,15 @@ class PlatformOpportunityStore:
             if "last_received_at" not in columns:
                 self._connection.execute(
                     "ALTER TABLE platform_observations ADD COLUMN last_received_at TEXT"
+                )
+            if "first_observed_at" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE platform_observations "
+                    "ADD COLUMN first_observed_at TEXT"
+                )
+                self._connection.execute(
+                    "UPDATE platform_observations SET first_observed_at = last_observed_at "
+                    "WHERE first_observed_at IS NULL"
                 )
 
     def close(self) -> None:
@@ -253,9 +263,10 @@ class PlatformOpportunityStore:
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO platform_observations "
-                "(cohort_id, contract_id, observation_count, last_observed_at, "
+                "(cohort_id, contract_id, observation_count, first_observed_at, "
+                "last_observed_at, "
                 "last_request_started_at, last_received_at) "
-                "VALUES (?, ?, 1, ?, ?, ?) "
+                "VALUES (?, ?, 1, ?, ?, ?, ?) "
                 "ON CONFLICT(cohort_id, contract_id) DO UPDATE SET "
                 "observation_count=platform_observations.observation_count + 1, "
                 "last_observed_at=excluded.last_observed_at, "
@@ -264,6 +275,7 @@ class PlatformOpportunityStore:
                 (
                     cohort_id,
                     contract_id,
+                    _utc_iso(observed_at),
                     _utc_iso(observed_at),
                     _utc_iso(request_started_at) if request_started_at else None,
                     _utc_iso(received_at) if received_at else None,
@@ -274,7 +286,8 @@ class PlatformOpportunityStore:
         """Return durable observation facts, deliberately scoped to one cohort."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT contract_id, observation_count, last_observed_at, "
+                "SELECT contract_id, observation_count, first_observed_at, "
+                "last_observed_at, "
                 "last_request_started_at, last_received_at "
                 "FROM platform_observations WHERE cohort_id = ? ORDER BY contract_id",
                 (cohort_id,),
@@ -282,6 +295,7 @@ class PlatformOpportunityStore:
         return {
             str(row["contract_id"]): {
                 "observation_count": int(row["observation_count"]),
+                "first_observed_at": str(row["first_observed_at"]),
                 "last_observed_at": str(row["last_observed_at"]),
                 "last_request_started_at": row["last_request_started_at"],
                 "last_received_at": row["last_received_at"],

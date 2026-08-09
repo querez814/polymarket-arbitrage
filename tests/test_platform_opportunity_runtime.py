@@ -129,6 +129,7 @@ async def test_worker_persists_successful_empty_depth_observation_across_restart
     assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {
         "polymarket:empty-depth": {
             "observation_count": 1,
+            "first_observed_at": "2026-08-09T00:00:00+00:00",
             "last_observed_at": "2026-08-09T00:00:00+00:00",
             "last_request_started_at": None,
             "last_received_at": None,
@@ -140,6 +141,7 @@ async def test_worker_persists_successful_empty_depth_observation_across_restart
     assert resumed.store.observation_telemetry(cohort_id=resumed.cohort_id) == {
         "polymarket:empty-depth": {
             "observation_count": 1,
+            "first_observed_at": "2026-08-09T00:00:00+00:00",
             "last_observed_at": "2026-08-09T00:00:00+00:00",
             "last_request_started_at": None,
             "last_received_at": None,
@@ -173,10 +175,38 @@ async def test_worker_persists_local_book_request_and_receipt_times(tmp_path):
     assert system.store.observation_telemetry(cohort_id=system.cohort_id) == {
         "polymarket:timed-book": {
             "observation_count": 1,
+            "first_observed_at": "2026-08-09T12:00:01+00:00",
             "last_observed_at": "2026-08-09T12:00:01+00:00",
             "last_request_started_at": "2026-08-09T12:00:00+00:00",
             "last_received_at": "2026-08-09T12:00:01+00:00",
         }
+    }
+
+
+def test_dashboard_exposes_durable_observation_time_bounds_and_provenance(tmp_path):
+    """Local request/receipt timing remains visible after many observations."""
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    first = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    system.record_successful_observation(
+        "polymarket:timed-book",
+        observed_at=first.replace(second=1),
+        request_started_at=first,
+        received_at=first.replace(second=1),
+    )
+    system.record_successful_observation(
+        "polymarket:timed-book",
+        observed_at=first.replace(minute=1, second=1),
+        request_started_at=first.replace(minute=1),
+        received_at=first.replace(minute=1, second=1),
+    )
+
+    evidence = system.dashboard_summary()["observation_evidence"]
+
+    assert evidence == {
+        "first_durable_evidence_at": "2026-08-09T12:00:01+00:00",
+        "last_durable_evidence_at": "2026-08-09T12:01:01+00:00",
+        "event_count": 2,
+        "timestamp_source": "local_request_receipt",
     }
 
 

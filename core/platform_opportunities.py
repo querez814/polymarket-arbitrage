@@ -2368,6 +2368,12 @@ class PlatformOpportunitySystem:
         observation_failures = self.store.observation_failure_telemetry(
             cohort_id=self.cohort_id
         )
+        observation_rows = tuple(observations.values())
+        all_timed = bool(observation_rows) and all(
+            item["last_request_started_at"] is not None
+            and item["last_received_at"] is not None
+            for item in observation_rows
+        )
         now = datetime.now(timezone.utc)
         political_policy = self.political_watch_policy
         locks = []
@@ -2443,6 +2449,22 @@ class PlatformOpportunitySystem:
                 contract_id: observations[contract_id]
                 for contract_id in sorted(self._sampled_contract_ids)
                 if contract_id in observations
+            },
+            "observation_evidence": {
+                "first_durable_evidence_at": min(
+                    (str(item["first_observed_at"]) for item in observation_rows),
+                    default=None,
+                ),
+                "last_durable_evidence_at": max(
+                    (str(item["last_observed_at"]) for item in observation_rows),
+                    default=None,
+                ),
+                "event_count": sum(
+                    int(item["observation_count"]) for item in observation_rows
+                ),
+                "timestamp_source": (
+                    "local_request_receipt" if all_timed else "local_observed_at"
+                ),
             },
             "observation_failures": {
                 contract_id: observation_failures[contract_id]
