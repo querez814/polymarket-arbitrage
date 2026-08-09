@@ -95,6 +95,32 @@ class PlatformOpportunityStore:
                 CREATE INDEX IF NOT EXISTS idx_political_event_locks_until
                     ON political_event_locks(locked_until);
 
+                -- The event feed is the source inventory for political
+                -- rotation.  Keep its raw summaries independent from the
+                -- current classifier: category/title rules can evolve without
+                -- rewriting what the venue actually returned.  A row becomes
+                -- inactive only after it was absent from a cursor-exhausted
+                -- refresh generation; bounded or failed pages retain it.
+                CREATE TABLE IF NOT EXISTS kalshi_event_index_rows (
+                    event_ticker TEXT PRIMARY KEY,
+                    revision_hash TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    last_seen_refresh_id TEXT NOT NULL,
+                    active INTEGER NOT NULL CHECK(active IN (0, 1))
+                );
+                CREATE INDEX IF NOT EXISTS idx_kalshi_event_index_active
+                    ON kalshi_event_index_rows(active, last_seen_at);
+                CREATE TABLE IF NOT EXISTS kalshi_event_index_refresh_state (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    refresh_id TEXT,
+                    next_cursor TEXT,
+                    last_started_at TEXT,
+                    last_completed_at TEXT,
+                    last_failure TEXT
+                );
+
                 CREATE TABLE IF NOT EXISTS structural_relations (
                     relation_id TEXT PRIMARY KEY,
                     relation_type TEXT NOT NULL,
@@ -490,6 +516,208 @@ class PlatformOpportunityStore:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def begin_kalshi_event_index_refresh(
+        self, *, refresh_id: str, started_at: datetime, cursor: str | None = None
+    ) -> None:
+        """Persist the cursor state for one source-inventory pass.
+
+        ``refresh_id`` is supplied by the catalog owner and must remain stable
+        while it follows pages.  Starting a fresh pass does *not* retire any
+        source row; only :meth:`complete_kalshi_event_index_refresh` may do
+        that after the venue has returned an empty cursor.
+        """
+        if not isinstance(refresh_id, str) or not refresh_id.strip():
+            raise ValueError("event-index refresh_id must be non-empty")
+        if cursor is not None and (not isinstance(cursor, str) or not cursor):
+            raise ValueError("event-index cursor must be a non-empty string or None")
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO kalshi_event_index_refresh_state "
+                "(singleton, refresh_id, next_cursor, last_started_at, last_failure) "
+                "VALUES (1, ?, ?, ?, NULL) "
+                "ON CONFLICT(singleton) DO UPDATE SET "
+                "refresh_id = excluded.refresh_id, next_cursor = excluded.next_cursor, "
+                "last_started_at = excluded.last_started_at, last_failure = NULL",
+                (refresh_id, cursor, _utc_iso(started_at)),
+            )
+
+    def record_kalshi_event_index_page(
+        self,
+        *,
+        refresh_id: str,
+        events: Iterable[Mapping[str, Any]],
+        next_cursor: str | None,
+        observed_at: datetime,
+    ) -> int:
+        """Upsert one raw event page without classifying or retiring rows."""
+        if not isinstance(refresh_id, str) or not refresh_id.strip():
+            raise ValueError("event-index refresh_id must be non-empty")
+        if next_cursor is not None and (
+            not isinstance(next_cursor, str) or not next_cursor
+        ):
+            raise ValueError("event-index cursor must be a non-empty string or None")
+        normalized: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for event in events:
+            if not isinstance(event, Mapping):
+                raise ValueError("event-index event must be a mapping")
+            payload = dict(event)
+            ticker = payload.get("event_ticker", payload.get("ticker"))
+            if not isinstance(ticker, str) or not ticker.strip():
+                raise ValueError("event-index event_ticker is required")
+            ticker = ticker.strip()
+            if ticker in seen:
+                raise ValueError("event-index page contains duplicate event_ticker")
+            seen.add(ticker)
+            # Canonicalize the stored payload and use that exact raw source
+            # record for revision history.  No classifier-derived field may
+            # be inserted here.
+            payload_json = _json(payload)
+            normalized.append(
+                (
+                    ticker,
+                    hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+                    payload_json,
+                )
+            )
+        observed_iso = _utc_iso(observed_at)
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                state = connection.execute(
+                    "SELECT refresh_id FROM kalshi_event_index_refresh_state "
+                    "WHERE singleton = 1"
+                ).fetchone()
+                if state is None or str(state["refresh_id"]) != refresh_id:
+                    raise RuntimeError("event-index page belongs to no active refresh")
+                for ticker, revision_hash, payload_json in normalized:
+                    connection.execute(
+                        "INSERT INTO kalshi_event_index_rows "
+                        "(event_ticker, revision_hash, payload_json, first_seen_at, "
+                        "last_seen_at, last_seen_refresh_id, active) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 1) "
+                        "ON CONFLICT(event_ticker) DO UPDATE SET "
+                        "revision_hash = excluded.revision_hash, "
+                        "payload_json = excluded.payload_json, "
+                        "last_seen_at = excluded.last_seen_at, "
+                        "last_seen_refresh_id = excluded.last_seen_refresh_id, active = 1",
+                        (
+                            ticker,
+                            revision_hash,
+                            payload_json,
+                            observed_iso,
+                            observed_iso,
+                            refresh_id,
+                        ),
+                    )
+                connection.execute(
+                    "UPDATE kalshi_event_index_refresh_state SET next_cursor = ? "
+                    "WHERE singleton = 1",
+                    (next_cursor,),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return len(normalized)
+
+    def complete_kalshi_event_index_refresh(
+        self, *, refresh_id: str, completed_at: datetime
+    ) -> int:
+        """Retire only rows absent from a source-exhausted refresh pass."""
+        if not isinstance(refresh_id, str) or not refresh_id.strip():
+            raise ValueError("event-index refresh_id must be non-empty")
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                state = connection.execute(
+                    "SELECT refresh_id, next_cursor FROM kalshi_event_index_refresh_state "
+                    "WHERE singleton = 1"
+                ).fetchone()
+                if state is None or str(state["refresh_id"]) != refresh_id:
+                    raise RuntimeError(
+                        "event-index completion belongs to no active refresh"
+                    )
+                if state["next_cursor"] is not None:
+                    raise RuntimeError("event-index refresh is not cursor-exhausted")
+                retired = connection.execute(
+                    "UPDATE kalshi_event_index_rows SET active = 0 "
+                    "WHERE active = 1 AND last_seen_refresh_id != ?",
+                    (refresh_id,),
+                ).rowcount
+                connection.execute(
+                    "UPDATE kalshi_event_index_refresh_state SET "
+                    "last_completed_at = ?, last_failure = NULL WHERE singleton = 1",
+                    (_utc_iso(completed_at),),
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        return int(retired)
+
+    def fail_kalshi_event_index_refresh(self, *, refresh_id: str, reason: str) -> None:
+        """Record a bounded/failed pass without changing source activeness."""
+        if not isinstance(refresh_id, str) or not refresh_id.strip():
+            raise ValueError("event-index refresh_id must be non-empty")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("event-index failure reason must be non-empty")
+        with self._lock, self._connection:
+            result = self._connection.execute(
+                "UPDATE kalshi_event_index_refresh_state SET last_failure = ? "
+                "WHERE singleton = 1 AND refresh_id = ?",
+                (reason[:500], refresh_id),
+            )
+        if result.rowcount != 1:
+            raise RuntimeError("event-index failure belongs to no active refresh")
+
+    def kalshi_event_index_state(self) -> dict[str, Any]:
+        """Return durable cursor coverage without inferring source completeness."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT refresh_id, next_cursor, last_started_at, last_completed_at, "
+                "last_failure FROM kalshi_event_index_refresh_state WHERE singleton = 1"
+            ).fetchone()
+        return (
+            dict(row)
+            if row is not None
+            else {
+                "refresh_id": None,
+                "next_cursor": None,
+                "last_started_at": None,
+                "last_completed_at": None,
+                "last_failure": None,
+            }
+        )
+
+    def kalshi_event_index_rows(
+        self, *, active_only: bool = False
+    ) -> list[dict[str, Any]]:
+        """Read raw source rows; callers apply the current classifier later."""
+        query = (
+            "SELECT event_ticker, revision_hash, payload_json, first_seen_at, "
+            "last_seen_at, last_seen_refresh_id, active FROM kalshi_event_index_rows"
+        )
+        if active_only:
+            query += " WHERE active = 1"
+        query += " ORDER BY event_ticker"
+        with self._lock:
+            rows = self._connection.execute(query).fetchall()
+        return [
+            {
+                "event_ticker": str(row["event_ticker"]),
+                "revision_hash": str(row["revision_hash"]),
+                "payload": json.loads(str(row["payload_json"])),
+                "first_seen_at": str(row["first_seen_at"]),
+                "last_seen_at": str(row["last_seen_at"]),
+                "last_seen_refresh_id": str(row["last_seen_refresh_id"]),
+                "active": bool(row["active"]),
+            }
+            for row in rows
+        ]
 
     def initialize_political_experimental_paper_account(
         self,

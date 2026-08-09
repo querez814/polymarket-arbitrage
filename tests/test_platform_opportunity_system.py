@@ -287,6 +287,112 @@ def test_political_paper_account_initialization_serializes_connections_and_rejec
         )
 
 
+def test_kalshi_event_index_only_retires_absent_rows_after_cursor_exhaustion(tmp_path):
+    """A bounded or failed source page cannot erase previously active inventory."""
+    path = tmp_path / "opportunities.db"
+    started = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(path)
+
+    store.begin_kalshi_event_index_refresh(refresh_id="pass-1", started_at=started)
+    assert (
+        store.record_kalshi_event_index_page(
+            refresh_id="pass-1",
+            events=(
+                {"event_ticker": "KXALPHA-26", "title": "raw alpha"},
+                {"event_ticker": "KXBETA-26", "category": "Elections"},
+            ),
+            next_cursor=None,
+            observed_at=started,
+        )
+        == 2
+    )
+    assert (
+        store.complete_kalshi_event_index_refresh(
+            refresh_id="pass-1", completed_at=started
+        )
+        == 0
+    )
+
+    store.begin_kalshi_event_index_refresh(
+        refresh_id="pass-2", started_at=started + timedelta(minutes=1)
+    )
+    store.record_kalshi_event_index_page(
+        refresh_id="pass-2",
+        events=({"event_ticker": "KXALPHA-26", "title": "raw alpha v2"},),
+        next_cursor="next-page",
+        observed_at=started + timedelta(minutes=1),
+    )
+    store.fail_kalshi_event_index_refresh(refresh_id="pass-2", reason="429 backoff")
+    assert [
+        row["event_ticker"] for row in store.kalshi_event_index_rows(active_only=True)
+    ] == [
+        "KXALPHA-26",
+        "KXBETA-26",
+    ]
+    assert store.kalshi_event_index_state()["next_cursor"] == "next-page"
+    store.close()
+
+    restarted = PlatformOpportunityStore(path)
+    assert restarted.kalshi_event_index_state()["last_failure"] == "429 backoff"
+    assert [
+        row["event_ticker"]
+        for row in restarted.kalshi_event_index_rows(active_only=True)
+    ] == [
+        "KXALPHA-26",
+        "KXBETA-26",
+    ]
+
+    restarted.begin_kalshi_event_index_refresh(
+        refresh_id="pass-3", started_at=started + timedelta(minutes=2)
+    )
+    restarted.record_kalshi_event_index_page(
+        refresh_id="pass-3",
+        events=({"event_ticker": "KXALPHA-26", "title": "raw alpha v3"},),
+        next_cursor=None,
+        observed_at=started + timedelta(minutes=2),
+    )
+    assert (
+        restarted.complete_kalshi_event_index_refresh(
+            refresh_id="pass-3", completed_at=started + timedelta(minutes=3)
+        )
+        == 1
+    )
+    rows = restarted.kalshi_event_index_rows()
+    assert [(row["event_ticker"], row["active"]) for row in rows] == [
+        ("KXALPHA-26", True),
+        ("KXBETA-26", False),
+    ]
+    assert rows[0]["payload"] == {
+        "event_ticker": "KXALPHA-26",
+        "title": "raw alpha v3",
+    }
+
+
+def test_kalshi_event_index_rejects_duplicate_or_incomplete_refresh_pages(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    now = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    store.begin_kalshi_event_index_refresh(refresh_id="pass", started_at=now)
+
+    with pytest.raises(ValueError, match="duplicate event_ticker"):
+        store.record_kalshi_event_index_page(
+            refresh_id="pass",
+            events=(
+                {"event_ticker": "KXDUP-26"},
+                {"event_ticker": "KXDUP-26"},
+            ),
+            next_cursor=None,
+            observed_at=now,
+        )
+    store.record_kalshi_event_index_page(
+        refresh_id="pass",
+        events=({"event_ticker": "KXONE-26"},),
+        next_cursor="more",
+        observed_at=now,
+    )
+    with pytest.raises(RuntimeError, match="not cursor-exhausted"):
+        store.complete_kalshi_event_index_refresh(refresh_id="pass", completed_at=now)
+
+
 def test_political_paper_account_binds_a_canonical_immutable_policy(tmp_path):
     """A restart can reuse a cohort only with the identical paper policy."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
