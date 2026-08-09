@@ -12,6 +12,7 @@ import hashlib
 import math
 import sqlite3
 import threading
+import time
 import zlib
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
@@ -60,8 +61,23 @@ class PlatformOpportunityStore:
             str(self.path), check_same_thread=False, timeout=30.0
         )
         self._connection.row_factory = sqlite3.Row
+        # SQLite does not consistently apply ``connect(timeout=...)`` while a
+        # second connection is negotiating WAL mode for a brand-new database.
+        # Concurrent replay writers are a supported topology, so serialize
+        # only that one-time mode transition with a bounded retry rather than
+        # letting construction itself lose a durable observation.
+        self._connection.execute("PRAGMA busy_timeout=30000")
+        deadline = time.monotonic() + 30.0
+        while True:
+            try:
+                self._connection.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    self._connection.close()
+                    raise
+                time.sleep(0.01)
         with self._connection:
-            self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.execute("PRAGMA synchronous=NORMAL")
             self._connection.executescript("""
                 CREATE TABLE IF NOT EXISTS platform_contract_current (

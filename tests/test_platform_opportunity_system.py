@@ -23,6 +23,7 @@ from core.platform_opportunities import (
     PoliticalWatchPolicy,
     PoliticalEventLock,
     PlatformOpportunitySystem,
+    ReplayOccurrenceRoute,
     ReplayObservationToken,
     LaneAuthority,
     StructuralRelation,
@@ -4097,9 +4098,20 @@ def test_political_replay_context_uses_sealed_reviewed_lock_provenance(tmp_path)
     system.store._connection.execute("DELETE FROM political_event_locks")
     system.store._connection.commit()
 
-    context = system.political_replay_context(
-        ReplayObservationToken(system.cohort_id, replay["event"]["sequence"])
+    token = ReplayObservationToken(system.cohort_id, replay["event"]["sequence"])
+    # The future dispatcher can route this token without consulting the now
+    # replaced catalog lock.  A milestone, rather than an event ticker, is
+    # the occurrence identity shared by derivative contracts.
+    assert system.political_replay_route(token) == ReplayOccurrenceRoute(
+        cohort_id=system.cohort_id,
+        event_id="KXTRUMPMENTION-26AUG10",
+        milestone_id="mention-2026-08-10",
     )
+    assert system.political_replay_route(token).lane_key == (
+        "occurrence:mention-2026-08-10"
+    )
+
+    context = system.political_replay_context(token)
 
     assert context == {
         "event_id": "KXTRUMPMENTION-26AUG10",

@@ -704,6 +704,34 @@ class ReplayObservationToken:
             raise ValueError("replay observation token is invalid")
 
 
+@dataclass(frozen=True)
+class ReplayOccurrenceRoute:
+    """Immutable event-lane identity sealed onto one replay observation.
+
+    The dispatcher must never infer an event route from the current catalog:
+    refreshes may retire or replace a lock after a book has already been
+    persisted.  This value is therefore derived exclusively from the replay
+    row's reviewed-lock provenance.  ``milestone_id`` is the occurrence
+    identity; ``event_id`` is retained for per-event attribution and auditing.
+    """
+
+    cohort_id: str
+    event_id: str
+    milestone_id: str
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (self.cohort_id, self.event_id, self.milestone_id)
+        ):
+            raise ValueError("replay occurrence route is invalid")
+
+    @property
+    def lane_key(self) -> str:
+        """Stable key for an ordered worker serving one reviewed occurrence."""
+        return f"occurrence:{self.milestone_id}"
+
+
 LaneAuthority = Literal["disabled", "forward_only_unvalidated"]
 _LANE_AUTHORITIES = frozenset(("disabled", "forward_only_unvalidated"))
 _DEPTH_IMBALANCE_REACTION_LANE = "depth_imbalance_reaction_experimental_v1"
@@ -1198,6 +1226,37 @@ class PlatformOpportunitySystem:
             model_version=_DEPTH_IMBALANCE_REACTION_LANE,
         )
 
+    def political_replay_route(
+        self, token: ReplayObservationToken
+    ) -> ReplayOccurrenceRoute | None:
+        """Return the sealed occurrence route for a canonical replay token.
+
+        A token with no reviewed-lock provenance is intentionally not assigned
+        to a political lane.  Partial provenance is corrupt causal evidence,
+        rather than a reason to fall back to a mutable catalog lookup.
+        """
+        if token.cohort_id != self.cohort_id:
+            raise ValueError("replay token belongs to another cohort")
+        event = self.store.replay_observation_event(
+            cohort_id=token.cohort_id, sequence=token.sequence
+        )
+        event_id = event.get("reviewed_lock_event_id")
+        milestone_id = event.get("reviewed_milestone_id")
+        if event_id is None and milestone_id is None:
+            return None
+        if not (
+            isinstance(event_id, str)
+            and event_id
+            and isinstance(milestone_id, str)
+            and milestone_id
+        ):
+            raise ValueError("replay token has incomplete reviewed-lock provenance")
+        return ReplayOccurrenceRoute(
+            cohort_id=token.cohort_id,
+            event_id=event_id,
+            milestone_id=milestone_id,
+        )
+
     def political_replay_context(self, token: ReplayObservationToken) -> dict[str, str]:
         """Derive immutable reviewed-lock attribution for one replay token.
 
@@ -1208,6 +1267,9 @@ class PlatformOpportunitySystem:
         """
         if token.cohort_id != self.cohort_id:
             raise ValueError("replay token belongs to another cohort")
+        route = self.political_replay_route(token)
+        if route is None:
+            raise ValueError("replay token has no sealed reviewed-lock provenance")
         event = self.store.replay_observation_event(
             cohort_id=token.cohort_id, sequence=token.sequence
         )
@@ -1220,8 +1282,6 @@ class PlatformOpportunitySystem:
             raise ValueError("replay token has no timezone-aware receipt")
         contract_id = str(event["contract_id"])
         provenance = {
-            "event_id": event.get("reviewed_lock_event_id"),
-            "milestone_id": event.get("reviewed_milestone_id"),
             "event_start_at": event.get("reviewed_event_start_at"),
             "event_end_at": event.get("reviewed_event_end_at"),
             "selected_at": event.get("reviewed_lock_selected_at"),
@@ -1232,8 +1292,8 @@ class PlatformOpportunitySystem:
         if not isinstance(request_started_at, str) or not request_started_at:
             raise ValueError("replay token has no causal request start")
         return {
-            "event_id": str(provenance["event_id"]),
-            "milestone_id": str(provenance["milestone_id"]),
+            "event_id": route.event_id,
+            "milestone_id": route.milestone_id,
             "contract_id": contract_id,
             "phase": phase,
             "base_lane": base_lane,
