@@ -378,35 +378,13 @@ class PoliticalExperimentalPaperLedger:
             if str(position["contract_id"]) != contract_id:
                 continue
             opened_at = datetime.fromisoformat(str(position["opened_at"]))
-            trigger: str | None = None
-            # Reviewed-lock provenance was sealed onto this replay token at
-            # persistence.  A token from the same reviewed event therefore
-            # supplies the authoritative boundary without consulting mutable
-            # catalog/lock state.  Boundary precedes every other frozen exit
-            # condition, including the ten-minute maximum hold.
-            if (
-                event["reviewed_lock_event_id"] is not None
-                and str(event["reviewed_lock_event_id"]) == str(position["event_id"])
-                and event["reviewed_event_end_at"] is not None
-            ):
-                try:
-                    event_end_at = datetime.fromisoformat(
-                        str(event["reviewed_event_end_at"])
-                    )
-                except ValueError as exc:
-                    raise ValueError(
-                        "sealed reviewed event boundary must be an ISO datetime"
-                    ) from exc
-                if event_end_at.tzinfo is None:
-                    raise ValueError(
-                        "sealed reviewed event boundary must be timezone-aware"
-                    )
-                if received_at >= event_end_at:
-                    trigger = "event_boundary"
-            if trigger is None and received_at >= opened_at + timedelta(
-                seconds=float(maximum_hold_seconds)
-            ):
-                trigger = "max_hold_10_minutes"
+            trigger = self._automatic_exit_trigger(
+                event=event,
+                position=position,
+                received_at=received_at,
+                opened_at=opened_at,
+                maximum_hold_seconds=maximum_hold_seconds,
+            )
             if trigger is None:
                 continue
             exit_result = self._exit_position(
@@ -436,6 +414,77 @@ class PoliticalExperimentalPaperLedger:
             )
         )
         return transitions
+
+    def _automatic_exit_trigger(
+        self,
+        *,
+        event: Mapping[str, Any],
+        position: Mapping[str, Any],
+        received_at: datetime,
+        opened_at: datetime,
+        maximum_hold_seconds: Decimal,
+    ) -> str | None:
+        """Select the frozen exit rule from sealed evidence in precedence order."""
+        # Reviewed-lock provenance was sealed onto this replay token at
+        # persistence. A token from the same reviewed event therefore supplies
+        # the authoritative boundary without consulting mutable catalog state.
+        if (
+            event["reviewed_lock_event_id"] is not None
+            and str(event["reviewed_lock_event_id"]) == str(position["event_id"])
+            and event["reviewed_event_end_at"] is not None
+        ):
+            try:
+                event_end_at = datetime.fromisoformat(
+                    str(event["reviewed_event_end_at"])
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    "sealed reviewed event boundary must be an ISO datetime"
+                ) from exc
+            if event_end_at.tzinfo is None:
+                raise ValueError(
+                    "sealed reviewed event boundary must be timezone-aware"
+                )
+            if received_at >= event_end_at:
+                return "event_boundary"
+        if received_at >= opened_at + timedelta(seconds=float(maximum_hold_seconds)):
+            return "max_hold_10_minutes"
+
+        book = self.store.replay_book_state(str(event["state_hash"]))
+        fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        token = book.get(str(position["side"]))
+        bids = token.get("bids", []) if isinstance(token, dict) else []
+        if bids:
+            top_exit = self.exit_economics(
+                quantity=1,
+                displayed_bid=str(bids[0][0]),
+                fee_schedule=fee_schedule,
+            )
+            basis_per_contract = Decimal(str(position["cost_basis_micros"])) / (
+                Decimal(str(position["quantity"])) * _MICROS_PER_DOLLAR
+            )
+            if basis_per_contract > 0:
+                net_return = (
+                    Decimal(top_exit.balance_change_micros) / _MICROS_PER_DOLLAR
+                    - basis_per_contract
+                ) / basis_per_contract
+                if net_return <= Decimal("-0.05"):
+                    return "hard_stop_net_return_minus_0.05"
+
+        yes = book.get("yes")
+        if not isinstance(yes, dict):
+            return None
+        bid_depth = sum(Decimal(str(level[1])) for level in yes.get("bids", []))
+        ask_depth = sum(Decimal(str(level[1])) for level in yes.get("asks", []))
+        total_depth = bid_depth + ask_depth
+        if total_depth <= 0:
+            return None
+        imbalance = (bid_depth - ask_depth) / total_depth
+        if (str(position["side"]) == "yes" and imbalance <= Decimal("-0.25")) or (
+            str(position["side"]) == "no" and imbalance >= Decimal("0.25")
+        ):
+            return "signal_reversal"
+        return None
 
     def snapshot(self) -> dict[str, Any]:
         """Return the invariant-checked state needed for paper-only reporting."""

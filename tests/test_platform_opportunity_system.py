@@ -905,6 +905,103 @@ def test_political_paper_process_observation_prioritizes_reviewed_event_boundary
 
 
 @pytest.mark.parametrize(
+    ("exit_book", "expected_trigger"),
+    [
+        (
+            {
+                "schema_version": 1,
+                "yes": {"bids": [[0.30, 100]], "asks": [[0.32, 1000]]},
+                "no": {"bids": [[0.67, 100]], "asks": [[0.69, 10]]},
+            },
+            "hard_stop_net_return_minus_0.05",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "yes": {"bids": [[0.45, 100]], "asks": [[0.46, 1000]]},
+                "no": {"bids": [[0.53, 100]], "asks": [[0.54, 10]]},
+            },
+            "signal_reversal",
+        ),
+    ],
+)
+def test_political_paper_process_observation_applies_frozen_hard_stop_then_reversal(
+    tmp_path, exit_book, expected_trigger
+):
+    """Sealed top-of-book loss precedes the frozen imbalance-reversal exit."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:auto-exit")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    entry_book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.39, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:auto-exit",
+        contract_id="kalshi:KXAUTOEXIT",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:auto-exit",
+        replay_sequence=first["event"]["sequence"],
+        event_id="event-auto-exit",
+        milestone_id="milestone-auto-exit",
+        contract_id="kalshi:KXAUTOEXIT",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=first["state_hash"],
+        fee_hash=first["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    fill = store.record_replay_observation(
+        cohort_id="cohort:auto-exit",
+        contract_id="kalshi:KXAUTOEXIT",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+    assert (
+        ledger.process_observation(replay_sequence=fill["event"]["sequence"])[0][
+            "outcome"
+        ]
+        == "filled"
+    )
+    exit_observation = store.record_replay_observation(
+        cohort_id="cohort:auto-exit",
+        contract_id="kalshi:KXAUTOEXIT",
+        normalized_book=exit_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=4),
+        request_started_at=NOW + timedelta(seconds=3),
+        received_at=NOW + timedelta(seconds=4),
+    )
+
+    transitions = ledger.process_observation(
+        replay_sequence=exit_observation["event"]["sequence"]
+    )
+
+    assert transitions[0]["outcome"] == "closed"
+    assert transitions[0]["payload"]["economics"]["exit_trigger"] == expected_trigger
+    assert ledger.snapshot()["counts"]["open"] == 0
+
+
+@pytest.mark.parametrize(
     ("book_delay", "fee_delay", "fee_age", "expected_reason"),
     [
         (timedelta(seconds=2), timedelta(seconds=2), timedelta(seconds=60), None),
