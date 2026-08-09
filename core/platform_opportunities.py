@@ -574,7 +574,7 @@ def kalshi_fee_schedule_from_metadata(
     return VenueFeeSchedule(
         "kalshi",
         "kalshi_quadratic",
-        0.0,
+        0.07,
         1.0,
         float(multiplier),
         observed_at,
@@ -854,7 +854,14 @@ class PlatformOpportunitySystem:
             cohort_id=self.cohort_id,
             contract_id=contract_id,
             normalized_book=self._normalized_replay_book(book),
-            fee_schedule={"schema_version": 1, **asdict(fee_schedule)},
+            fee_schedule={
+                "schema_version": 1,
+                **asdict(fee_schedule),
+                # A fee metadata read is complete before its paired book is
+                # admitted.  Retain that receipt fact rather than letting a
+                # later paper fill silently infer fee-fetch timing.
+                "fetched_at": received or observed,
+            },
             lock_phase=self._observation_lock_phase(contract_id, observed),
             observed_at=observed,
             request_started_at=request_started,

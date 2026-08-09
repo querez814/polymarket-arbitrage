@@ -36,6 +36,20 @@ from utils.platform_opportunity_store import (
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=timezone.utc)
 
 
+def _authoritative_kalshi_fee() -> dict[str, str | int]:
+    return {
+        "schema_version": 1,
+        "venue": "kalshi",
+        "fee_type": "kalshi_quadratic",
+        "rate": "0.07",
+        "exponent": "1",
+        "multiplier": "1",
+        "observed_at": NOW.isoformat(),
+        "fetched_at": NOW.isoformat(),
+        "source": "kalshi_public_metadata",
+    }
+
+
 def _lane_authorities(*lanes: str) -> dict[str, LaneAuthority]:
     return {lane: "forward_only_unvalidated" for lane in lanes}
 
@@ -159,13 +173,16 @@ def test_political_paper_ordinary_account_trade_economics_match_binding_fixture(
         cohort_id="political-v2-economics",
     )
 
-    entry = ledger.entry_economics(quantity=10, displayed_ask="0.40")
+    fee = _authoritative_kalshi_fee()
+    entry = ledger.entry_economics(quantity=10, displayed_ask="0.40", fee_schedule=fee)
     assert entry.effective_price == "0.41"
     assert entry.raw_fee == "0.16933"
     assert entry.rounded_trade_fee == "0.1694"
     assert entry.balance_change_micros == -4_270_000
 
-    first_exit = ledger.exit_economics(quantity=4, displayed_bid="0.55")
+    first_exit = ledger.exit_economics(
+        quantity=4, displayed_bid="0.55", fee_schedule=fee
+    )
     assert first_exit.effective_price == "0.54"
     assert first_exit.raw_fee == "0.069552"
     assert first_exit.rounded_trade_fee == "0.0696"
@@ -177,7 +194,9 @@ def test_political_paper_ordinary_account_trade_economics_match_binding_fixture(
         == 1_708_000
     )
 
-    final_exit = ledger.exit_economics(quantity=6, displayed_bid="0.55")
+    final_exit = ledger.exit_economics(
+        quantity=6, displayed_bid="0.55", fee_schedule=fee
+    )
     assert final_exit.balance_change_micros == 3_130_000
     assert (
         first_exit.balance_change_micros
@@ -185,6 +204,30 @@ def test_political_paper_ordinary_account_trade_economics_match_binding_fixture(
         - entry.debit_micros
         == 950_000
     )
+
+
+@pytest.mark.parametrize(
+    "mutation, error",
+    (
+        ({"fee_type": "none"}, "fee type"),
+        ({"rate": "0"}, "terms"),
+        ({"fetched_at": None}, "timing"),
+    ),
+)
+def test_political_paper_economics_rejects_missing_or_unsupported_replay_fee(
+    tmp_path, mutation, error
+):
+    """The binding rate comes from replay evidence; it is never a fallback."""
+    ledger = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        cohort_id="political-v2-fee-validation",
+    )
+    with pytest.raises(ValueError, match=error):
+        ledger.entry_economics(
+            quantity=1,
+            displayed_ask="0.40",
+            fee_schedule={**_authoritative_kalshi_fee(), **mutation},
+        )
 
 
 def test_political_paper_account_initialization_serializes_connections_and_rejects_drift(

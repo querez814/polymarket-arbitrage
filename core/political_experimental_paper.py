@@ -8,7 +8,7 @@ evidence, signals, fills, and accounting events to share one SQLite transaction.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
@@ -67,6 +67,58 @@ def _format_decimal(value: Decimal) -> str:
     return rendered or "0"
 
 
+def _authoritative_kalshi_fee_terms(
+    fee_schedule: dict[str, Any],
+) -> tuple[Decimal, Decimal, Decimal]:
+    """Return replay-proven Kalshi fee terms without guessing a fee curve.
+
+    Paper fills must consume the exact fee schedule retained beside their book
+    evidence.  In particular, the historical ``0.07`` convention is not a
+    fallback: the authoritative payload supplies the rate, exponent, and
+    multiplier explicitly.  Freshness relative to a prospective fill is
+    checked by the later causal resolver; this boundary verifies that the
+    retained schedule itself contains observed and fetched provenance.
+    """
+    if not isinstance(fee_schedule, dict):
+        raise ValueError("authoritative replay fee schedule is required")
+    if fee_schedule.get("schema_version") != 1:
+        raise ValueError("unsupported authoritative replay fee schema")
+    if fee_schedule.get("venue") != "kalshi":
+        raise ValueError("political paper requires an authoritative Kalshi fee")
+    if fee_schedule.get("fee_type") != "kalshi_quadratic":
+        raise ValueError("unsupported authoritative Kalshi fee type")
+    if not all(
+        fee_schedule.get(key) is not None for key in ("observed_at", "fetched_at")
+    ):
+        raise ValueError("authoritative replay fee timing is required")
+    try:
+        observed_at = datetime.fromisoformat(str(fee_schedule["observed_at"]))
+        fetched_at = datetime.fromisoformat(str(fee_schedule["fetched_at"]))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "authoritative replay fee timing must be ISO datetimes"
+        ) from exc
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+    if fetched_at.astimezone(timezone.utc) < observed_at.astimezone(timezone.utc):
+        raise ValueError("authoritative replay fee was fetched before observation")
+    try:
+        rate = Decimal(str(fee_schedule["rate"]))
+        exponent = Decimal(str(fee_schedule["exponent"]))
+        multiplier = Decimal(str(fee_schedule["multiplier"]))
+    except (InvalidOperation, KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "authoritative replay fee terms must be exact decimals"
+        ) from exc
+    if not all(
+        value.is_finite() and value > 0 for value in (rate, exponent, multiplier)
+    ):
+        raise ValueError("authoritative replay fee terms must be positive")
+    return rate, exponent, multiplier
+
+
 class PoliticalExperimentalPaperLedger:
     """Initialize the durable experimental-paper account in integer micros.
 
@@ -92,29 +144,41 @@ class PoliticalExperimentalPaperLedger:
 
     @staticmethod
     def entry_economics(
-        *, quantity: int, displayed_ask: str | Decimal
+        *,
+        quantity: int,
+        displayed_ask: str | Decimal,
+        fee_schedule: dict[str, Any],
     ) -> PoliticalPaperTradeEconomics:
         """Quote an all-in YES/NO entry at ask plus exactly one cent adversity."""
         return PoliticalExperimentalPaperLedger._trade_economics(
             quantity=quantity,
             displayed_price=displayed_ask,
             direction="entry",
+            fee_schedule=fee_schedule,
         )
 
     @staticmethod
     def exit_economics(
-        *, quantity: int, displayed_bid: str | Decimal
+        *,
+        quantity: int,
+        displayed_bid: str | Decimal,
+        fee_schedule: dict[str, Any],
     ) -> PoliticalPaperTradeEconomics:
         """Quote a conservative exit at bid minus exactly one cent adversity."""
         return PoliticalExperimentalPaperLedger._trade_economics(
             quantity=quantity,
             displayed_price=displayed_bid,
             direction="exit",
+            fee_schedule=fee_schedule,
         )
 
     @staticmethod
     def _trade_economics(
-        *, quantity: int, displayed_price: str | Decimal, direction: str
+        *,
+        quantity: int,
+        displayed_price: str | Decimal,
+        direction: str,
+        fee_schedule: dict[str, Any],
     ) -> PoliticalPaperTradeEconomics:
         if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
             raise ValueError(
@@ -124,8 +188,12 @@ class PoliticalExperimentalPaperLedger:
         effective = price + _ONE_CENT if direction == "entry" else price - _ONE_CENT
         if not Decimal("0") < effective < Decimal("1"):
             raise ValueError("adverse-slippage price is outside contract bounds")
+        rate, exponent, multiplier = _authoritative_kalshi_fee_terms(fee_schedule)
         raw_fee = (
-            Decimal(quantity) * Decimal("0.07") * effective * (Decimal("1") - effective)
+            Decimal(quantity)
+            * multiplier
+            * rate
+            * (effective * (Decimal("1") - effective)) ** exponent
         )
         rounded_fee = raw_fee.quantize(_ONE_CENTICENT, rounding=ROUND_CEILING)
         if direction == "entry":
