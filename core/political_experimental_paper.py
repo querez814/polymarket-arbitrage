@@ -430,6 +430,39 @@ class PoliticalExperimentalPaperLedger:
             raise ValueError("immutable political paper entry policy is invalid")
         return total_reserved, position_reserved, max_open_positions, depth_fraction
 
+    def _exit_limits(self) -> tuple[Decimal, Decimal]:
+        """Load immutable hold and displayed-depth limits for paper exits.
+
+        Runtime-created accounts bind both fields into their canonical policy.
+        The legacy focused fixtures intentionally retain the published control
+        defaults, but a partially declared exit policy fails closed rather
+        than allowing a caller to shorten the hold or widen usable liquidity.
+        """
+        policy = self.store.political_experimental_paper_policy(
+            cohort_id=self.cohort_id
+        )["policy"]
+        fields = ("minimum_hold_seconds", "entry_depth_fraction")
+        present = [field in policy for field in fields]
+        if not any(present):
+            return Decimal("2"), Decimal("0.10")
+        if not all(present):
+            raise ValueError("immutable political paper exit policy is incomplete")
+        try:
+            minimum_hold_seconds = Decimal(str(policy["minimum_hold_seconds"]))
+            displayed_depth_fraction = Decimal(str(policy["entry_depth_fraction"]))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(
+                "immutable political paper exit policy is invalid"
+            ) from exc
+        if (
+            not minimum_hold_seconds.is_finite()
+            or minimum_hold_seconds < 0
+            or not displayed_depth_fraction.is_finite()
+            or not Decimal("0") < displayed_depth_fraction <= Decimal("1")
+        ):
+            raise ValueError("immutable political paper exit policy is invalid")
+        return minimum_hold_seconds, displayed_depth_fraction
+
     def resolve_pending_signal(
         self,
         *,
@@ -634,8 +667,6 @@ class PoliticalExperimentalPaperLedger:
         *,
         position_id: str,
         replay_sequence: int,
-        minimum_hold_seconds: int = 2,
-        displayed_depth_fraction: Decimal = Decimal("0.10"),
     ) -> dict[str, Any]:
         """Close as much of an open position as the later canonical bids allow.
 
@@ -643,10 +674,7 @@ class PoliticalExperimentalPaperLedger:
         time.  Each displayed bid contributes at most the configured whole
         contract fraction and all economics remain independently conservative.
         """
-        if minimum_hold_seconds < 0 or not Decimal(
-            "0"
-        ) < displayed_depth_fraction <= Decimal("1"):
-            raise ValueError("political paper exit limits are invalid")
+        minimum_hold_seconds, displayed_depth_fraction = self._exit_limits()
         positions = {
             str(item["position_id"]): item
             for item in self.store.political_experimental_positions(
@@ -665,7 +693,7 @@ class PoliticalExperimentalPaperLedger:
             raise ValueError("political paper exit requires a durable replay event")
         received_at = datetime.fromisoformat(str(event["received_at"]))
         opened_at = datetime.fromisoformat(str(position["opened_at"]))
-        if received_at < opened_at + timedelta(seconds=minimum_hold_seconds):
+        if received_at < opened_at + timedelta(seconds=float(minimum_hold_seconds)):
             raise ValueError("political paper minimum hold has not elapsed")
         book = self.store.replay_book_state(str(event["state_hash"]))
         fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))

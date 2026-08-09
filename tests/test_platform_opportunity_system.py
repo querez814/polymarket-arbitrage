@@ -357,6 +357,37 @@ def test_political_paper_entry_resolution_uses_only_immutable_policy_limits(
     assert not hasattr(store, "resolve_political_experimental_pending_signal")
 
 
+def test_political_paper_exit_uses_only_immutable_policy_limits(tmp_path):
+    """An exit caller cannot shorten its hold or widen its displayed depth."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:policy")
+    ledger.initialize(
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+        policy={
+            "max_total_reserved_micros": 100_000_000,
+            "max_position_reserved_micros": 25_000_000,
+            "max_open_positions": 4,
+            "entry_depth_fraction": "0.10",
+            "minimum_hold_seconds": "2",
+        },
+    )
+
+    assert ledger._exit_limits() == (Decimal("2"), Decimal("0.10"))
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        ledger.exit_position(
+            position_id="position:policy",
+            replay_sequence=1,
+            minimum_hold_seconds=0,
+        )
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        ledger.exit_position(
+            position_id="position:policy",
+            replay_sequence=1,
+            displayed_depth_fraction=Decimal("1"),
+        )
+
+
 def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_path):
     """A qualified signal survives restart but is never itself a fill attempt."""
     path = tmp_path / "opportunities.db"
