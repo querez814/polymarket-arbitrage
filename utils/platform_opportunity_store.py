@@ -447,34 +447,76 @@ class PlatformOpportunityStore:
                     "replay evidence cohort is invalid: "
                     f"{status['degraded_reason'] or 'unknown'}"
                 )
-            inserted = connection.execute(
-                "INSERT OR IGNORE INTO political_experimental_pending_signals "
+            replay_event = connection.execute(
+                "SELECT contract_id, lock_phase, state_hash, fee_hash, "
+                "request_started_at, received_at "
+                "FROM platform_replay_observation_events "
+                "WHERE cohort_id = ? AND sequence = ?",
+                (cohort_id, replay_sequence),
+            ).fetchone()
+            if replay_event is None:
+                raise ValueError("pending signal must reference a durable replay event")
+            expected_base_lane = {
+                "hot": "hot_pre_event",
+                "event_live": "event_live",
+            }.get(str(replay_event["lock_phase"]))
+            if expected_base_lane is None or any(
+                (
+                    str(replay_event["contract_id"]) != contract_id,
+                    str(replay_event["lock_phase"]) != phase,
+                    expected_base_lane != base_lane,
+                    str(replay_event["state_hash"]) != state_hash,
+                    str(replay_event["fee_hash"]) != fee_hash,
+                    replay_event["request_started_at"] != request_iso,
+                    str(replay_event["received_at"]) != received_iso,
+                )
+            ):
+                raise ValueError(
+                    "pending signal provenance does not match replay event"
+                )
+            values = (
+                signal_id,
+                cohort_id,
+                replay_sequence,
+                event_id,
+                milestone_id,
+                contract_id,
+                side,
+                base_lane,
+                phase,
+                request_iso,
+                received_iso,
+                expiry_iso,
+                model_version,
+                config_hash,
+                state_hash,
+                fee_hash,
+                _json(features),
+            )
+            existing = connection.execute(
+                "SELECT signal_id, cohort_id, replay_sequence, event_id, milestone_id, "
+                "contract_id, side, base_lane, phase, signal_request_started_at, "
+                "signal_received_at, expires_at, model_version, config_hash, state_hash, "
+                "fee_hash, features_json FROM political_experimental_pending_signals "
+                "WHERE signal_id = ?",
+                (signal_id,),
+            ).fetchone()
+            if existing is not None:
+                if tuple(existing) == values:
+                    return False
+                raise ValueError("pending signal id collision has different payload")
+            connection.execute(
+                "INSERT INTO political_experimental_pending_signals "
                 "(signal_id, cohort_id, replay_sequence, event_id, milestone_id, contract_id, "
                 "side, base_lane, phase, signal_request_started_at, signal_received_at, "
                 "expires_at, model_version, config_hash, state_hash, fee_hash, features_json, "
                 "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    signal_id,
-                    cohort_id,
-                    replay_sequence,
-                    event_id,
-                    milestone_id,
-                    contract_id,
-                    side,
-                    base_lane,
-                    phase,
-                    request_iso,
-                    received_iso,
-                    expiry_iso,
-                    model_version,
-                    config_hash,
-                    state_hash,
-                    fee_hash,
-                    _json(features),
+                    *values,
                     received_iso,
                 ),
             )
-        return inserted.rowcount == 1
+        return True
 
     def political_experimental_pending_signals(
         self, *, cohort_id: str

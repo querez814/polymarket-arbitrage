@@ -156,9 +156,23 @@ def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_p
         store=PlatformOpportunityStore(path), cohort_id="political-v2-test"
     )
     ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    replay = ledger.store.record_replay_observation(
+        cohort_id="political-v2-test",
+        contract_id="kalshi:KXTEST-26AUG",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.51, 10]], "asks": [[0.52, 10]]},
+            "no": {"bids": [[0.48, 10]], "asks": [[0.49, 10]]},
+        },
+        fee_schedule={"schema_version": 1, "venue": "kalshi", "fee_type": "none"},
+        lock_phase="hot",
+        observed_at=NOW + timedelta(milliseconds=100),
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
     signal = {
         "signal_id": "signal:causal-1",
-        "replay_sequence": 7,
+        "replay_sequence": replay["event"]["sequence"],
         "event_id": "event-1",
         "milestone_id": "milestone-1",
         "contract_id": "kalshi:KXTEST-26AUG",
@@ -170,8 +184,8 @@ def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_p
         "expires_at": NOW + timedelta(seconds=10),
         "model_version": "depth-imbalance-reaction-experimental-v1",
         "config_hash": "config-hash",
-        "state_hash": "book-hash",
-        "fee_hash": "fee-hash",
+        "state_hash": replay["state_hash"],
+        "fee_hash": replay["fee_hash"],
         "features": {"mid": 0.52, "imbalance": 0.4},
     }
 
@@ -185,7 +199,7 @@ def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_p
     ) == [
         {
             "signal_id": "signal:causal-1",
-            "replay_sequence": 7,
+            "replay_sequence": 1,
             "event_id": "event-1",
             "milestone_id": "milestone-1",
             "contract_id": "kalshi:KXTEST-26AUG",
@@ -197,8 +211,8 @@ def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_p
             "expires_at": (NOW + timedelta(seconds=10)).isoformat(),
             "model_version": "depth-imbalance-reaction-experimental-v1",
             "config_hash": "config-hash",
-            "state_hash": "book-hash",
-            "fee_hash": "fee-hash",
+            "state_hash": replay["state_hash"],
+            "fee_hash": replay["fee_hash"],
             "features": {"mid": 0.52, "imbalance": 0.4},
         }
     ]
@@ -215,6 +229,59 @@ def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_p
             "payload": {"starting_cash_micros": 1_000_000_000},
         }
     ]
+
+
+def test_political_pending_signal_rejects_unproven_provenance_and_id_collision(
+    tmp_path,
+):
+    """A signal may only repeat its exact durable replay provenance."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:test")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    replay = store.record_replay_observation(
+        cohort_id="cohort:test",
+        contract_id="kalshi:KXTEST",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.51, 10]], "asks": [[0.52, 10]]},
+            "no": {"bids": [[0.48, 10]], "asks": [[0.49, 10]]},
+        },
+        fee_schedule={"schema_version": 1, "venue": "kalshi", "fee_type": "none"},
+        lock_phase="hot",
+        observed_at=NOW + timedelta(milliseconds=100),
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    signal = {
+        "signal_id": "signal:provenance",
+        "replay_sequence": replay["event"]["sequence"],
+        "event_id": "event-1",
+        "milestone_id": "milestone-1",
+        "contract_id": "kalshi:KXTEST",
+        "side": "yes",
+        "base_lane": "hot_pre_event",
+        "phase": "hot",
+        "signal_request_started_at": NOW,
+        "signal_received_at": NOW + timedelta(milliseconds=100),
+        "expires_at": NOW + timedelta(seconds=10),
+        "model_version": "depth-imbalance-reaction-experimental-v1",
+        "config_hash": "config-hash",
+        "state_hash": replay["state_hash"],
+        "fee_hash": replay["fee_hash"],
+        "features": {"mid": 0.52, "imbalance": 0.4},
+    }
+
+    with pytest.raises(ValueError, match="provenance"):
+        ledger.record_pending_signal(**{**signal, "fee_hash": "caller-asserted"})
+    with pytest.raises(ValueError, match="replay event"):
+        ledger.record_pending_signal(**{**signal, "replay_sequence": 2})
+
+    assert ledger.record_pending_signal(**signal) is True
+    assert ledger.record_pending_signal(**signal) is False
+    with pytest.raises(ValueError, match="id collision"):
+        ledger.record_pending_signal(
+            **{**signal, "features": {"mid": 0.53, "imbalance": 0.4}}
+        )
 
 
 def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
