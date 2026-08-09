@@ -678,6 +678,114 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     }
 
 
+@pytest.mark.parametrize(
+    ("book_delay", "fee_delay", "fee_age", "expected_reason"),
+    [
+        (timedelta(seconds=2), timedelta(seconds=2), timedelta(seconds=60), None),
+        (
+            timedelta(seconds=4, milliseconds=899),
+            timedelta(seconds=2),
+            timedelta(seconds=60),
+            "book_request_too_slow",
+        ),
+        (
+            timedelta(seconds=2),
+            timedelta(seconds=4),
+            timedelta(seconds=60),
+            "fee_metadata_too_slow",
+        ),
+        (
+            timedelta(seconds=2),
+            timedelta(seconds=2),
+            timedelta(seconds=301),
+            "fee_metadata_stale",
+        ),
+    ],
+)
+def test_political_paper_rejects_slow_or_stale_replay_evidence(
+    tmp_path, book_delay, fee_delay, fee_age, expected_reason
+):
+    """Typed policy timing limits gate fills; equality is admissible."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:timing")
+    ledger.initialize(
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+        policy={
+            "max_book_request_latency_seconds": "2",
+            "max_fee_fetch_latency_seconds": "2",
+            "max_fee_schedule_age_seconds": "60",
+        },
+    )
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.50, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    source = store.record_replay_observation(
+        cohort_id="cohort:timing",
+        contract_id="kalshi:KXTIMING",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:timing",
+        replay_sequence=source["event"]["sequence"],
+        event_id="event-1",
+        milestone_id="milestone-1",
+        contract_id="kalshi:KXTIMING",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(minutes=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=source["state_hash"],
+        fee_hash=source["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    request_started = NOW + timedelta(seconds=1)
+    received_at = request_started + book_delay
+    fee_observed_at = received_at - fee_age
+    fee_schedule = {
+        **_authoritative_kalshi_fee(),
+        "observed_at": fee_observed_at.isoformat(),
+        "fetched_at": (fee_observed_at + fee_delay).isoformat(),
+    }
+    later = store.record_replay_observation(
+        cohort_id="cohort:timing",
+        contract_id="kalshi:KXTIMING",
+        normalized_book=book,
+        fee_schedule=fee_schedule,
+        lock_phase="hot",
+        observed_at=received_at,
+        request_started_at=request_started,
+        received_at=received_at,
+        book_received_at=received_at,
+        fee_request_started_at=fee_observed_at,
+        fee_received_at=fee_observed_at + fee_delay,
+    )
+
+    result = ledger.resolve_pending_signal(
+        signal_id="signal:timing",
+        replay_sequence=later["event"]["sequence"],
+        attempted_at=received_at,
+    )
+
+    if expected_reason is None:
+        assert result["outcome"] == "filled"
+    else:
+        assert result["outcome"] == "no_fill"
+        assert result["reason"] == expected_reason
+        assert ledger.snapshot()["account"]["cash_micros"] == 1_000_000_000
+
+
 def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_asks(
     tmp_path,
 ):

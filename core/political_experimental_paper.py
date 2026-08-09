@@ -338,6 +338,58 @@ class PoliticalExperimentalPaperLedger:
             cohort_id=self.cohort_id
         )
 
+    def _replay_evidence_timing_reason(
+        self, *, event: Mapping[str, Any], fee_schedule: Mapping[str, Any]
+    ) -> str | None:
+        """Apply typed, immutable evidence-age limits before a paper fill.
+
+        Older unit cohorts intentionally did not bind timing limits.  Those
+        legacy fixtures retain their historical semantics, while every
+        runtime-created account has the three typed policy fields below and
+        therefore fails closed on incomplete, slow, or stale evidence.
+        """
+        policy = self.store.political_experimental_paper_policy(
+            cohort_id=self.cohort_id
+        )["policy"]
+        limit_keys = (
+            "max_book_request_latency_seconds",
+            "max_fee_fetch_latency_seconds",
+            "max_fee_schedule_age_seconds",
+        )
+        if not any(key in policy for key in limit_keys):
+            return None
+        if not all(key in policy for key in limit_keys):
+            return "replay_evidence_invalid"
+        try:
+            book_limit = Decimal(str(policy[limit_keys[0]]))
+            fee_limit = Decimal(str(policy[limit_keys[1]]))
+            age_limit = Decimal(str(policy[limit_keys[2]]))
+            book_latency_ms = event["book_latency_ms"]
+            fee_latency_ms = event["fee_latency_ms"]
+            received_at = datetime.fromisoformat(str(event["received_at"]))
+            fee_observed_at = datetime.fromisoformat(str(fee_schedule["observed_at"]))
+            fee_fetched_at = datetime.fromisoformat(str(fee_schedule["fetched_at"]))
+        except (InvalidOperation, KeyError, TypeError, ValueError):
+            return "replay_evidence_invalid"
+        if not all(
+            limit.is_finite() and limit >= 0
+            for limit in (book_limit, fee_limit, age_limit)
+        ):
+            return "replay_evidence_invalid"
+        if book_latency_ms is None:
+            return "missing_book_timing"
+        if fee_latency_ms is None:
+            return "missing_fee_metadata"
+        if fee_fetched_at < fee_observed_at:
+            return "replay_evidence_invalid"
+        if Decimal(int(book_latency_ms)) / 1000 > book_limit:
+            return "book_request_too_slow"
+        if Decimal(int(fee_latency_ms)) / 1000 > fee_limit:
+            return "fee_metadata_too_slow"
+        if Decimal(str((received_at - fee_observed_at).total_seconds())) > age_limit:
+            return "fee_metadata_stale"
+        return None
+
     def resolve_pending_signal(
         self,
         *,
@@ -403,6 +455,22 @@ class PoliticalExperimentalPaperLedger:
             )
         book = self.store.replay_book_state(str(event["state_hash"]))
         fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        timing_reason = self._replay_evidence_timing_reason(
+            event=event, fee_schedule=fee_schedule
+        )
+        if timing_reason is not None:
+            return self.store.resolve_political_experimental_pending_signal(
+                cohort_id=self.cohort_id,
+                signal_id=signal_id,
+                replay_sequence=replay_sequence,
+                attempted_at=attempted_at,
+                quantity=1,
+                debit_micros=1,
+                max_total_reserved_micros=max_total_reserved_micros,
+                max_position_reserved_micros=max_position_reserved_micros,
+                max_open_positions=max_open_positions,
+                economics={"preflight_reason": timing_reason},
+            )
         account = self.store.political_experimental_paper_account(
             cohort_id=self.cohort_id
         )
