@@ -1,0 +1,695 @@
+{
+  "candidates": [
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-04-23T00:00:00Z",
+        "market_closed_time": "2026-07-16 02:09:16+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-410410",
+      "family": "election",
+      "market_id": "2061469",
+      "market_question": "Will Jordan Bardella be the National Rally\u2019s candidate for the 2027 French Presidential election?",
+      "no_token_id": "108208262127963807843101026511755478460852841531384183595546371335745814935154",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "2027 French Presidential Election: National Rally Candidate",
+      "yes_token_id": "73513841395852783113612096882585774029058295155101066669225058424350026816720"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-03-31T00:00:00Z",
+        "market_closed_time": "2026-05-24 21:34:48+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-230927",
+      "family": "election",
+      "market_id": "1439439",
+      "market_question": "Will Sheila Garrity win the 2026 Galway West by-election?",
+      "no_token_id": "20840449740714697063956782424007268969014302956901474581884535586268331575815",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Galway-West By-Election Winner?",
+      "yes_token_id": "2056915960943664330304030416328857215786449079418433309289870581399865360703"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-01-01T04:59:00Z",
+        "market_closed_time": "2026-08-08 13:01:40+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-578421",
+      "family": "vote",
+      "market_id": "2487419",
+      "market_question": "Will 50 senators vote \"Yea\" for Todd Blanche as Attorney General?",
+      "no_token_id": "42212640725411847067454518843145207832441401812018015100387473199654178331299",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "How many senators will vote for Todd Blanche as Attorney General?",
+      "yes_token_id": "106139436716538067494729886049246073255555508241056870316655162241085921147655"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-01-01T04:59:00Z",
+        "market_closed_time": "2026-07-29 02:46:59+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-587501",
+      "family": "vote",
+      "market_id": "2517717",
+      "market_question": "Will Dan Sullivan vote to confirm Jay Clayton as Director of National Intelligence?",
+      "no_token_id": "48500418385361832787459888912006544854786746144371112203622569279555176364047",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Who will vote to confirm Jay Clayton as Director of National Intelligence",
+      "yes_token_id": "33291457913441760617020661710775055555305031094364418695472930926775180005317"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-01-01T04:59:00Z",
+        "market_closed_time": "2026-08-08 14:33:30+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-578429",
+      "family": "vote",
+      "market_id": "2487438",
+      "market_question": "Will Mitch McConnell vote to confirm Todd Blanche as Attorney General?",
+      "no_token_id": "22828302385788726188818295193365713141291632540864373655836361583375212994557",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Who will vote to confirm Todd Blanche as Attorney General?",
+      "yes_token_id": "68102814482306773852515092955521106012656029491485385999913248014560873656666"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-01-01T04:59:00Z",
+        "market_closed_time": "2026-07-01 08:25:05+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-587500",
+      "family": "approval",
+      "market_id": "2517712",
+      "market_question": "Jay Clayton confirmed as Director of National Intelligence by June 30?",
+      "no_token_id": "65973054851355016487717655837736896916634642984358073186060967699589350607476",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Jay Clayton confirmed as Director of National Intelligence by...?",
+      "yes_token_id": "13589815390362949473955142446639930325080278619562178239150110354700868717557"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2027-01-01T04:59:00Z",
+        "market_closed_time": "2026-08-08 10:54:12+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-580309",
+      "family": "approval",
+      "market_id": "2491502",
+      "market_question": "Todd Blanche confirmed as Attorney General by August 30?",
+      "no_token_id": "13362369789983105649479686874730087833392888523896781078323549283250613084856",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Todd Blanche confirmed as Attorney General by...?",
+      "yes_token_id": "99525272373421144440924546594750202218409431135704127587412785928949527807011"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-12-31T00:00:00Z",
+        "market_closed_time": "2026-05-24 02:49:25+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-218090",
+      "family": "election",
+      "market_id": "1400467",
+      "market_question": "Will Eoghan \u00d3 Ceannabh\u00e1in win the 2026 Dublin-central by-election?",
+      "no_token_id": "13360683016808452243768345630383328679213992330512958935526689998971205990173",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Dublin-Central By-Election Winner",
+      "yes_token_id": "111334461237281039976552147472621828039762407217372898256492910720448967278985"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-12-31T00:00:00Z",
+        "market_closed_time": "2026-07-17 13:31:58+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-481681",
+      "family": "election",
+      "market_id": "2252171",
+      "market_question": "Will Al Carns be a candidate in the next Labour Party leadership election?",
+      "no_token_id": "104315046631309497957576681191911640589845187596611231571067184961748366264952",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Candidates in next Labour leadership election?",
+      "yes_token_id": "114567759902647622587766587357386041430666610230978328744558644011936647310827"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-12-31T00:00:00Z",
+        "market_closed_time": "2026-05-14 00:55:07+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-162276",
+      "family": "vote",
+      "market_id": "1179234",
+      "market_question": "Will 49 or fewer senators vote \u201cYea\u201d for Trump\u2019s Fed Chair nominee?",
+      "no_token_id": "21859791778787313093307221796147636898524196717735859060867998991701183775743",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "How many senators will vote for Trump's Fed chair nominee?",
+      "yes_token_id": "12208630913486942333264306690387097580825584596525187155497007515333178671838"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-12-31T00:00:00Z",
+        "market_closed_time": "2026-06-08 00:32:51+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-73213",
+      "family": "vote",
+      "market_id": "665502",
+      "market_question": "Will a province schedule a referendum to leave Canada before 2027?",
+      "no_token_id": "104843058660950376380723861571450239193841790194474890622661228053834376067728",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Will a province schedule a referendum to leave Canada before 2027?",
+      "yes_token_id": "82192875338543444321050059158489019675098254652958667767854340749139444164787"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-12-31T00:00:00Z",
+        "market_closed_time": "2026-05-29 00:04:11+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-284268",
+      "family": "approval",
+      "market_id": "1643782",
+      "market_question": "Aliens.gov confirmed immigration website?",
+      "no_token_id": "91495095176373133277203225598743562732010273996745954167049295084927851839228",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Aliens.gov confirmed immigration website?",
+      "yes_token_id": "87275037161217956593942312315991001953456704586851688468902015776158339390201"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-12-30T23:00:00Z",
+        "market_closed_time": "2026-01-01 10:25:19+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-31212",
+      "family": "vote",
+      "market_id": "560343",
+      "market_question": "America Party candidate on a federal or gubernatorial ballot in 2025?",
+      "no_token_id": "104376417605520040517104147492421909852756549150101070245213050263037504189109",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "America Party candidate on a federal or gubernatorial ballot in 2025?",
+      "yes_token_id": "112183861081533703219461235904501158178366769932077760775057755667678091539492"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-11-30T00:00:00Z",
+        "market_closed_time": "2026-03-21 01:50:17+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-246015",
+      "family": "vote",
+      "market_id": "1499961",
+      "market_question": "Will James Talarico win the Texas Democratic Senate Primary by between 8.50% and 9.00%?",
+      "no_token_id": "3200695983307753590296032486182807675549303611903079555675312025438613226119",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Texas Democratic Senate Primary Margin of Victory (Smaller Brackets)",
+      "yes_token_id": "46674200923707598623671496846864968888479863021978623165617980586710577641740"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-11-04T00:00:00Z",
+        "market_closed_time": "2026-08-04 06:50:11+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-674587",
+      "family": "vote",
+      "market_id": "2822677",
+      "market_question": "Will Mallory McMorrow endorse Abdul El-Sayed in the Michigan Senate Democratic primary?",
+      "no_token_id": "112612273192221357785579693893091555280294238418091146580235873488981961056414",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Who will Mallory McMorrow endorse in the Michigan Senate Primary?",
+      "yes_token_id": "25799571077362249475457166458051550462768577910484778781300095979523504765931"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-10-31T00:00:00Z",
+        "market_closed_time": "2026-05-14 01:22:23+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-246219",
+      "family": "approval",
+      "market_id": "1500755",
+      "market_question": "Will Judy Shelton be confirmed as Fed Chair?",
+      "no_token_id": "6177012862139226284619406525682688708221010425170824614321466809910839464615",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Who will be confirmed as Fed Chair?",
+      "yes_token_id": "29577345180542753188700941748705224076025927865234220835903826643992439907745"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-10-31T00:00:00Z",
+        "market_closed_time": "2026-04-25 05:58:00+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-383037",
+      "family": "approval",
+      "market_id": "1994057",
+      "market_question": "Trump drops Powell investigation before Warsh is confirmed?",
+      "no_token_id": "53857396454203206954821776335890713728826588792862803571470959357687470993546",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Trump drops Powell investigation before Warsh is confirmed?",
+      "yes_token_id": "91462021410963313263557643726096069527355225529442100053005096755672493409019"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-10-31T00:00:00Z",
+        "market_closed_time": "2026-05-13 22:52:00+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-244423",
+      "family": "approval",
+      "market_id": "1494829",
+      "market_question": "Will the US confirm that aliens exist before Kevin Warsh is confirmed as Fed Chair?",
+      "no_token_id": "30976993050710343162528102135361009383573152782847859462090359340845648788123",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "What will happen before Kevin Warsh is confirmed?",
+      "yes_token_id": "18643301330475083191099018403611427745257683616386315295305079175390486474829"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-08T23:59:00Z",
+        "market_closed_time": "2026-08-09 07:40:10+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-726854",
+      "family": "vote",
+      "market_id": "3006404",
+      "market_question": "Will Jill Tokuda be the HI-02 Democratic nominee?",
+      "no_token_id": "38955071769157124251294272608560131989404028934673737221180025467695925443417",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "HI-02 Democratic Primary Winner",
+      "yes_token_id": "1562290454069681030954205618166334559300002635846322604907203784856430003760"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-08T23:59:00Z",
+        "market_closed_time": "2026-08-09 09:31:40+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-704563",
+      "family": "vote",
+      "market_id": "2928958",
+      "market_question": "Will Josh Green be the Hawaii Democratic nominee for Governor?",
+      "no_token_id": "60935861986707423068596658289953553981428453283273627651735016304465037769497",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Hawaii Governor Democratic Primary Winner",
+      "yes_token_id": "113774212232948838705577865957777066443798337420283556165574868135529932575957"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-08T23:59:00Z",
+        "market_closed_time": "2026-08-09 08:08:12+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-704770",
+      "family": "vote",
+      "market_id": "2929627",
+      "market_question": "Will Gary Cordery win the 2026 Hawaii Governor Republican primary election?",
+      "no_token_id": "8936291871578482119921248037580510433311793440613911779275711605098408093228",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Hawaii Governor Republican Primary Winner",
+      "yes_token_id": "110768695495808967265869768607341122801247750841579604183326359195121005474381"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-08T23:59:00Z",
+        "market_closed_time": "2026-08-09 09:31:40+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-704545",
+      "family": "vote",
+      "market_id": "2928906",
+      "market_question": "Will Ed Case be the HI-01 Democratic nominee?",
+      "no_token_id": "87632413134539161721308753394307032814851738077281615197538337092391178890790",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "HI-01 Democratic Primary Winner",
+      "yes_token_id": "69695489543526572544879346317578690186824152379880284647968589619863069062992"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-08T03:59:00Z",
+        "market_closed_time": "2026-08-08 19:12:40+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-769241",
+      "family": "vote",
+      "market_id": "3207232",
+      "market_question": "Will the Senate vote on the CLARITY Act before the August recess?",
+      "no_token_id": "75794627097452939084958111225664603927137751839383296636575474164402485118657",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Will the Senate vote on the CLARITY Act before the August recess?",
+      "yes_token_id": "95546550179881187468066266535236933149650195201651501727608667685196614525870"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-07T23:59:00Z",
+        "market_closed_time": "2026-08-08 19:11:30+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-778910",
+      "family": "approval",
+      "market_id": "3248976",
+      "market_question": "Will Trump's approval rating be at least 39.0 on August 7, 2026?",
+      "no_token_id": "20079823272324707539633044629020127705140142224548267682317008211253178672045",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Trump approval rating on August 7?",
+      "yes_token_id": "85396901763041086567115791116127978033797055415889542645316282469093448048851"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T23:59:00Z",
+        "market_closed_time": "2026-08-07 07:03:10+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-739925",
+      "family": "vote",
+      "market_id": "3068915",
+      "market_question": "Will Scott DesJarlais be the TN-04 Republican nominee?",
+      "no_token_id": "108198608656756755725539426742956001728521724339409813572008506226080023346515",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "TN-04 Republican Primary Winner",
+      "yes_token_id": "105079520899571182299875506385428666446055656659319377692717658162034147209065"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T23:59:00Z",
+        "market_closed_time": "2026-08-07 07:59:10+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-739934",
+      "family": "vote",
+      "market_id": "3068936",
+      "market_question": "Will Johnny Garrett be the TN-06 Republican nominee?",
+      "no_token_id": "57996665791001033177423221240645541977454935686364158760224072229618208072623",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "TN-06 Republican Primary Winner",
+      "yes_token_id": "2793110326188416030064673537042419550806321330583198283711209350883730983245"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T23:59:00Z",
+        "market_closed_time": "2026-08-07 08:33:12+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-739933",
+      "family": "vote",
+      "market_id": "3068930",
+      "market_question": "Will Andy Ogles be the TN-05 Republican nominee?",
+      "no_token_id": "87845346025127271287882725399555835070616539157823120886504915050184182487625",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "TN-05 Republican Primary Winner",
+      "yes_token_id": "53812289218965842163370625485093046804125242126283385267078097747938545122586"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T00:00:00Z",
+        "market_closed_time": "2026-08-07 07:52:10+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-257714",
+      "family": "vote",
+      "market_id": "1546000",
+      "market_question": "Will Justin Pearson be the Democratic Nominee for TN-09?",
+      "no_token_id": "22244101651821571719137682031084967376738220829673480502372978934975018979506",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "TN-09 Democratic Primary Winner",
+      "yes_token_id": "65837962884288346986987666670813153937308103147839999567673396062238424529929"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T00:00:00Z",
+        "market_closed_time": "2026-08-07 03:49:48+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-101799",
+      "family": "vote",
+      "market_id": "907122",
+      "market_question": "Will Jerri Green win the 2026 Tennessee Governor Democratic primary election?",
+      "no_token_id": "85272293551016833923810825925180755138645155607277795855258283916679350797403",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Tennessee Governor Democratic Primary Winner",
+      "yes_token_id": "66372402638500190174440536329022715738801651702611839893557991783005023423640"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T00:00:00Z",
+        "market_closed_time": "2026-08-07 04:48:57+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-101798",
+      "family": "vote",
+      "market_id": "907101",
+      "market_question": "Will Marsha Blackburn win the 2026 Tennessee Governor Republican primary election?",
+      "no_token_id": "4858882865644652038843410980300794095649163959833972408964541818227990572665",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Tennessee Governor Republican Primary Winner",
+      "yes_token_id": "56441970789162803753673551605263330257636181431872517092978248903448397124839"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-06T00:00:00Z",
+        "market_closed_time": "2026-08-07 07:50:43+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-352025",
+      "family": "vote",
+      "market_id": "1898576",
+      "market_question": "Will Marquita Bradshaw be the Democratic nominee for Senate in Tennessee?",
+      "no_token_id": "95876717443741965823196354769031603463717208536574945892995575963366175806080",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Tennessee Democratic Senate Primary Winner",
+      "yes_token_id": "64466207167392043956234471394672988191704989517871453439544287276964681562938"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-05T23:59:00Z",
+        "market_closed_time": "2026-08-06 00:10:00+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-793809",
+      "family": "speech",
+      "market_id": "3324077",
+      "market_question": "Will Trump's Las Vegas remarks be between 40 and 50 minutes long?",
+      "no_token_id": "102786358485777107617466160416709987882345928312090247072757842942022381948307",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "How long will Trump\u2019s Las Vegas remarks be?",
+      "yes_token_id": "108376156146684001092462896457507930187734309597518736866765219593583617596552"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-05T23:59:00Z",
+        "market_closed_time": "2026-08-06 00:45:12+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-793590",
+      "family": "speech",
+      "market_id": "3323359",
+      "market_question": "Will Trump say \"Bitcoin\", \"Crypto\", or \"Cryptocurrency\" during remarks in Las Vegas?",
+      "no_token_id": "33314493875839665770877098990270929110444241229951194447282388568630600164609",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "What will Trump say during remarks in Las Vegas?",
+      "yes_token_id": "43398569357798971379270824480813249342905238248874792244984255995794947170412"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-05T23:59:00Z",
+        "market_closed_time": "2026-08-05 23:29:42+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-793599",
+      "family": "speech",
+      "market_id": "3323372",
+      "market_question": "Will Donald Trump's tie be red?",
+      "no_token_id": "107467272222994310601719613534661473935759057674047639477895591987241634708496",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Donald Trump tie color during Las Vegas remarks?",
+      "yes_token_id": "77266516468554003832305775671075725393727212072564341425125570825223710710797"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-04T23:59:00Z",
+        "market_closed_time": "2026-08-07 07:26:42+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-682108",
+      "family": "vote",
+      "market_id": "2851456",
+      "market_question": "Will Jay Feely win the AZ-01 Republican primary by 15\u201320%?",
+      "no_token_id": "44885782610949653895055680718578195316995133210646498532064018073356974372577",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "AZ-01 Republican Primary Margin of Victory",
+      "yes_token_id": "102765611448878430397936369943434643959261003823648205737080462862589016619478"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-04T23:59:00Z",
+        "market_closed_time": "2026-08-05 05:54:27+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-726733",
+      "family": "vote",
+      "market_id": "3006145",
+      "market_question": "Will Benjamin Kincaid advance to the general election for WA-01?",
+      "no_token_id": "37739661170479185055136792300273010915762521616461608902192063760960545711693",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "WA-01 Primary Winners",
+      "yes_token_id": "61250661377160629672785727986850095339834195360073742652990355369759845582103"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-04T23:59:00Z",
+        "market_closed_time": "2026-08-05 05:54:27+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-726751",
+      "family": "vote",
+      "market_id": "3006191",
+      "market_question": "Will Melissa Chaudhry advance to the general election for WA-09?",
+      "no_token_id": "81102072721531662306042063142543852386129485849045894599929034698503613890070",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "WA-09 Primary Winners",
+      "yes_token_id": "27458079061266070482031995138079478856755298450323081833790872012886083067602"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-04T23:59:00Z",
+        "market_closed_time": "2026-08-05 23:38:41+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-682072",
+      "family": "vote",
+      "market_id": "2851317",
+      "market_question": "Will Benjamin Ambrose be the MI-02 Democratic nominee?",
+      "no_token_id": "63638846703753327922184388527999636346364479021115101604518616392693915296719",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "MI-02 Democratic Primary Winner",
+      "yes_token_id": "16045331254750916862040794995493718111455124693154941097466440813133796621005"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-04T23:59:00Z",
+        "market_closed_time": "2026-08-06 04:13:41+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-726911",
+      "family": "vote",
+      "market_id": "3006524",
+      "market_question": "Will Abdul El-Sayed win Washtenaw County in the Michigan Senate Democratic primary?",
+      "no_token_id": "16374937172582737582929680030381671469217770373625688104544986704933839735452",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Michigan Democratic Senate Primary: Washtenaw County (Ann Arbor) Winner",
+      "yes_token_id": "102191691711194550479347839929274787398260339852807104837457877229220573751750"
+    },
+    {
+      "archive_provenance": {
+        "event_end_date": "2026-08-04T23:59:00Z",
+        "market_closed_time": "2026-08-06 04:10:41+00",
+        "source": "gamma-api.polymarket.com/events",
+        "tag_id": 2
+      },
+      "event_id": "polymarket-event-753297",
+      "family": "vote",
+      "market_id": "3120673",
+      "market_question": "Will Haley Stevens win Kent County in the Michigan Senate Democratic primary?",
+      "no_token_id": "60613537704165281394752659051909220644919392515640401582143866085671341189105",
+      "occurrence_at": null,
+      "occurrence_status": "requires_authoritative_event_source",
+      "title": "Michigan Democratic Senate Primary: Kent County (Grand Rapids) Winner",
+      "yes_token_id": "89886160894942742861752125864715019857538532522815644235252061282454579352815"
+    }
+  ],
+  "collection": {
+    "events_fetched": 500,
+    "pages_fetched": 5,
+    "source": "https://gamma-api.polymarket.com/events",
+    "tag_id": 2
+  },
+  "data_quality": {
+    "blocker": "Gamma archive lifecycle dates are not authoritative real-world occurrence times.",
+    "classification": "archive_candidate_ledger",
+    "occurrence_times_verified": false
+  }
+}
