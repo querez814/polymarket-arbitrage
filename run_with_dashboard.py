@@ -96,7 +96,9 @@ from core.platform_opportunities import (
     PoliticalWatchPolicy,
     PlatformOpportunitySystem,
     VenueFeeSchedule,
+    _is_political_contract,
     kalshi_fee_schedule_from_metadata,
+    normalize_kalshi,
     polymarket_fee_schedule_from_market_info,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
@@ -181,6 +183,7 @@ class TradingBotWithDashboard:
         self._platform_catalog_refreshed_at: datetime | None = None
         self._platform_fee_cache: dict[str, tuple[VenueFeeSchedule, float]] = {}
         self._platform_fee_failures = 0
+        self._platform_milestone_cache: dict[str, tuple[float, tuple]] = {}
         self._semantic_embedder = None
         self._discovery_supervisor = RestartingTaskSupervisor(
             "cross-platform discovery",
@@ -880,9 +883,13 @@ class TradingBotWithDashboard:
         elif self._kalshi_markets:
             ordinary_kalshi = list(self._kalshi_markets)
         kalshi_by_ticker = {market.ticker: market for market in ordinary_kalshi}
+        kalshi_milestones, milestone_status = await self._political_kalshi_milestones(
+            list(kalshi_by_ticker.values()), now=now
+        )
         refresh = await worker.refresh_catalog(
             polymarket_markets=poly_markets,
             kalshi_markets=list(kalshi_by_ticker.values()),
+            kalshi_milestones=kalshi_milestones,
             catalyst_references=self._platform_catalyst_references(),
             snapshot_complete=all(
                 bool(status.get("complete"))
@@ -927,6 +934,7 @@ class TradingBotWithDashboard:
                     "source_status": {
                         "polymarket": poly_catalog_status,
                         "kalshi_ordinary": ordinary_status,
+                        "kalshi_political_milestones": milestone_status,
                     },
                     "possibly_truncated": not all(
                         bool(status.get("complete"))
@@ -948,6 +956,81 @@ class TradingBotWithDashboard:
                 },
             }
         )
+
+    async def _political_kalshi_milestones(self, markets, *, now: datetime):
+        """Fetch exact, bounded milestone evidence for political event tickers.
+
+        The generic milestone page is intentionally never used here: its sort
+        order is unrelated to the political watchlist and can omit target
+        events.  Pins are included before automatic candidates, but still use
+        the same exact related-event-ticker endpoint and client-side window.
+        """
+        policy = self.config.platform_opportunity
+        empty_status = {
+            "requested_event_tickers": 0,
+            "successful_event_tickers": 0,
+            "cached_event_tickers": 0,
+            "milestones": 0,
+            "errors": {},
+        }
+        if self._platform_kalshi_client is None:
+            return [], {**empty_status, "status": "dedicated_source_unavailable"}
+
+        pins = tuple(
+            event_id.removeprefix("kalshi:")
+            for event_id in policy.reviewed_pinned_event_ids
+            if event_id.startswith("kalshi:")
+        )
+        automatic = sorted(
+            {
+                market.event_ticker
+                for market in markets
+                if market.event_ticker and _is_political_contract(normalize_kalshi(market))
+            }
+        )
+        event_tickers = tuple(dict.fromkeys((*pins, *automatic)))[
+            : policy.political_milestone_max_event_tickers
+        ]
+        lookahead = now + timedelta(days=policy.political_lookahead_days)
+        semaphore = asyncio.Semaphore(policy.political_milestone_concurrency)
+        errors: dict[str, str] = {}
+        cached = 0
+
+        async def fetch(event_ticker: str):
+            nonlocal cached
+            cached_value = self._platform_milestone_cache.get(event_ticker)
+            if cached_value and time.monotonic() - cached_value[0] < policy.political_milestone_cache_seconds:
+                cached += 1
+                return cached_value[1]
+            try:
+                async with semaphore:
+                    milestones = await self._platform_kalshi_client.list_all_milestones(
+                        max_pages=policy.political_milestone_max_pages_per_event,
+                        max_milestones=policy.political_milestone_max_results_per_event,
+                        related_event_ticker=event_ticker,
+                    )
+            except Exception as exc:
+                errors[event_ticker] = f"{type(exc).__name__}: {exc}"[:200]
+                return ()
+            exact = tuple(
+                milestone
+                for milestone in milestones
+                if event_ticker in milestone.related_event_tickers
+                and now <= milestone.start_time <= lookahead
+            )
+            self._platform_milestone_cache[event_ticker] = (time.monotonic(), exact)
+            return exact
+
+        results = await asyncio.gather(*(fetch(ticker) for ticker in event_tickers))
+        milestones = [milestone for result in results for milestone in result]
+        return milestones, {
+            "status": "partial" if errors else "complete",
+            "requested_event_tickers": len(event_tickers),
+            "successful_event_tickers": len(event_tickers) - len(errors),
+            "cached_event_tickers": cached,
+            "milestones": len(milestones),
+            "errors": errors,
+        }
 
     async def _platform_hot_sampling_loop(self) -> None:
         """Poll bounded hot contracts on isolated public read pools."""

@@ -287,6 +287,13 @@ class PlatformOpportunityConfig:
     political_cooldown_poll_seconds: float = 10.0
     political_cooldown_after_hours: float = 2.0
     reviewed_pinned_event_ids: list[str] = field(default_factory=list)
+    # Exact event-ticker milestone reads are a separate bounded public-read
+    # budget.  They must never fall back to the generic milestone feed.
+    political_milestone_max_event_tickers: int = 24
+    political_milestone_max_pages_per_event: int = 2
+    political_milestone_max_results_per_event: int = 20
+    political_milestone_concurrency: int = 4
+    political_milestone_cache_seconds: float = 900.0
 
 
 @dataclass
@@ -1043,6 +1050,7 @@ def validate_config(config: BotConfig) -> None:
         "political_event_poll_seconds",
         "political_cooldown_poll_seconds",
         "political_cooldown_after_hours",
+        "political_milestone_cache_seconds",
     ):
         value = getattr(platform, name)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1072,6 +1080,10 @@ def validate_config(config: BotConfig) -> None:
         "catalog_max_decoded_bytes",
         "political_max_events",
         "political_max_contracts_per_event",
+        "political_milestone_max_event_tickers",
+        "political_milestone_max_pages_per_event",
+        "political_milestone_max_results_per_event",
+        "political_milestone_concurrency",
     ):
         value = getattr(platform, name)
         if not isinstance(value, int) or isinstance(value, bool) or value <= 0:

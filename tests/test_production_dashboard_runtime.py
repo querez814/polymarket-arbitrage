@@ -510,6 +510,10 @@ async def test_platform_catalog_uses_only_ordinary_kalshi_inventory():
                 )
             ]
 
+        async def list_all_milestones(self, **kwargs):
+            self.calls.append(kwargs)
+            return []
+
     class Worker:
         async def refresh_catalog(self, **kwargs):
             self.received = kwargs
@@ -525,13 +529,87 @@ async def test_platform_catalog_uses_only_ordinary_kalshi_inventory():
 
     await bot._refresh_platform_catalog()
 
-    assert [call["mve_filter"] for call in bot._platform_kalshi_client.calls] == [
-        "exclude"
-    ]
+    assert [
+        call["mve_filter"]
+        for call in bot._platform_kalshi_client.calls
+        if "mve_filter" in call
+    ] == ["exclude"]
     assert [market.ticker for market in bot.platform_opportunity_worker.received["kalshi_markets"]] == [
         "KXPOL-1"
     ]
     assert dashboard_state.platform_opportunity["catalog"]["multivariate_requests"] == 0
+
+
+@pytest.mark.asyncio
+async def test_platform_catalog_fetches_exact_political_milestones_and_passes_them_on():
+    now = datetime.now(timezone.utc)
+
+    class KalshiCatalog:
+        last_catalog_status = {"complete": True, "stop_reason": "complete"}
+
+        async def list_full_market_catalog(self, **kwargs):
+            assert kwargs["mve_filter"] == "exclude"
+            return [
+                KalshiMarket(
+                    ticker="KXTRUMPMENTION-26AUG10-T1",
+                    event_ticker="KXTRUMPMENTION-26AUG10",
+                    series_ticker="KXTRUMPMENTION",
+                    title="Will Trump mention tariffs?",
+                    event_title="Trump remarks",
+                    category="Politics",
+                )
+            ]
+
+        async def list_all_milestones(self, **kwargs):
+            assert kwargs == {
+                "max_pages": 2,
+                "max_milestones": 20,
+                "related_event_ticker": "KXTRUMPMENTION-26AUG10",
+            }
+            from kalshi_client.models import KalshiMilestone
+
+            return [
+                KalshiMilestone(
+                    milestone_id="mention",
+                    title="Trump remarks",
+                    category="Politics",
+                    milestone_type="speech",
+                    start_time=now + timedelta(hours=1),
+                    end_time=now + timedelta(hours=2),
+                    related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                    primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                    source_id="source",
+                )
+            ]
+
+    class Worker:
+        async def refresh_catalog(self, **kwargs):
+            self.received = kwargs
+            return SimpleNamespace(
+                catalog_contracts=1,
+                revisions_written=1,
+                monitoring=SimpleNamespace(hot=(), warm=(), budget_excluded=()),
+            )
+
+    config = BotConfig()
+    config.platform_opportunity.reviewed_pinned_event_ids = [
+        "kalshi:KXTRUMPMENTION-26AUG10"
+    ]
+    bot = TradingBotWithDashboard(config)
+    bot._platform_kalshi_client = KalshiCatalog()
+    bot.platform_opportunity_worker = Worker()
+
+    await bot._refresh_platform_catalog()
+
+    assert [
+        item.milestone_id
+        for item in bot.platform_opportunity_worker.received["kalshi_milestones"]
+    ] == ["mention"]
+    status = dashboard_state.platform_opportunity["catalog"]["source_status"][
+        "kalshi_political_milestones"
+    ]
+    assert status["requested_event_tickers"] == 1
+    assert status["successful_event_tickers"] == 1
 
 
 @pytest.mark.asyncio

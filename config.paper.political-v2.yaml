@@ -53,6 +53,11 @@ platform_opportunity:
   political_cooldown_after_hours: 2
   reviewed_pinned_event_ids:
     - kalshi:KXTRUMPMENTION-26AUG10
+  political_milestone_max_event_tickers: 24
+  political_milestone_max_pages_per_event: 2
+  political_milestone_max_results_per_event: 20
+  political_milestone_concurrency: 4
+  political_milestone_cache_seconds: 900
   additional_fee_buffer_per_contract: 0
   slippage_per_contract: 0.002
   max_shadow_notional: 100
