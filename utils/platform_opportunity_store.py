@@ -1548,8 +1548,13 @@ class PlatformOpportunityStore:
             )
         return payload_hash
 
-    def record_normalized_book_state(self, *, normalized_book: dict[str, Any]) -> str:
-        """Deduplicate one canonical unified-model book state for replay."""
+    def _record_normalized_book_state(self, *, normalized_book: dict[str, Any]) -> str:
+        """Deduplicate one canonical unified-model book state for replay.
+
+        This deliberately remains an internal primitive.  Persisting a book or
+        fee payload outside :meth:`record_replay_observation` would bypass the
+        cohort quota and create evidence with no ordered observation token.
+        """
         return self._record_replay_payload(
             table="normalized_book_states",
             hash_column="state_hash",
@@ -1557,8 +1562,8 @@ class PlatformOpportunityStore:
             kind="book",
         )
 
-    def record_fee_schedule_payload(self, *, fee_schedule: dict[str, Any]) -> str:
-        """Deduplicate a canonical fee schedule referenced by replay events."""
+    def _record_fee_schedule_payload(self, *, fee_schedule: dict[str, Any]) -> str:
+        """Deduplicate one fee payload as part of replay observation admission."""
         return self._record_replay_payload(
             table="normalized_fee_schedules",
             hash_column="fee_hash",

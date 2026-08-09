@@ -1494,6 +1494,11 @@ def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
 def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     """Replay storage retains normalized depth, never an adapter raw payload."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    # Hash-addressed payload writes are deliberately not public admission
+    # APIs: only the transaction which also allocates an observation token may
+    # make durable evidence visible to decisions.
+    assert not hasattr(store, "record_normalized_book_state")
+    assert not hasattr(store, "record_fee_schedule_payload")
     book = {
         "schema_version": 1,
         "yes": {
@@ -1515,10 +1520,10 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
         "source": "official",
     }
 
-    first_state = store.record_normalized_book_state(normalized_book=book)
-    second_state = store.record_normalized_book_state(normalized_book=book)
-    first_fee = store.record_fee_schedule_payload(fee_schedule=fee)
-    second_fee = store.record_fee_schedule_payload(fee_schedule=fee)
+    first_state = store._record_normalized_book_state(normalized_book=book)
+    second_state = store._record_normalized_book_state(normalized_book=book)
+    first_fee = store._record_fee_schedule_payload(fee_schedule=fee)
+    second_fee = store._record_fee_schedule_payload(fee_schedule=fee)
 
     assert first_state == second_state
     assert first_fee == second_fee
@@ -1563,7 +1568,7 @@ def test_replay_book_validation_rejects_malformed_binary_levels_before_hashing(
     }
 
     with pytest.raises(ValueError):
-        store.record_normalized_book_state(normalized_book=book)
+        store._record_normalized_book_state(normalized_book=book)
 
     assert store.replay_evidence_counts()["book_states"] == 0
 
@@ -1576,7 +1581,7 @@ def test_replay_payload_decode_rejects_a_tampered_hash_addressed_book(tmp_path):
         "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
         "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
     }
-    state_hash = store.record_normalized_book_state(normalized_book=book)
+    state_hash = store._record_normalized_book_state(normalized_book=book)
     altered_book = {
         **book,
         "yes": {"bids": [[0.61, 4]], "asks": [[0.01, 3]]},
