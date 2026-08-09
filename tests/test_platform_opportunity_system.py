@@ -616,8 +616,8 @@ def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill
     assert result["reason"] == "request_not_strictly_after_signal_receipt"
 
 
-def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_path):
-    """An open contract and an open base lane are independent exclusivity keys."""
+def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_path):
+    """Contracts are cohort-global while lanes are exclusive only within one event."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:overlap")
     ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
@@ -628,7 +628,12 @@ def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_
     }
 
     def resolve(
-        *, signal_id: str, contract_id: str, phase: str, started_at: datetime
+        *,
+        signal_id: str,
+        event_id: str,
+        contract_id: str,
+        phase: str,
+        started_at: datetime,
     ) -> dict:
         source = store.record_replay_observation(
             cohort_id="cohort:overlap",
@@ -643,7 +648,7 @@ def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_
         assert ledger.record_pending_signal(
             signal_id=signal_id,
             replay_sequence=source["event"]["sequence"],
-            event_id=f"event:{signal_id}",
+            event_id=event_id,
             milestone_id=f"milestone:{signal_id}",
             contract_id=contract_id,
             side="yes",
@@ -677,6 +682,7 @@ def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_
     assert (
         resolve(
             signal_id="signal:first",
+            event_id="event:one",
             contract_id="kalshi:KXONE",
             phase="hot",
             started_at=NOW,
@@ -686,6 +692,7 @@ def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_
     assert (
         resolve(
             signal_id="signal:same-contract",
+            event_id="event:two",
             contract_id="kalshi:KXONE",
             phase="event_live",
             started_at=NOW + timedelta(seconds=2),
@@ -694,12 +701,23 @@ def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_
     )
     assert (
         resolve(
-            signal_id="signal:same-lane",
+            signal_id="signal:same-event-lane",
+            event_id="event:one",
             contract_id="kalshi:KXTWO",
             phase="hot",
             started_at=NOW + timedelta(seconds=4),
         )["reason"]
         == "base_lane_overlap"
+    )
+    assert (
+        resolve(
+            signal_id="signal:independent-event-lane",
+            event_id="event:two",
+            contract_id="kalshi:KXTHREE",
+            phase="hot",
+            started_at=NOW + timedelta(seconds=6),
+        )["outcome"]
+        == "filled"
     )
 
 

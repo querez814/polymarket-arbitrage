@@ -274,13 +274,15 @@ class PlatformOpportunityStore:
                     position_id TEXT PRIMARY KEY,
                     cohort_id TEXT NOT NULL,
                     signal_id TEXT NOT NULL UNIQUE REFERENCES political_experimental_pending_signals(signal_id),
+                    event_id TEXT NOT NULL,
                     contract_id TEXT NOT NULL,
                     base_lane TEXT NOT NULL,
                     side TEXT NOT NULL CHECK(side IN ('yes', 'no')),
                     quantity INTEGER NOT NULL CHECK(quantity > 0),
                     cost_basis_micros INTEGER NOT NULL CHECK(cost_basis_micros > 0),
                     opened_at TEXT NOT NULL,
-                    UNIQUE(cohort_id, contract_id, base_lane)
+                    UNIQUE(cohort_id, contract_id),
+                    UNIQUE(cohort_id, event_id, base_lane)
                 );
                 """)
             # Existing research ledgers remain readable while timing evidence is
@@ -327,6 +329,49 @@ class PlatformOpportunityStore:
                         "ALTER TABLE platform_replay_observation_events "
                         f"ADD COLUMN {name} {definition}"
                     )
+            position_columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(political_experimental_positions)"
+                )
+            }
+            if "event_id" not in position_columns:
+                # Earlier iterations incorrectly made base lanes globally
+                # exclusive.  Preserve existing positions while deriving the
+                # reviewed event identity from their immutable pending signal.
+                self._connection.execute(
+                    "ALTER TABLE political_experimental_positions "
+                    "RENAME TO political_experimental_positions_legacy"
+                )
+                self._connection.execute(
+                    "CREATE TABLE political_experimental_positions ("
+                    "position_id TEXT PRIMARY KEY, "
+                    "cohort_id TEXT NOT NULL, "
+                    "signal_id TEXT NOT NULL UNIQUE REFERENCES "
+                    "political_experimental_pending_signals(signal_id), "
+                    "event_id TEXT NOT NULL, contract_id TEXT NOT NULL, "
+                    "base_lane TEXT NOT NULL, "
+                    "side TEXT NOT NULL CHECK(side IN ('yes', 'no')), "
+                    "quantity INTEGER NOT NULL CHECK(quantity > 0), "
+                    "cost_basis_micros INTEGER NOT NULL CHECK(cost_basis_micros > 0), "
+                    "opened_at TEXT NOT NULL, "
+                    "UNIQUE(cohort_id, contract_id), "
+                    "UNIQUE(cohort_id, event_id, base_lane))"
+                )
+                self._connection.execute(
+                    "INSERT INTO political_experimental_positions "
+                    "(position_id, cohort_id, signal_id, event_id, contract_id, "
+                    "base_lane, side, quantity, cost_basis_micros, opened_at) "
+                    "SELECT position_id, p.cohort_id, p.signal_id, s.event_id, "
+                    "p.contract_id, p.base_lane, p.side, p.quantity, "
+                    "p.cost_basis_micros, p.opened_at "
+                    "FROM political_experimental_positions_legacy AS p "
+                    "JOIN political_experimental_pending_signals AS s "
+                    "ON s.signal_id = p.signal_id"
+                )
+                self._connection.execute(
+                    "DROP TABLE political_experimental_positions_legacy"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -805,12 +850,12 @@ class PlatformOpportunityStore:
                         (cohort_id,),
                     ).fetchone()[0]
                 )
-                # These are separate constraints.  A contract may not be
-                # re-opened through a different reporting lane, and a base
-                # lane may not hide a second position under another contract.
-                # Query them under the same immediate transaction that opens
-                # the position so concurrent resolvers cannot pass either
-                # check before the first insert commits.
+                # These are separate constraints. A contract may not be
+                # re-opened through a different reporting lane anywhere in a
+                # cohort, while a base lane is exclusive only inside the same
+                # reviewed event. Query them under the same immediate
+                # transaction that opens the position so concurrent resolvers
+                # cannot pass either check before the first insert commits.
                 contract_position = connection.execute(
                     "SELECT 1 FROM political_experimental_positions "
                     "WHERE cohort_id = ? AND contract_id = ?",
@@ -818,8 +863,8 @@ class PlatformOpportunityStore:
                 ).fetchone()
                 lane_position = connection.execute(
                     "SELECT 1 FROM political_experimental_positions "
-                    "WHERE cohort_id = ? AND base_lane = ?",
-                    (cohort_id, signal["base_lane"]),
+                    "WHERE cohort_id = ? AND event_id = ? AND base_lane = ?",
+                    (cohort_id, signal["event_id"], signal["base_lane"]),
                 ).fetchone()
                 if debit_micros > max_position_reserved_micros:
                     reason = "per_position_reserved_cap"
@@ -860,11 +905,12 @@ class PlatformOpportunityStore:
                 reserved = int(account["reserved_micros"]) + debit_micros
                 position_id = f"position:{signal_id}"
                 connection.execute(
-                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, event_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         position_id,
                         cohort_id,
                         signal_id,
+                        signal["event_id"],
                         signal["contract_id"],
                         signal["base_lane"],
                         signal["side"],
