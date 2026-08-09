@@ -717,17 +717,62 @@ class PlatformOpportunitySystem:
         policy = self.monitoring_policy
         eligible: list[MonitoringAssignment] = []
         warm: list[MonitoringAssignment] = []
-        locked_contract_ids = {
-            contract_id
+        lock_by_contract_id = {
+            contract_id: lock
             for lock in self._political_locks.values()
             for contract_id in lock.contract_ids
         }
         for contract in self._contracts.values():
+            lock = lock_by_contract_id.get(contract.contract_id)
+            if lock is not None:
+                # A lock owns the complete research window.  It deliberately
+                # bypasses ordinary volume/lookahead ranking so refreshes
+                # cannot silently stop pre-event baselines or cooldown marks.
+                if now < lock.occurrence_at - timedelta(hours=1):
+                    warm.append(
+                        MonitoringAssignment(
+                            contract.contract_id,
+                            contract.venue,
+                            contract.native_id,
+                            lock.occurrence_at,
+                            "political_event_lock",
+                            1_000_000_000_000.0,
+                            "warm",
+                            60.0,
+                        )
+                    )
+                elif now < lock.occurrence_at:
+                    eligible.append(
+                        MonitoringAssignment(
+                            contract.contract_id,
+                            contract.venue,
+                            contract.native_id,
+                            lock.occurrence_at,
+                            "political_event_lock",
+                            1_000_000_000_000.0,
+                            "hot",
+                            2.0,
+                        )
+                    )
+                else:
+                    eligible.append(
+                        MonitoringAssignment(
+                            contract.contract_id,
+                            contract.venue,
+                            contract.native_id,
+                            lock.occurrence_at,
+                            "political_event_lock",
+                            1_000_000_000_000.0,
+                            "cooldown",
+                            10.0,
+                        )
+                    )
+                continue
             catalyst_at = contract.catalyst_at
             reason = ""
             if (
                 self.political_watch_policy is not None
-                and contract.contract_id not in locked_contract_ids
+                and contract.contract_id not in lock_by_contract_id
             ):
                 reason = "political_watchlist_not_selected"
             if not contract.active:
@@ -816,7 +861,15 @@ class PlatformOpportunitySystem:
                 )
             )
         eligible.sort(key=lambda item: (-item.priority_score, item.contract_id))
-        hot = eligible[: policy.max_hot_contracts]
+        # Locked events retain their sampling slot even when unrelated volume
+        # surges.  The political watch cap bounds this deliberate exception.
+        locked_eligible = [
+            item for item in eligible if item.reason == "political_event_lock"
+        ]
+        ordinary_eligible = [
+            item for item in eligible if item.reason != "political_event_lock"
+        ]
+        hot = [*locked_eligible, *ordinary_eligible[: policy.max_hot_contracts]]
         excluded = [
             MonitoringAssignment(
                 item.contract_id,
@@ -828,7 +881,7 @@ class PlatformOpportunitySystem:
                 item.cadence,
                 item.interval_seconds,
             )
-            for item in eligible[policy.max_hot_contracts :]
+            for item in ordinary_eligible[policy.max_hot_contracts :]
         ]
         return MonitoringPlan(tuple(hot), tuple(warm), tuple(excluded))
 

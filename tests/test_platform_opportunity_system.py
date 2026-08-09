@@ -206,6 +206,49 @@ def test_selected_political_event_survives_refresh_volume_displacement_until_coo
     assert [lock["event_id"] for lock in locks] == ["election-2026"]
 
 
+def test_locked_political_event_is_sampled_at_warm_hot_and_cooldown_cadences(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=1,
+        cooldown_after=timedelta(hours=2),
+    )
+    system = PlatformOpportunitySystem(store=store, political_watch_policy=policy)
+    occurrence = NOW + timedelta(hours=2)
+    market = _poly(
+        "election",
+        "Will the President win the election?",
+        event_id="election-2026",
+        end_date=occurrence,
+    )
+
+    warm = system.refresh_catalog(
+        polymarket_markets=[market], kalshi_markets=[], observed_at=NOW
+    ).monitoring
+    assert [
+        (item.reason, item.cadence, item.interval_seconds) for item in warm.warm
+    ] == [("political_event_lock", "warm", 60.0)]
+
+    hot = system.refresh_catalog(
+        polymarket_markets=[market],
+        kalshi_markets=[],
+        observed_at=occurrence - timedelta(minutes=30),
+    ).monitoring
+    assert [
+        (item.reason, item.cadence, item.interval_seconds) for item in hot.hot
+    ] == [("political_event_lock", "hot", 2.0)]
+
+    cooldown = system.refresh_catalog(
+        polymarket_markets=[market],
+        kalshi_markets=[],
+        observed_at=occurrence + timedelta(minutes=1),
+    ).monitoring
+    assert [
+        (item.reason, item.cadence, item.interval_seconds)
+        for item in cooldown.hot
+    ] == [("political_event_lock", "cooldown", 10.0)]
+
+
 def test_fuzzy_calendar_title_does_not_schedule_unrelated_contract(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)

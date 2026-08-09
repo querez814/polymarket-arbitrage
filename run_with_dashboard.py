@@ -93,6 +93,7 @@ from core.platform_opportunities import (
     AcceptancePolicy,
     CatalystReference,
     MonitoringPolicy,
+    PoliticalWatchPolicy,
     PlatformOpportunitySystem,
     VenueFeeSchedule,
     kalshi_fee_schedule_from_metadata,
@@ -681,6 +682,7 @@ class TradingBotWithDashboard:
                 min_liquidity=policy.min_liquidity,
                 min_volume=policy.min_volume,
             ),
+            political_watch_policy=PoliticalWatchPolicy(),
             acceptance_policy=AcceptancePolicy(
                 min_event_clusters=policy.min_event_clusters,
                 min_intents=policy.min_intents,
@@ -886,7 +888,17 @@ class TradingBotWithDashboard:
             ),
             observed_at=now,
         )
-        self._platform_hot_assignments = refresh.monitoring.hot
+        # Warm assignments normally are inventory-only metadata.  Locked
+        # political events are the bounded exception: they need a baseline
+        # before the hot window, so preserve only those in the poller.
+        self._platform_hot_assignments = (
+            *refresh.monitoring.hot,
+            *(
+                item
+                for item in refresh.monitoring.warm
+                if item.reason == "political_event_lock"
+            ),
+        )
         self._platform_catalog_refreshed_at = now
 
         def assignment_payload(item) -> dict:
