@@ -185,6 +185,30 @@ class PlatformOpportunityStore:
                     cohort_valid INTEGER NOT NULL CHECK(cohort_valid IN (0, 1)),
                     degraded_reason TEXT
                 );
+
+                -- The political experimental paper ledger is purpose-built
+                -- for causal shadow fills.  It is intentionally separate from
+                -- generic paper trading and records integer micros only.
+                CREATE TABLE IF NOT EXISTS political_experimental_paper_accounts (
+                    cohort_id TEXT PRIMARY KEY,
+                    starting_cash_micros INTEGER NOT NULL CHECK(starting_cash_micros >= 0),
+                    cash_micros INTEGER NOT NULL CHECK(cash_micros >= 0),
+                    reserved_micros INTEGER NOT NULL CHECK(reserved_micros >= 0),
+                    realized_pnl_micros INTEGER NOT NULL,
+                    initialized_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS political_experimental_paper_events (
+                    cohort_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    occurred_at TEXT NOT NULL,
+                    cash_micros INTEGER NOT NULL CHECK(cash_micros >= 0),
+                    reserved_micros INTEGER NOT NULL CHECK(reserved_micros >= 0),
+                    realized_pnl_micros INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, sequence)
+                );
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -216,6 +240,105 @@ class PlatformOpportunityStore:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    def initialize_political_experimental_paper_account(
+        self,
+        *,
+        cohort_id: str,
+        starting_cash_micros: int,
+        initialized_at: datetime,
+    ) -> dict[str, int | bool]:
+        """Create one durable political-paper account without resetting restarts.
+
+        The initialized after-state is append-only evidence.  Future signal and
+        fill transitions will use the same account/event transaction and retain
+        the invariant ``cash + reserved == starting_cash + realized_pnl``.
+        """
+        if not cohort_id.strip():
+            raise ValueError("cohort_id must be non-empty")
+        if (
+            not isinstance(starting_cash_micros, int)
+            or isinstance(starting_cash_micros, bool)
+            or starting_cash_micros < 0
+        ):
+            raise ValueError("starting_cash_micros must be a non-negative integer")
+        initialized_iso = _utc_iso(initialized_at)
+        with self._lock, self._connection:
+            connection = self._connection
+            existing = connection.execute(
+                "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                "realized_pnl_micros FROM political_experimental_paper_accounts "
+                "WHERE cohort_id = ?",
+                (cohort_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO political_experimental_paper_accounts "
+                    "(cohort_id, starting_cash_micros, cash_micros, reserved_micros, "
+                    "realized_pnl_micros, initialized_at, updated_at) "
+                    "VALUES (?, ?, ?, 0, 0, ?, ?)",
+                    (
+                        cohort_id,
+                        starting_cash_micros,
+                        starting_cash_micros,
+                        initialized_iso,
+                        initialized_iso,
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO political_experimental_paper_events "
+                    "(cohort_id, sequence, event_type, occurred_at, cash_micros, "
+                    "reserved_micros, realized_pnl_micros, payload_json) "
+                    "VALUES (?, 1, 'account_initialized', ?, ?, 0, 0, ?)",
+                    (
+                        cohort_id,
+                        initialized_iso,
+                        starting_cash_micros,
+                        _json({"starting_cash_micros": starting_cash_micros}),
+                    ),
+                )
+                existing = connection.execute(
+                    "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                    "realized_pnl_micros FROM political_experimental_paper_accounts "
+                    "WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+            assert existing is not None
+            account = {key: int(existing[key]) for key in existing.keys()}
+        if account["cash_micros"] + account["reserved_micros"] != (
+            account["starting_cash_micros"] + account["realized_pnl_micros"]
+        ):
+            raise RuntimeError("political experimental paper account identity violated")
+        return {
+            **account,
+            "open_positions": 0,
+            "valuation_complete": True,
+        }
+
+    def political_experimental_paper_events(
+        self, *, cohort_id: str
+    ) -> list[dict[str, Any]]:
+        """Read append-only political-paper after-states in sequence order."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT sequence, event_type, occurred_at, cash_micros, reserved_micros, "
+                "realized_pnl_micros, payload_json "
+                "FROM political_experimental_paper_events WHERE cohort_id = ? "
+                "ORDER BY sequence",
+                (cohort_id,),
+            ).fetchall()
+        return [
+            {
+                "sequence": int(row["sequence"]),
+                "event_type": str(row["event_type"]),
+                "occurred_at": str(row["occurred_at"]),
+                "cash_micros": int(row["cash_micros"]),
+                "reserved_micros": int(row["reserved_micros"]),
+                "realized_pnl_micros": int(row["realized_pnl_micros"]),
+                "payload": json.loads(str(row["payload_json"])),
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _canonical_replay_payload(

@@ -102,6 +102,43 @@ def _zero_fee(venue: str = "polymarket") -> VenueFeeSchedule:
     )
 
 
+def test_political_experimental_paper_account_is_idempotent_and_cent_exact(tmp_path):
+    """The political ledger starts once and records a durable after-state."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    cohort_id = "political-v2-test"
+
+    first = store.initialize_political_experimental_paper_account(
+        cohort_id=cohort_id,
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+    )
+    second = store.initialize_political_experimental_paper_account(
+        cohort_id=cohort_id,
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW + timedelta(seconds=1),
+    )
+
+    assert first == second == {
+        "starting_cash_micros": 1_000_000_000,
+        "cash_micros": 1_000_000_000,
+        "reserved_micros": 0,
+        "realized_pnl_micros": 0,
+        "open_positions": 0,
+        "valuation_complete": True,
+    }
+    assert store.political_experimental_paper_events(cohort_id=cohort_id) == [
+        {
+            "sequence": 1,
+            "event_type": "account_initialized",
+            "occurred_at": NOW.isoformat(),
+            "cash_micros": 1_000_000_000,
+            "reserved_micros": 0,
+            "realized_pnl_micros": 0,
+            "payload": {"starting_cash_micros": 1_000_000_000},
+        }
+    ]
+
+
 def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     """Replay storage retains normalized depth, never an adapter raw payload."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
