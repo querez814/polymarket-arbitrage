@@ -258,6 +258,7 @@ class PoliticalWatchPolicy:
     event_poll_seconds: float = 2.0
     cooldown_poll_seconds: float = 10.0
     cooldown_after: timedelta = timedelta(hours=2)
+    max_event_duration: timedelta = timedelta(hours=30)
     reviewed_pinned_event_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -281,6 +282,8 @@ class PoliticalWatchPolicy:
             raise ValueError("political watch cadences must be finite and positive")
         if self.cooldown_after < timedelta(0):
             raise ValueError("political watchlist cooldown cannot be negative")
+        if self.max_event_duration <= timedelta(0):
+            raise ValueError("political max event duration must be positive")
         if any(not event_id.strip() for event_id in self.reviewed_pinned_event_ids):
             raise ValueError("reviewed pinned event IDs must be non-empty")
         if len(set(self.reviewed_pinned_event_ids)) != len(
@@ -404,6 +407,8 @@ def _is_political_lock_candidate(
         and contract.event_start_at is not None
         and contract.event_end_at is not None
         and contract.event_end_at > contract.event_start_at
+        and contract.event_end_at - contract.event_start_at
+        <= policy.max_event_duration
         and contract.event_start_at <= now + policy.lookahead
         and contract.event_end_at > now
     )
@@ -984,11 +989,22 @@ class PlatformOpportunitySystem:
             for event_id in policy.reviewed_pinned_event_ids
             if event_id in pinned
         ]
-        selected.extend(
-            item
-            for item in ranked
-            if _event_pin_id(item[1][0]) not in policy.reviewed_pinned_event_ids
-        )
+        # Different Kalshi derivative event tickers can refer to one exact
+        # reviewed milestone.  They are separate catalog identities, but one
+        # underlying occurrence may consume only one automatic lock slot.
+        automatic_milestones: set[str] = set()
+        for item in ranked:
+            if _event_pin_id(item[1][0]) in policy.reviewed_pinned_event_ids:
+                continue
+            milestone_ids = {
+                contract.milestone_id
+                for contract in item[1]
+                if contract.milestone_id is not None
+            }
+            if automatic_milestones.intersection(milestone_ids):
+                continue
+            selected.append(item)
+            automatic_milestones.update(milestone_ids)
         for event_id, contracts in selected:
             if len(retained) >= policy.max_events:
                 break

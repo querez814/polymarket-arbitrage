@@ -58,9 +58,11 @@ platform_opportunity:
   political_event_poll_seconds: 2
   political_cooldown_poll_seconds: 10
   political_cooldown_after_hours: 2
+  political_max_event_duration_hours: 30
   reviewed_pinned_event_ids:
     - kalshi:KXTRUMPMENTION-26AUG10
     - kalshi:KXTRUMPSAY-26AUG10
+    - kalshi:KXSCRSENS-26
   political_milestone_max_event_tickers: 24
   political_milestone_max_pages_per_event: 2
   political_milestone_max_results_per_event: 20

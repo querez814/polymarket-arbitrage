@@ -114,7 +114,9 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     assert config.platform_opportunity.reviewed_pinned_event_ids == [
         "kalshi:KXTRUMPMENTION-26AUG10",
         "kalshi:KXTRUMPSAY-26AUG10",
+        "kalshi:KXSCRSENS-26",
     ]
+    assert config.platform_opportunity.political_max_event_duration_hours == 30
     assert (
         config.platform_opportunity.directional_reaction_authority
         == "forward_only_unvalidated"

@@ -294,6 +294,9 @@ class PlatformOpportunityConfig:
     political_event_poll_seconds: float = 2.0
     political_cooldown_poll_seconds: float = 10.0
     political_cooldown_after_hours: float = 2.0
+    # Political v2 is a short-horizon reaction cohort; multi-day milestones
+    # remain catalog evidence but cannot consume one of its lock slots.
+    political_max_event_duration_hours: float = 30.0
     reviewed_pinned_event_ids: list[str] = field(default_factory=list)
     # Exact event-ticker milestone reads are a separate bounded public-read
     # budget.  They must never fall back to the generic milestone feed.
@@ -1063,6 +1066,7 @@ def validate_config(config: BotConfig) -> None:
         "political_event_poll_seconds",
         "political_cooldown_poll_seconds",
         "political_cooldown_after_hours",
+        "political_max_event_duration_hours",
         "political_milestone_cache_seconds",
     ):
         value = getattr(platform, name)

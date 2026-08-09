@@ -721,6 +721,9 @@ class TradingBotWithDashboard:
                 event_poll_seconds=policy.political_event_poll_seconds,
                 cooldown_poll_seconds=policy.political_cooldown_poll_seconds,
                 cooldown_after=timedelta(hours=policy.political_cooldown_after_hours),
+                max_event_duration=timedelta(
+                    hours=policy.political_max_event_duration_hours
+                ),
                 reviewed_pinned_event_ids=tuple(policy.reviewed_pinned_event_ids),
             ),
             acceptance_policy=AcceptancePolicy(

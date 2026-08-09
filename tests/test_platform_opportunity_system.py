@@ -458,6 +458,133 @@ def test_selected_political_event_survives_refresh_volume_displacement_until_coo
     assert [lock["event_id"] for lock in locks] == ["KXELECTION-26AUG"]
 
 
+def test_automatic_political_locks_dedupe_a_shared_reviewed_milestone(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(
+        store=store,
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=2, max_contracts_per_event=1
+        ),
+    )
+    occurrence = NOW + timedelta(hours=4)
+    tomorrow = NOW + timedelta(days=1)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXSCRSENS-26-A",
+                "South Carolina senate primary",
+                event_ticker="KXSCRSENS-26",
+                volume=1_000,
+            ),
+            _kalshi(
+                "KXDERIVATIVE-26-A",
+                "South Carolina senate derivative",
+                event_ticker="KXDERIVATIVE-26",
+                volume=2_000,
+            ),
+            _kalshi(
+                "KXTOMORROW-26-A",
+                "President speech tomorrow",
+                event_ticker="KXTOMORROW-26",
+                volume=100,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "shared-sc-primary",
+                "South Carolina Republican Senate primary",
+                "Politics",
+                "political_race",
+                occurrence,
+                occurrence + timedelta(hours=24),
+                ("KXSCRSENS-26", "KXDERIVATIVE-26"),
+                ("KXSCRSENS-26", "KXDERIVATIVE-26"),
+                "reviewed-calendar",
+            ),
+            KalshiMilestone(
+                "tomorrow-speech",
+                "President remarks",
+                "Politics",
+                "speech",
+                tomorrow,
+                tomorrow + timedelta(minutes=45),
+                ("KXTOMORROW-26",),
+                ("KXTOMORROW-26",),
+                "reviewed-calendar",
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    locks = store.active_political_event_locks(now=NOW)
+    assert len(locks) == 2
+    assert sum(
+        lock["selected_contract"]["milestone_id"] == "shared-sc-primary"
+        for lock in locks
+    ) == 1
+    assert {lock["event_id"] for lock in locks} & {"KXTOMORROW-26"}
+
+
+def test_week_long_live_political_milestone_cannot_displace_short_horizon_event(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(
+        store=store,
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=1,
+            max_contracts_per_event=1,
+            max_event_duration=timedelta(hours=30),
+        ),
+    )
+    tomorrow = NOW + timedelta(days=1)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXWEEK-26-A",
+                "Tennessee election",
+                event_ticker="KXWEEK-26",
+                volume=1_000_000,
+            ),
+            _kalshi(
+                "KXTOMORROW-26-A",
+                "President speech tomorrow",
+                event_ticker="KXTOMORROW-26",
+                volume=10,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "week-long",
+                "Tennessee election",
+                "Politics",
+                "political_race",
+                NOW - timedelta(hours=1),
+                NOW + timedelta(days=6),
+                ("KXWEEK-26",),
+                ("KXWEEK-26",),
+                "reviewed-calendar",
+            ),
+            KalshiMilestone(
+                "tomorrow-speech",
+                "President remarks",
+                "Politics",
+                "speech",
+                tomorrow,
+                tomorrow + timedelta(minutes=45),
+                ("KXTOMORROW-26",),
+                ("KXTOMORROW-26",),
+                "reviewed-calendar",
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    assert [lock["event_id"] for lock in store.active_political_event_locks(now=NOW)] == [
+        "KXTOMORROW-26"
+    ]
+
+
 def test_reviewed_pinned_kalshi_event_beats_automatic_volume_ranking(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(
