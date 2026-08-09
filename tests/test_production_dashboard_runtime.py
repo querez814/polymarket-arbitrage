@@ -70,6 +70,30 @@ def test_platform_fee_cache_expires_before_political_fee_evidence_does():
 
 
 @pytest.mark.asyncio
+async def test_platform_dashboard_starts_with_an_isolated_empty_counterfactual_pane(
+    tmp_path,
+):
+    """No evidence means no counterfactual PnL and no implied paper result."""
+    config = BotConfig()
+    config.platform_opportunity.enabled = True
+    config.platform_opportunity.catalog_path = str(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(config)
+
+    await bot._configure_platform_opportunity_system()
+    try:
+        assert dashboard_state.platform_opportunity["counterfactual_sizing"] == {
+            "label": "counterfactual_sizing",
+            "status": "no_sealed_evidence",
+            "read_only_not_realized": True,
+            "reason": "no_sealed_evidence",
+            "control": None,
+            "counterfactuals": [],
+        }
+    finally:
+        await bot._shutdown_platform_opportunity_system()
+
+
+@pytest.mark.asyncio
 async def test_kalshi_event_index_refresh_resumes_cursor_and_retires_only_on_exhaustion(
     tmp_path,
 ):

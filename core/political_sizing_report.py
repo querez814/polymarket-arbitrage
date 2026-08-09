@@ -177,6 +177,25 @@ class PoliticalSizingReportBundle:
         """Return the control report followed by the six counterfactuals."""
         return (self.control, *self.counterfactuals)
 
+    def dashboard_payload(self) -> dict[str, Any]:
+        """Project this bundle for the isolated counterfactual dashboard pane.
+
+        The projection deliberately carries no aggregate PnL field.  Its
+        control interpretation and its six non-realized scenarios remain
+        separate from the authoritative experimental-paper ledger, and all
+        money values retain their exact integer-micro representation.
+        """
+        return {
+            "label": "counterfactual_sizing",
+            "status": "evaluated",
+            "read_only_not_realized": self.read_only_not_realized,
+            "evidence_cohort_id": self.evidence_cohort_id,
+            "control": _scenario_dashboard_payload(self.control),
+            "counterfactuals": [
+                _scenario_dashboard_payload(report) for report in self.counterfactuals
+            ],
+        }
+
 
 def evaluate_political_sizing_scenario(
     *,
@@ -609,3 +628,56 @@ def _allocation(
         unused_eligible_quantity=unused,
         saturation_reason=reason,
     )
+
+
+def _scenario_dashboard_payload(
+    report: PoliticalSizingScenarioReport,
+) -> dict[str, Any]:
+    """Convert an immutable scenario report to JSON-native dashboard data."""
+    return {
+        "scenario_id": report.scenario_id,
+        "scenario_name": report.scenario_name,
+        "evidence_cohort_id": report.evidence_cohort_id,
+        "capital_used_micros": report.capital_used_micros,
+        "capital_rejected_micros": report.capital_rejected_micros,
+        "unused_eligible_quantity": report.unused_eligible_quantity,
+        "peak_capital_used_micros": report.peak_capital_used_micros,
+        "capital_utilization_ratio": (
+            None
+            if report.capital_utilization_ratio is None
+            else str(report.capital_utilization_ratio)
+        ),
+        "realized_pnl_micros": report.realized_pnl_micros,
+        "open_unrealized_pnl_micros": report.open_unrealized_pnl_micros,
+        "open_valuation_complete": report.open_valuation_complete,
+        "maximum_drawdown_micros": report.maximum_drawdown_micros,
+        "allocations": [
+            {
+                "signal_id": allocation.signal_id,
+                "entry_replay_sequence": allocation.entry_replay_sequence,
+                "entry_replay_hash": allocation.entry_replay_hash,
+                "requested_quantity": allocation.requested_quantity,
+                "executable_quantity": allocation.executable_quantity,
+                "capital_used_micros": allocation.capital_used_micros,
+                "unused_eligible_quantity": allocation.unused_eligible_quantity,
+                "saturation_reason": allocation.saturation_reason,
+            }
+            for allocation in report.allocations
+        ],
+        "exits": [
+            {
+                "contract_id": exit_.contract_id,
+                "exit_replay_sequence": exit_.exit_replay_sequence,
+                "exit_replay_hash": exit_.exit_replay_hash,
+                "trigger": exit_.trigger,
+                "requested_quantity": exit_.requested_quantity,
+                "executable_quantity": exit_.executable_quantity,
+                "credit_micros": exit_.credit_micros,
+                "released_basis_micros": exit_.released_basis_micros,
+                "realized_pnl_micros": exit_.realized_pnl_micros,
+                "remaining_quantity": exit_.remaining_quantity,
+                "saturation_reason": exit_.saturation_reason,
+            }
+            for exit_ in report.exits
+        ],
+    }

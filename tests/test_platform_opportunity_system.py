@@ -180,6 +180,25 @@ def test_required_sizing_fanout_keeps_control_and_counterfactuals_separate():
     assert entry.entry_replay_hash == "hash:entry"
     assert exit_evidence.exit_replay_hash == "hash:exit"
 
+    payload = bundle.dashboard_payload()
+
+    assert payload["label"] == "counterfactual_sizing"
+    assert payload["read_only_not_realized"] is True
+    assert payload["control"]["scenario_name"] == "control_p25_t100"
+    assert len(payload["counterfactuals"]) == 6
+    assert "aggregate_pnl_micros" not in payload
+    assert payload["control"]["realized_pnl_micros"] == 950_000
+    assert payload["counterfactuals"][0]["allocations"][0] == {
+        "signal_id": "signal:fanout",
+        "entry_replay_sequence": 1,
+        "entry_replay_hash": "hash:entry",
+        "requested_quantity": 10,
+        "executable_quantity": 10,
+        "capital_used_micros": 4_270_000,
+        "unused_eligible_quantity": 0,
+        "saturation_reason": None,
+    }
+
 
 def test_read_only_sizing_enforces_occurrence_overlap_without_changing_evidence():
     """One scenario cannot count two open entries from the same occurrence."""
