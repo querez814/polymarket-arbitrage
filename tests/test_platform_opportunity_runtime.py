@@ -215,6 +215,72 @@ async def test_worker_occurrence_lane_does_not_starve_another_occurrence():
 
 
 @pytest.mark.asyncio
+async def test_worker_commits_parallel_lane_results_in_replay_sequence_order():
+    """A fast later lane cannot allocate ahead of an earlier slow lane."""
+
+    class System:
+        def __init__(self):
+            self.cohort_id = "cohort:ordered-completion"
+            self.persisted = 0
+            self.slow_started = Event()
+            self.release_slow = Event()
+            self.fast_scored = Event()
+
+        def persist_replay_observation(self, _contract_id, _book, **_kwargs):
+            self.persisted += 1
+            return {"event": {"sequence": self.persisted}}
+
+        def political_replay_route(self, token):
+            return SimpleNamespace(lane_key=f"occurrence:{token.sequence}")
+
+        def observe_replay_token(self, token):
+            if token.sequence == 1:
+                self.slow_started.set()
+                assert self.release_slow.wait(timeout=2)
+            else:
+                self.fast_scored.set()
+            return {"canonical": token.sequence}
+
+        def dashboard_summary(self):
+            return {}
+
+    system = System()
+    committed = []
+    worker = PlatformOpportunityWorker(
+        system,
+        max_event_lanes=2,
+        on_observation=lambda token, _result: committed.append(token.sequence),
+    )
+    schedule = VenueFeeSchedule(
+        "polymarket", "none", 0, 1, 0, datetime.now(timezone.utc), "test"
+    )
+    await worker.start()
+    try:
+        assert worker.submit_book(
+            "polymarket:slow",
+            OrderBook(market_id="slow"),
+            observed_at=datetime.now(timezone.utc),
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(system.slow_started.wait), timeout=1)
+        assert worker.submit_book(
+            "polymarket:fast",
+            OrderBook(market_id="fast"),
+            observed_at=datetime.now(timezone.utc),
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(system.fast_scored.wait), timeout=1)
+        # Sequence 2 scored independently, but is still barred from the
+        # shared callback/receipt until sequence 1 reaches the coordinator.
+        assert committed == []
+    finally:
+        system.release_slow.set()
+        await worker.stop()
+
+    assert committed == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_worker_persists_before_queueing_and_records_queue_drop(tmp_path):
     """A saturated queue cannot discard a completed read without durable evidence."""
     system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))

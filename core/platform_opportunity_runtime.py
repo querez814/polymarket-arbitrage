@@ -52,6 +52,13 @@ class PlatformOpportunityWorker:
         self._event_metrics: dict[str, dict[str, object]] = {}
         self._max_event_lanes = max_event_lanes
         self._running = False
+        # Lanes may score canonical observations concurrently, but a paper
+        # transition changes the shared portfolio.  Keep that short hand-off
+        # deterministic by admitting completed scores in durable replay order.
+        # ``None`` is used until startup recovery or the first persisted token
+        # establishes the next sequence for a new cohort.
+        self._global_completion_condition = asyncio.Condition()
+        self._next_global_completion_sequence: int | None = None
         self._on_update = on_update
         # This hook receives only the sealed replay token and the result scored
         # from its canonical evidence.  It is the narrow runtime hand-off used
@@ -82,6 +89,8 @@ class PlatformOpportunityWorker:
                 store.unprocessed_replay_observation_sequences,
                 cohort_id=cohort_id,
             )
+            if sequences:
+                self._note_global_completion_sequence(sequences[0])
             for sequence in sequences:
                 await self._enqueue(
                     ReplayObservationToken(cohort_id=cohort_id, sequence=sequence)
@@ -136,6 +145,7 @@ class PlatformOpportunityWorker:
                 cohort_id=self.system.cohort_id,
                 sequence=int(replay_evidence["event"]["sequence"]),
             )
+            self._note_global_completion_sequence(token.sequence)
         except Exception:
             self.failures += 1
             self.system.record_observation_failure(
@@ -217,16 +227,7 @@ class PlatformOpportunityWorker:
             succeeded = False
             try:
                 result = await self._run_sync(self.system.observe_replay_token, token)
-                if self._on_observation is not None:
-                    await self._run_sync(self._on_observation, token, result)
-                store = getattr(self.system, "store", None)
-                if store is not None:
-                    await self._run_sync(
-                        store.record_replay_processing_receipt,
-                        cohort_id=token.cohort_id,
-                        sequence=token.sequence,
-                        completed_at=datetime.now(timezone.utc),
-                    )
+                await self._complete_observation_in_global_order(token, result)
                 self.processed += 1
                 succeeded = True
             except asyncio.CancelledError:
@@ -307,6 +308,7 @@ class PlatformOpportunityWorker:
             )
 
     def _enqueue_nowait(self, token: ReplayObservationToken) -> None:
+        self._note_global_completion_sequence(token.sequence)
         route_key, queue = self._event_queue_for(token)
         try:
             queue.put_nowait(token)
@@ -317,9 +319,51 @@ class PlatformOpportunityWorker:
         self._record_lane_assignment(route_key, token)
 
     async def _enqueue(self, token: ReplayObservationToken) -> None:
+        self._note_global_completion_sequence(token.sequence)
         route_key, queue = self._event_queue_for(token)
         await queue.put(token)
         self._record_lane_assignment(route_key, token)
+
+    def _note_global_completion_sequence(self, sequence: int) -> None:
+        """Remember the earliest known unfinished replay sequence.
+
+        This is deliberately called at persistence/admission time, rather than
+        after scoring finishes: a fast later lane must not establish itself as
+        the global allocator's next decision while an earlier lane is slow.
+        """
+        if (
+            self._next_global_completion_sequence is None
+            or sequence < self._next_global_completion_sequence
+        ):
+            self._next_global_completion_sequence = sequence
+
+    async def _complete_observation_in_global_order(
+        self, token: ReplayObservationToken, result: object
+    ) -> None:
+        """Commit the shared-paper hand-off and receipt in replay order.
+
+        Feature/scoring work has already completed before entering this
+        coordinator.  A slow event therefore cannot stop another event from
+        scoring; it can only defer the short, transactional portfolio decision
+        which must remain deterministic across worker completion schedules.
+        """
+        async with self._global_completion_condition:
+            if self._next_global_completion_sequence is None:
+                self._next_global_completion_sequence = token.sequence
+            while token.sequence != self._next_global_completion_sequence:
+                await self._global_completion_condition.wait()
+            if self._on_observation is not None:
+                await self._run_sync(self._on_observation, token, result)
+            store = getattr(self.system, "store", None)
+            if store is not None:
+                await self._run_sync(
+                    store.record_replay_processing_receipt,
+                    cohort_id=token.cohort_id,
+                    sequence=token.sequence,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            self._next_global_completion_sequence += 1
+            self._global_completion_condition.notify_all()
 
     def _lane_metric(self, route_key: str) -> dict[str, object]:
         return self._event_metrics.setdefault(
