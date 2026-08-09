@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -64,14 +65,23 @@ def main() -> int:
         collected.extend(records)
         if len(records) < args.page_size:
             break
-    candidates = select_archive_candidates(collected, max_events=args.max_events)
+    collection_cutoff = datetime.now(timezone.utc)
+    candidates = select_archive_candidates(
+        collected, max_events=args.max_events, archive_cutoff=collection_cutoff
+    )
     payload = {
         "data_quality": {
             "classification": "archive_candidate_ledger",
             "occurrence_times_verified": False,
             "blocker": "Gamma archive lifecycle dates are not authoritative real-world occurrence times.",
         },
-        "collection": {"source": GAMMA_EVENTS_URL, "tag_id": 2, "pages_fetched": page + 1, "events_fetched": len(collected)},
+        "collection": {
+            "source": GAMMA_EVENTS_URL,
+            "tag_id": 2,
+            "pages_fetched": page + 1,
+            "events_fetched": len(collected),
+            "archive_cutoff": collection_cutoff.isoformat().replace("+00:00", "Z"),
+        },
         "candidates": candidates,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

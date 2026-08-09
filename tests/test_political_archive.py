@@ -1,7 +1,11 @@
 import pytest
+from datetime import datetime, timezone
 
 from utils.political_archive import select_archive_candidates
 from utils.political_occurrence_ledger import attach_authoritative_occurrences
+
+
+ARCHIVE_CUTOFF = datetime(2026, 8, 9, tzinfo=timezone.utc)
 
 
 def test_closed_politics_candidates_preserve_occurrence_blocker_and_choose_one_binary_market():
@@ -13,7 +17,7 @@ def test_closed_politics_candidates_preserve_occurrence_blocker_and_choose_one_b
         ],
     }]
 
-    candidates = select_archive_candidates(events, max_events=20)
+    candidates = select_archive_candidates(events, max_events=20, archive_cutoff=ARCHIVE_CUTOFF)
 
     assert len(candidates) == 1
     assert candidates[0]["market_id"] == "deep"
@@ -29,7 +33,20 @@ def test_candidates_reject_nonbinary_and_unrelated_archive_events():
         {"id": "multi", "title": "Election vote", "markets": [{"closed": True, "outcomes": '["A", "B"]', "clobTokenIds": '["a", "b"]'}]},
     ]
 
-    assert select_archive_candidates(events, max_events=5) == []
+    assert select_archive_candidates(events, max_events=5, archive_cutoff=ARCHIVE_CUTOFF) == []
+
+
+def test_candidates_exclude_future_event_even_when_gamma_marks_its_market_closed():
+    events = [{
+        "id": "future", "title": "2027 Presidential Election Winner", "endDate": "2027-11-04T00:00:00Z",
+        "markets": [{
+            "id": "prematurely-closed", "closed": True,
+            "closedTime": "2026-08-01T00:00:00Z",
+            "outcomes": '["Yes", "No"]', "clobTokenIds": '["yes", "no"]', "volumeNum": 100,
+        }],
+    }]
+
+    assert select_archive_candidates(events, max_events=5, archive_cutoff=ARCHIVE_CUTOFF) == []
 
 
 def test_external_occurrence_ledger_requires_exact_candidate_and_preserves_unmatched_blocker():
