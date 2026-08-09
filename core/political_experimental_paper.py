@@ -112,10 +112,15 @@ def _authoritative_kalshi_fee_terms(
         raise ValueError(
             "authoritative replay fee terms must be exact decimals"
         ) from exc
-    if not all(
-        value.is_finite() and value > 0 for value in (rate, exponent, multiplier)
+    if not (
+        rate.is_finite()
+        and rate > 0
+        and exponent.is_finite()
+        and exponent > 0
+        and multiplier.is_finite()
+        and multiplier >= 0
     ):
-        raise ValueError("authoritative replay fee terms must be positive")
+        raise ValueError("authoritative replay fee terms are invalid")
     return rate, exponent, multiplier
 
 

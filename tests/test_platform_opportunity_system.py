@@ -206,6 +206,24 @@ def test_political_paper_ordinary_account_trade_economics_match_binding_fixture(
     )
 
 
+def test_political_paper_accepts_authoritative_zero_multiplier_fee_schedule(tmp_path):
+    """A captured quadratic schedule may legitimately charge zero fees."""
+    ledger = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        cohort_id="political-v2-zero-fee",
+    )
+
+    entry = ledger.entry_economics(
+        quantity=1,
+        displayed_ask="0.40",
+        fee_schedule={**_authoritative_kalshi_fee(), "multiplier": "0"},
+    )
+
+    assert entry.raw_fee == "0"
+    assert entry.rounded_trade_fee == "0"
+    assert entry.balance_change_micros == -410_000
+
+
 @pytest.mark.parametrize(
     "mutation, error",
     (
