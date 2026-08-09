@@ -529,8 +529,9 @@ class PlatformOpportunityStore:
 
         Adapter timestamps are deliberately not copied into ``venue_timestamp``:
         public adapters currently provide no verified venue-origin timestamp.
-        Unchanged state is still durable by hash, while its event is suppressed
-        until the phase-specific heartbeat interval has elapsed.
+        Every completed read has a sequence-ordered replay event before its
+        caller can score it.  Unchanged evidence is a heartbeat; a state, fee,
+        or phase transition is a change boundary.
         """
         if not cohort_id or not contract_id or not lock_phase:
             raise ValueError("replay observation identity and phase are required")
@@ -543,7 +544,6 @@ class PlatformOpportunityStore:
         receipt = received_at or observed_at
         receipt_iso = _utc_iso(receipt)
         request_iso = _utc_iso(request_started_at) if request_started_at else None
-        heartbeat_seconds = 30 if lock_phase in {"hot", "event_live"} else 300
         with self._lock, self._connection:
             connection = self._connection
             status = connection.execute(
@@ -612,60 +612,58 @@ class PlatformOpportunityStore:
                 ),
             )
             prior = connection.execute(
-                "SELECT state_hash, received_at FROM platform_replay_observation_events "
+                "SELECT state_hash, fee_hash, lock_phase "
+                "FROM platform_replay_observation_events "
                 "WHERE cohort_id = ? AND contract_id = ? ORDER BY sequence DESC LIMIT 1",
                 (cohort_id, contract_id),
             ).fetchone()
-            emit = prior is None or str(prior["state_hash"]) != state_hash
-            if not emit:
-                prior_at = datetime.fromisoformat(str(prior["received_at"]))
-                emit = (receipt - prior_at).total_seconds() >= heartbeat_seconds
-            event: dict[str, Any] | None = None
-            if emit:
-                sequence = int(
-                    connection.execute(
-                        "SELECT COALESCE(MAX(sequence), 0) + 1 "
-                        "FROM platform_replay_observation_events WHERE cohort_id = ?",
-                        (cohort_id,),
-                    ).fetchone()[0]
+            changed = prior is None or any(
+                (
+                    str(prior["state_hash"]) != state_hash,
+                    str(prior["fee_hash"]) != fee_hash,
+                    str(prior["lock_phase"]) != lock_phase,
                 )
-                kind = (
-                    "change"
-                    if prior is None or str(prior["state_hash"]) != state_hash
-                    else "heartbeat"
-                )
+            )
+            sequence = int(
                 connection.execute(
-                    "INSERT INTO platform_replay_observation_events "
-                    "(cohort_id, sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
-                    "request_started_at, received_at, venue_timestamp, timestamp_provenance) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
-                    (
-                        cohort_id,
-                        sequence,
-                        contract_id,
-                        kind,
-                        lock_phase,
-                        state_hash,
-                        fee_hash,
-                        request_iso,
-                        receipt_iso,
-                        "local_request_receipt" if request_iso else "local_observed_at",
-                    ),
-                )
-                event = {
-                    "sequence": sequence,
-                    "contract_id": contract_id,
-                    "kind": kind,
-                    "lock_phase": lock_phase,
-                    "state_hash": state_hash,
-                    "fee_hash": fee_hash,
-                    "request_started_at": request_iso,
-                    "received_at": receipt_iso,
-                    "venue_timestamp": None,
-                    "timestamp_provenance": (
-                        "local_request_receipt" if request_iso else "local_observed_at"
-                    ),
-                }
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 "
+                    "FROM platform_replay_observation_events WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()[0]
+            )
+            kind = "change" if changed else "heartbeat"
+            connection.execute(
+                "INSERT INTO platform_replay_observation_events "
+                "(cohort_id, sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
+                "request_started_at, received_at, venue_timestamp, timestamp_provenance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                (
+                    cohort_id,
+                    sequence,
+                    contract_id,
+                    kind,
+                    lock_phase,
+                    state_hash,
+                    fee_hash,
+                    request_iso,
+                    receipt_iso,
+                    "local_request_receipt" if request_iso else "local_observed_at",
+                ),
+            )
+            event = {
+                "sequence": sequence,
+                "contract_id": contract_id,
+                "kind": kind,
+                "lock_phase": lock_phase,
+                "state_hash": state_hash,
+                "fee_hash": fee_hash,
+                "request_started_at": request_iso,
+                "received_at": receipt_iso,
+                "venue_timestamp": None,
+                "timestamp_provenance": (
+                    "local_request_receipt" if request_iso else "local_observed_at"
+                ),
+            }
             self._record_successful_observation_row(
                 connection,
                 cohort_id=cohort_id,

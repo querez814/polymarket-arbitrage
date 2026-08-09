@@ -369,7 +369,7 @@ def test_replay_evidence_cap_accounts_for_sqlite_store_and_wal_bytes(tmp_path):
     }
 
 
-def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(
+def test_replay_observation_events_are_ordered_and_cover_fee_phase_heartbeats(
     tmp_path,
 ):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
@@ -409,20 +409,56 @@ def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(
         received_at=NOW + timedelta(seconds=32),
         **common,
     )
+    changed_fee = {**fee, "fee_type": "quadratic"}
+    store.record_replay_observation(
+        normalized_book=changed_book,
+        fee_schedule=changed_fee,
+        observed_at=NOW + timedelta(seconds=33),
+        received_at=NOW + timedelta(seconds=33),
+        **{key: value for key, value in common.items() if key != "fee_schedule"},
+    )
+    store.record_replay_observation(
+        normalized_book=changed_book,
+        fee_schedule=changed_fee,
+        lock_phase="event_live",
+        observed_at=NOW + timedelta(seconds=34),
+        received_at=NOW + timedelta(seconds=34),
+        **{
+            key: value
+            for key, value in common.items()
+            if key not in {"fee_schedule", "lock_phase"}
+        },
+    )
 
     events = store.replay_observation_events(cohort_id="cohort:test")
     assert [
-        (event["sequence"], event["kind"], event["state_hash"]) for event in events
+        (
+            event["sequence"],
+            event["kind"],
+            event["lock_phase"],
+            event["state_hash"],
+            event["fee_hash"],
+        )
+        for event in events
     ] == [
-        (1, "change", events[0]["state_hash"]),
-        (2, "heartbeat", events[0]["state_hash"]),
-        (3, "change", events[2]["state_hash"]),
+        (1, "change", "hot", events[0]["state_hash"], events[0]["fee_hash"]),
+        (2, "heartbeat", "hot", events[0]["state_hash"], events[0]["fee_hash"]),
+        (3, "heartbeat", "hot", events[0]["state_hash"], events[0]["fee_hash"]),
+        (4, "change", "hot", events[3]["state_hash"], events[0]["fee_hash"]),
+        (5, "change", "hot", events[3]["state_hash"], events[4]["fee_hash"]),
+        (
+            6,
+            "change",
+            "event_live",
+            events[3]["state_hash"],
+            events[4]["fee_hash"],
+        ),
     ]
     assert (
         store.observation_telemetry(cohort_id="cohort:test")["kalshi:KXTEST"][
             "observation_count"
         ]
-        == 4
+        == 6
     )
 
 
