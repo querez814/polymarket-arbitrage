@@ -120,12 +120,7 @@ def _authoritative_kalshi_fee_terms(
 
 
 class PoliticalExperimentalPaperLedger:
-    """Initialize the durable experimental-paper account in integer micros.
-
-    Fill/exit mechanics intentionally do not live here yet.  Keeping account
-    initialization idempotent makes later worker restart recovery unable to
-    reset capital or duplicate the opening accounting event.
-    """
+    """Authoritative durable accounting boundary for experimental paper only."""
 
     def __init__(self, *, store: PlatformOpportunityStore, cohort_id: str) -> None:
         if not cohort_id.strip():
@@ -263,6 +258,12 @@ class PoliticalExperimentalPaperLedger:
         return self.store.expire_political_experimental_pending_signals(
             cohort_id=self.cohort_id,
             as_of=as_of,
+        )
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return the invariant-checked state needed for paper-only reporting."""
+        return self.store.political_experimental_paper_snapshot(
+            cohort_id=self.cohort_id
         )
 
     def resolve_pending_signal(

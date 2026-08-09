@@ -602,6 +602,24 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         "realized_pnl_micros": 950_000,
         "payload": closed["payload"],
     }
+    assert ledger.snapshot() == {
+        "account": {
+            "starting_cash_micros": 1_000_000_000,
+            "cash_micros": 1_000_950_000,
+            "reserved_micros": 0,
+            "realized_pnl_micros": 950_000,
+        },
+        "open_positions": [],
+        "counts": {
+            "signals": 1,
+            "pending": 0,
+            "filled": 1,
+            "no_fill": 0,
+            "open": 0,
+            "closed": 1,
+            "partial_exits": 1,
+        },
+    }
 
 
 def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_asks(

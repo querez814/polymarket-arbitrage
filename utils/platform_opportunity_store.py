@@ -797,6 +797,103 @@ class PlatformOpportunityStore:
             ).fetchall()
         return [{key: row[key] for key in row.keys()} for row in rows]
 
+    def political_experimental_paper_snapshot(
+        self, *, cohort_id: str
+    ) -> dict[str, Any]:
+        """Read one invariant-checked, durable political-paper ledger view.
+
+        This is deliberately a read model, not a second accounting path.  It
+        gives the runtime and dashboard one coherent way to expose the
+        experimental ledger without mixing it with standard paper or research
+        marks.  The short SQLite read transaction prevents a writer on this
+        connection from interleaving the account, position, and lifecycle
+        counters used by one snapshot.
+        """
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN")
+            try:
+                account_row = connection.execute(
+                    "SELECT starting_cash_micros, cash_micros, reserved_micros, "
+                    "realized_pnl_micros FROM political_experimental_paper_accounts "
+                    "WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+                if account_row is None:
+                    raise RuntimeError(
+                        "political experimental paper account is not initialized"
+                    )
+                account = {key: int(account_row[key]) for key in account_row.keys()}
+                positions = connection.execute(
+                    "SELECT position_id, signal_id, event_id, contract_id, base_lane, "
+                    "side, quantity, cost_basis_micros, opened_at "
+                    "FROM political_experimental_positions WHERE cohort_id = ? "
+                    "ORDER BY opened_at, position_id",
+                    (cohort_id,),
+                ).fetchall()
+                open_positions = [
+                    {
+                        **{key: row[key] for key in row.keys()},
+                        "quantity": int(row["quantity"]),
+                        "cost_basis_micros": int(row["cost_basis_micros"]),
+                    }
+                    for row in positions
+                ]
+                signal_counts = connection.execute(
+                    "SELECT COUNT(*) AS signals, "
+                    "SUM(CASE WHEN f.signal_id IS NULL THEN 1 ELSE 0 END) AS pending, "
+                    "SUM(CASE WHEN f.outcome = 'filled' THEN 1 ELSE 0 END) AS filled, "
+                    "SUM(CASE WHEN f.outcome = 'no_fill' THEN 1 ELSE 0 END) AS no_fill "
+                    "FROM political_experimental_pending_signals AS p "
+                    "LEFT JOIN political_experimental_fill_attempts AS f "
+                    "ON f.signal_id = p.signal_id WHERE p.cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+                event_counts = connection.execute(
+                    "SELECT "
+                    "SUM(CASE WHEN event_type = 'position_closed' THEN 1 ELSE 0 END) "
+                    "AS closed, "
+                    "SUM(CASE WHEN event_type = 'position_partially_closed' THEN 1 ELSE 0 END) "
+                    "AS partial_exits "
+                    "FROM political_experimental_paper_events WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+                orphan_no_fills = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM political_experimental_orphan_fill_attempts "
+                        "WHERE cohort_id = ?",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                connection.commit()
+            except Exception:
+                connection.rollback()
+                raise
+        if account["cash_micros"] + account["reserved_micros"] != (
+            account["starting_cash_micros"] + account["realized_pnl_micros"]
+        ):
+            raise RuntimeError("political experimental paper account identity violated")
+        reserved_from_positions = sum(
+            int(position["cost_basis_micros"]) for position in open_positions
+        )
+        if account["reserved_micros"] != reserved_from_positions:
+            raise RuntimeError(
+                "political experimental paper reserved basis invariant violated"
+            )
+        return {
+            "account": account,
+            "open_positions": open_positions,
+            "counts": {
+                "signals": int(signal_counts["signals"] or 0),
+                "pending": int(signal_counts["pending"] or 0),
+                "filled": int(signal_counts["filled"] or 0),
+                "no_fill": int(signal_counts["no_fill"] or 0) + orphan_no_fills,
+                "open": len(open_positions),
+                "closed": int(event_counts["closed"] or 0),
+                "partial_exits": int(event_counts["partial_exits"] or 0),
+            },
+        }
+
     def exit_political_experimental_position(
         self,
         *,
