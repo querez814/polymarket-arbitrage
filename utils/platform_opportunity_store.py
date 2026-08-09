@@ -206,6 +206,19 @@ class PlatformOpportunityStore:
                     cohort_valid INTEGER NOT NULL CHECK(cohort_valid IN (0, 1)),
                     degraded_reason TEXT
                 );
+                -- A replay row is not complete merely because it reached an
+                -- in-memory worker queue.  This receipt is written only
+                -- after token-only scoring and its sealed downstream hook
+                -- return successfully, so a restart can drain every durable
+                -- observation which lost a notification or crashed mid-work.
+                CREATE TABLE IF NOT EXISTS platform_replay_processing_receipts (
+                    cohort_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, sequence),
+                    FOREIGN KEY(cohort_id, sequence)
+                        REFERENCES platform_replay_observation_events(cohort_id, sequence)
+                );
 
                 -- The political experimental paper ledger is purpose-built
                 -- for causal shadow fills.  It is intentionally separate from
@@ -1960,6 +1973,54 @@ class PlatformOpportunityStore:
         if row is None:
             raise ValueError("replay observation token does not exist")
         return dict(row)
+
+    def unprocessed_replay_observation_sequences(self, *, cohort_id: str) -> list[int]:
+        """Return durable tokens with no completed decision receipt, in order."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT event.sequence FROM platform_replay_observation_events AS event "
+                "LEFT JOIN platform_replay_processing_receipts AS receipt "
+                "ON receipt.cohort_id = event.cohort_id "
+                "AND receipt.sequence = event.sequence "
+                "WHERE event.cohort_id = ? AND receipt.sequence IS NULL "
+                "ORDER BY event.sequence",
+                (cohort_id,),
+            ).fetchall()
+        return [int(row["sequence"]) for row in rows]
+
+    def record_replay_processing_receipt(
+        self, *, cohort_id: str, sequence: int, completed_at: datetime
+    ) -> bool:
+        """Idempotently mark a replay token fully processed after its hook.
+
+        The existence check and receipt insertion share an immediate SQLite
+        transaction.  A worker cannot acknowledge an invented token, and a
+        retry after a post-commit crash has a stable receipt rather than
+        creating a second completion record.
+        """
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0:
+            raise ValueError("replay sequence must be a positive integer")
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                event = connection.execute(
+                    "SELECT 1 FROM platform_replay_observation_events "
+                    "WHERE cohort_id = ? AND sequence = ?",
+                    (cohort_id, sequence),
+                ).fetchone()
+                if event is None:
+                    raise ValueError("replay observation token does not exist")
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO platform_replay_processing_receipts "
+                    "(cohort_id, sequence, completed_at) VALUES (?, ?, ?)",
+                    (cohort_id, sequence, _utc_iso(completed_at)),
+                ).rowcount
+                connection.commit()
+                return bool(inserted)
+            except Exception:
+                connection.rollback()
+                raise
 
     def upsert_contracts(
         self,

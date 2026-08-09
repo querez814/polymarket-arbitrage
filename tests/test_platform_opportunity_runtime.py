@@ -109,6 +109,60 @@ async def test_worker_persists_before_queueing_and_records_queue_drop(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_restart_drains_persisted_token_without_a_queue_notification(
+    tmp_path,
+):
+    """A completed read survives a process boundary until its hook completes."""
+    path = tmp_path / "opportunities.db"
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
+    first = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    # Do not start the first worker: this models a crash after durable replay
+    # persistence but before an in-memory queue notification can be consumed.
+    first_worker = PlatformOpportunityWorker(first)
+    assert first_worker.submit_book(
+        "polymarket:restart-token",
+        OrderBook(market_id="restart-token"),
+        observed_at=observed_at,
+        fee_schedule=schedule,
+    )
+    assert first.store.unprocessed_replay_observation_sequences(
+        cohort_id=first.cohort_id
+    ) == [1]
+    first.store.close()
+
+    resumed = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    delivered = []
+    worker = PlatformOpportunityWorker(
+        resumed,
+        on_observation=lambda token, _result: delivered.append(token.sequence),
+    )
+    await worker.start()
+    await worker.stop()
+
+    assert delivered == [1]
+    assert (
+        resumed.store.unprocessed_replay_observation_sequences(
+            cohort_id=resumed.cohort_id
+        )
+        == []
+    )
+    resumed.store.close()
+
+    # A second restart sees the durable receipt and must not rescore or
+    # re-deliver the completed token.
+    restarted = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    duplicate_delivery = []
+    restarted_worker = PlatformOpportunityWorker(
+        restarted,
+        on_observation=lambda token, _result: duplicate_delivery.append(token.sequence),
+    )
+    await restarted_worker.start()
+    await restarted_worker.stop()
+    assert duplicate_delivery == []
+
+
+@pytest.mark.asyncio
 async def test_worker_records_durable_processing_gap_for_persisted_token(tmp_path):
     system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
     worker = PlatformOpportunityWorker(system)

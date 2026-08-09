@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Mapping, Sequence
 
 from kalshi_client.models import KalshiMarket, KalshiMilestone
@@ -57,6 +57,22 @@ class PlatformOpportunityWorker:
         self._task = asyncio.create_task(
             self._run(), name="platform_opportunity_shadow_worker"
         )
+        # Queue delivery is only a wake-up optimization.  On every process
+        # start, reload durable tokens which never received a completion
+        # receipt (including queue drops and a crash after persistence) in
+        # canonical sequence order.  This keeps replay evidence from being
+        # silently stranded in the previous process's memory queue.
+        store = getattr(self.system, "store", None)
+        cohort_id = getattr(self.system, "cohort_id", None)
+        if store is not None and isinstance(cohort_id, str):
+            sequences = await self._run_sync(
+                store.unprocessed_replay_observation_sequences,
+                cohort_id=cohort_id,
+            )
+            for sequence in sequences:
+                await self._queue.put(
+                    ReplayObservationToken(cohort_id=cohort_id, sequence=sequence)
+                )
 
     async def stop(self) -> None:
         self._running = False
@@ -169,13 +185,29 @@ class PlatformOpportunityWorker:
                     )
                     if self._on_observation is not None:
                         await self._run_sync(self._on_observation, token, result)
+                    store = getattr(self.system, "store", None)
+                    if store is not None:
+                        await self._run_sync(
+                            store.record_replay_processing_receipt,
+                            cohort_id=token.cohort_id,
+                            sequence=token.sequence,
+                            completed_at=datetime.now(timezone.utc),
+                        )
                 self.processed += 1
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.failures += 1
+                store = getattr(self.system, "store", None)
+                if store is None:
+                    logger.exception(
+                        "Shadow opportunity observation failed | cohort=%s sequence=%s",
+                        token.cohort_id,
+                        token.sequence,
+                    )
+                    continue
                 event = await self._run_sync(
-                    self.system.store.replay_observation_event,
+                    store.replay_observation_event,
                     cohort_id=token.cohort_id,
                     sequence=token.sequence,
                 )
