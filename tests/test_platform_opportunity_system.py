@@ -31,6 +31,7 @@ from core.platform_opportunities import (
     _normalized_milestone_metadata,
 )
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
+from core.political_sizing_scenarios import required_political_sizing_scenarios
 from utils.platform_opportunity_store import (
     PlatformOpportunityStore,
     ReplayEvidenceCapacityError,
@@ -38,6 +39,34 @@ from utils.platform_opportunity_store import (
 )
 
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=timezone.utc)
+
+
+def test_required_political_sizing_scenarios_are_immutable_and_evidence_scoped():
+    """Seven approved paper-only policies share evidence but not policy identity."""
+    scenarios = required_political_sizing_scenarios()
+
+    assert [scenario.name for scenario in scenarios] == [
+        "control_p25_t100",
+        "cf_p50_t100",
+        "cf_p50_t200",
+        "cf_p100_t400",
+        "cf_p150_t600",
+        "cf_p200_t800",
+        "cf_liquidity_ceiling",
+    ]
+    assert all(not scenario.deployable for scenario in scenarios)
+    assert all(
+        scenario.canonical_policy()["read_only_not_realized"] is True
+        for scenario in scenarios
+    )
+    assert scenarios[0].scenario_id(evidence_cohort_id="evidence:a") != scenarios[
+        0
+    ].scenario_id(evidence_cohort_id="evidence:b")
+    assert scenarios[0].scenario_id(evidence_cohort_id="evidence:a") != scenarios[
+        1
+    ].scenario_id(evidence_cohort_id="evidence:a")
+    assert scenarios[-1].position_cap is None
+    assert scenarios[-1].total_reserved_cap is None
 
 
 def _authoritative_kalshi_fee() -> dict[str, str | int]:
