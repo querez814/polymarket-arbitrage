@@ -1,6 +1,7 @@
 import json
 import zlib
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -324,6 +325,38 @@ def test_political_paper_account_binds_a_canonical_immutable_policy(tmp_path):
         )
 
 
+def test_political_paper_entry_resolution_uses_only_immutable_policy_limits(
+    tmp_path,
+):
+    """A resolver cannot accept caller-selected capital or depth limits."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:policy")
+    ledger.initialize(
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+        policy={
+            "max_total_reserved_micros": 100_000_000,
+            "max_position_reserved_micros": 25_000_000,
+            "max_open_positions": 4,
+            "entry_depth_fraction": "0.10",
+        },
+    )
+
+    assert ledger._entry_limits() == (
+        100_000_000,
+        25_000_000,
+        4,
+        Decimal("0.10"),
+    )
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        ledger.resolve_pending_signal(
+            signal_id="signal:policy",
+            replay_sequence=1,
+            max_position_reserved_micros=1,
+        )
+    assert not hasattr(store, "resolve_political_experimental_pending_signal")
+
+
 def test_political_pending_signal_is_durable_causal_and_restart_idempotent(tmp_path):
     """A qualified signal survives restart but is never itself a fill attempt."""
     path = tmp_path / "opportunities.db"
@@ -526,7 +559,6 @@ def test_political_paper_ttl_sweeper_durably_consumes_expired_signal_on_restart(
     assert restarted.resolve_pending_signal(
         signal_id="signal:ttl",
         replay_sequence=1,
-        attempted_at=expires_at + timedelta(minutes=1),
     ) == {
         "outcome": "no_fill",
         "reason": "ttl_expired_without_later_book",
@@ -588,7 +620,6 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     result = ledger.resolve_pending_signal(
         signal_id="signal:causal-fill",
         replay_sequence=later["event"]["sequence"],
-        attempted_at=NOW + timedelta(seconds=1),
     )
 
     assert result["outcome"] == "filled"
@@ -776,7 +807,6 @@ def test_political_paper_rejects_slow_or_stale_replay_evidence(
     result = ledger.resolve_pending_signal(
         signal_id="signal:timing",
         replay_sequence=later["event"]["sequence"],
-        attempted_at=received_at,
     )
 
     if expected_reason is None:
@@ -846,7 +876,6 @@ def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_ask
     result = ledger.resolve_pending_signal(
         signal_id="signal:multi-level",
         replay_sequence=fill_event["event"]["sequence"],
-        attempted_at=NOW + timedelta(seconds=1),
     )
 
     assert result["outcome"] == "filled"
@@ -935,7 +964,6 @@ def test_political_paper_fills_an_affordable_prefix_of_deeper_depth(tmp_path):
     result = ledger.resolve_pending_signal(
         signal_id="signal:prefix",
         replay_sequence=later["event"]["sequence"],
-        attempted_at=NOW + timedelta(seconds=1),
     )
 
     assert result["outcome"] == "filled"
@@ -1003,7 +1031,6 @@ def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill
     result = ledger.resolve_pending_signal(
         signal_id="signal:overlap",
         replay_sequence=second["event"]["sequence"],
-        attempted_at=NOW + timedelta(seconds=1),
     )
     assert result["outcome"] == "no_fill"
     assert result["reason"] == "request_not_strictly_after_signal_receipt"
@@ -1069,7 +1096,6 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
         return ledger.resolve_pending_signal(
             signal_id=signal_id,
             replay_sequence=later["event"]["sequence"],
-            attempted_at=started_at + timedelta(seconds=1),
         )
 
     assert (
@@ -1139,7 +1165,6 @@ def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
     result = ledger.resolve_pending_signal(
         signal_id="signal:missing",
         replay_sequence=event["event"]["sequence"],
-        attempted_at=NOW + timedelta(seconds=1),
     )
 
     assert result["outcome"] == "no_fill"
@@ -1149,7 +1174,7 @@ def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
             "signal_id": "signal:missing",
             "replay_sequence": event["event"]["sequence"],
             "reason": "missing_signal",
-            "attempted_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "attempted_at": (NOW + timedelta(milliseconds=100)).isoformat(),
             "payload": result["payload"],
         }
     ]
@@ -1165,7 +1190,6 @@ def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
     retry = restarted.resolve_pending_signal(
         signal_id="signal:missing",
         replay_sequence=event["event"]["sequence"],
-        attempted_at=NOW + timedelta(seconds=2),
     )
     assert retry == {**result, "idempotent": True}
     assert (

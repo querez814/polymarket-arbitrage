@@ -390,16 +390,51 @@ class PoliticalExperimentalPaperLedger:
             return "fee_metadata_stale"
         return None
 
+    def _entry_limits(self) -> tuple[int, int, int, Decimal]:
+        """Load the immutable entry limits; callers cannot select risk policy.
+
+        Older focused fixtures predate policy binding and retain the published
+        control defaults.  A policy that declares any entry-limit field must
+        declare the complete set, so a partially persisted runtime policy
+        never quietly falls back to a looser limit.
+        """
+        policy = self.store.political_experimental_paper_policy(
+            cohort_id=self.cohort_id
+        )["policy"]
+        fields = (
+            "max_total_reserved_micros",
+            "max_position_reserved_micros",
+            "max_open_positions",
+            "entry_depth_fraction",
+        )
+        present = [field in policy for field in fields]
+        if not any(present):
+            return 100_000_000, 25_000_000, 4, Decimal("0.10")
+        if not all(present):
+            raise ValueError("immutable political paper entry policy is incomplete")
+        try:
+            total_reserved = int(policy["max_total_reserved_micros"])
+            position_reserved = int(policy["max_position_reserved_micros"])
+            max_open_positions = int(policy["max_open_positions"])
+            depth_fraction = Decimal(str(policy["entry_depth_fraction"]))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(
+                "immutable political paper entry policy is invalid"
+            ) from exc
+        if (
+            total_reserved <= 0
+            or position_reserved <= 0
+            or max_open_positions <= 0
+            or not Decimal("0") < depth_fraction <= Decimal("1")
+        ):
+            raise ValueError("immutable political paper entry policy is invalid")
+        return total_reserved, position_reserved, max_open_positions, depth_fraction
+
     def resolve_pending_signal(
         self,
         *,
         signal_id: str,
         replay_sequence: int,
-        attempted_at: datetime,
-        max_total_reserved_micros: int = 100_000_000,
-        max_position_reserved_micros: int = 25_000_000,
-        max_open_positions: int = 4,
-        displayed_depth_fraction: Decimal = Decimal("0.10"),
     ) -> dict[str, Any]:
         """Open from one strictly later replay book, never from the signal book.
 
@@ -411,8 +446,12 @@ class PoliticalExperimentalPaperLedger:
         retained with the one causal fill attempt; callers never supply a
         synthetic aggregate price or depth total.
         """
-        if not Decimal("0") < displayed_depth_fraction <= Decimal("1"):
-            raise ValueError("displayed depth fraction must be in (0, 1]")
+        (
+            max_total_reserved_micros,
+            max_position_reserved_micros,
+            max_open_positions,
+            displayed_depth_fraction,
+        ) = self._entry_limits()
         signals = {
             item["signal_id"]: item
             for item in self.store.political_experimental_pending_signals(
@@ -425,10 +464,19 @@ class PoliticalExperimentalPaperLedger:
             for item in self.store.replay_observation_events(cohort_id=self.cohort_id)
         }
         event = events.get(replay_sequence)
+        attempted_at = (
+            datetime.fromisoformat(str(event["received_at"]))
+            if event is not None
+            else (
+                datetime.fromisoformat(str(signal["signal_received_at"]))
+                if signal is not None
+                else datetime(1970, 1, 1, tzinfo=timezone.utc)
+            )
+        )
         # Store the causal no-fill even when no replay payload can safely be
         # decoded.  Dummy economics are never applied on those paths.
         if signal is None:
-            return self.store.resolve_political_experimental_pending_signal(
+            return self.store._resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,
                 replay_sequence=replay_sequence,
@@ -441,7 +489,7 @@ class PoliticalExperimentalPaperLedger:
                 economics={"preflight_reason": "missing_signal"},
             )
         if event is None:
-            return self.store.resolve_political_experimental_pending_signal(
+            return self.store._resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,
                 replay_sequence=replay_sequence,
@@ -459,7 +507,7 @@ class PoliticalExperimentalPaperLedger:
             event=event, fee_schedule=fee_schedule
         )
         if timing_reason is not None:
-            return self.store.resolve_political_experimental_pending_signal(
+            return self.store._resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,
                 replay_sequence=replay_sequence,
@@ -484,7 +532,7 @@ class PoliticalExperimentalPaperLedger:
         if not asks:
             # Let the store record the causal outcome; a zero quantity is never
             # passed across the accounting boundary.
-            return self.store.resolve_political_experimental_pending_signal(
+            return self.store._resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,
                 replay_sequence=replay_sequence,
@@ -547,7 +595,7 @@ class PoliticalExperimentalPaperLedger:
                 )
                 break
         if not level_economics:
-            return self.store.resolve_political_experimental_pending_signal(
+            return self.store._resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
                 signal_id=signal_id,
                 replay_sequence=replay_sequence,
@@ -564,7 +612,7 @@ class PoliticalExperimentalPaperLedger:
             levels=level_economics, direction="entry"
         )
         debit_micros = -balance_change_micros
-        return self.store.resolve_political_experimental_pending_signal(
+        return self.store._resolve_political_experimental_pending_signal(
             cohort_id=self.cohort_id,
             signal_id=signal_id,
             replay_sequence=replay_sequence,

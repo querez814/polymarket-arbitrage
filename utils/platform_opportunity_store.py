@@ -1150,7 +1150,7 @@ class PlatformOpportunityStore:
                 connection.rollback()
                 raise
 
-    def resolve_political_experimental_pending_signal(
+    def _resolve_political_experimental_pending_signal(
         self,
         *,
         cohort_id: str,
@@ -1166,10 +1166,10 @@ class PlatformOpportunityStore:
     ) -> dict[str, Any]:
         """Consume one signal only from a strictly later causal replay event.
 
-        This is deliberately the narrow signal-to-open transition: the caller
-        has already quoted conservative economics from the persisted book and
-        fee payload, while this transaction proves causality, reserves capital,
-        creates the position, and records the after-state together.
+        This is an internal persistence primitive for the ledger's sealed
+        replay-derived decision.  It is intentionally not a public store API:
+        callers must enter through ``PoliticalExperimentalPaperLedger`` so
+        replay evidence and immutable policy determine its economics.
         """
         if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
             raise ValueError("political paper fill quantity must be whole and positive")
