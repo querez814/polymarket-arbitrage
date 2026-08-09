@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Mapping, Sequence
 
@@ -22,19 +21,6 @@ from core.platform_opportunities import (
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class BookEnvelope:
-    contract_id: str
-    book: OrderBook
-    observed_at: datetime
-    request_started_at: datetime | None
-    received_at: datetime | None
-    fee_schedule: VenueFeeSchedule
-    book_received_at: datetime | None = None
-    fee_request_started_at: datetime | None = None
-    fee_received_at: datetime | None = None
-
-
 class PlatformOpportunityWorker:
     """Bounded, non-blocking producer with off-hot-path persistence/scoring."""
 
@@ -48,7 +34,9 @@ class PlatformOpportunityWorker:
         if queue_capacity <= 0:
             raise ValueError("queue_capacity must be positive")
         self.system = system
-        self._queue: asyncio.Queue[BookEnvelope | None] = asyncio.Queue(queue_capacity)
+        self._queue: asyncio.Queue[ReplayObservationToken | None] = asyncio.Queue(
+            queue_capacity
+        )
         self._operation_lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._running = False
@@ -85,24 +73,49 @@ class PlatformOpportunityWorker:
         fee_request_started_at: datetime | None = None,
         fee_received_at: datetime | None = None,
     ) -> bool:
-        """Never wait in a feed/execution callback; drop visibly if saturated."""
+        """Persist completed evidence before token-only queue admission.
+
+        The raw adapter book is intentionally consumed here and never crosses
+        the asynchronous decision boundary.  A queue drop therefore leaves a
+        canonical observation plus durable coverage-gap evidence behind.
+        """
+        failure_at = received_at or observed_at
         try:
-            self._queue.put_nowait(
-                BookEnvelope(
-                    contract_id,
-                    book,
-                    observed_at,
-                    request_started_at,
-                    received_at,
-                    fee_schedule,
-                    book_received_at,
-                    fee_request_started_at,
-                    fee_received_at,
-                )
+            replay_evidence = self.system.persist_replay_observation(
+                contract_id,
+                book,
+                observed_at=observed_at,
+                request_started_at=request_started_at,
+                received_at=received_at,
+                fee_schedule=fee_schedule,
+                book_received_at=book_received_at,
+                fee_request_started_at=fee_request_started_at,
+                fee_received_at=fee_received_at,
             )
+            token = ReplayObservationToken(
+                cohort_id=self.system.cohort_id,
+                sequence=int(replay_evidence["event"]["sequence"]),
+            )
+        except Exception:
+            self.failures += 1
+            self.system.record_observation_failure(
+                contract_id, reason_code="processing_failed", failed_at=failure_at
+            )
+            logger.exception(
+                "Shadow opportunity replay persistence failed | contract=%s",
+                contract_id,
+            )
+            self._publish()
+            return False
+        try:
+            self._queue.put_nowait(token)
             return True
         except asyncio.QueueFull:
             self.dropped += 1
+            self.system.record_observation_failure(
+                contract_id, reason_code="queue_drop", failed_at=failure_at
+            )
+            self._publish()
             return False
 
     async def refresh_catalog(
@@ -140,37 +153,34 @@ class PlatformOpportunityWorker:
 
     async def _run(self) -> None:
         while True:
-            envelope = await self._queue.get()
-            if envelope is None:
+            token = await self._queue.get()
+            if token is None:
                 self._queue.task_done()
                 break
             try:
                 async with self._operation_lock:
-                    replay_evidence = await self._run_sync(
-                        self.system.persist_replay_observation,
-                        envelope.contract_id,
-                        envelope.book,
-                        observed_at=envelope.observed_at,
-                        request_started_at=envelope.request_started_at,
-                        received_at=envelope.received_at,
-                        fee_schedule=envelope.fee_schedule,
-                        book_received_at=envelope.book_received_at,
-                        fee_request_started_at=envelope.fee_request_started_at,
-                        fee_received_at=envelope.fee_received_at,
-                    )
-                    token = ReplayObservationToken(
-                        cohort_id=self.system.cohort_id,
-                        sequence=int(replay_evidence["event"]["sequence"]),
-                    )
                     await self._run_sync(self.system.observe_replay_token, token)
                 self.processed += 1
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self.failures += 1
+                event = await self._run_sync(
+                    self.system.store.replay_observation_event,
+                    cohort_id=token.cohort_id,
+                    sequence=token.sequence,
+                )
+                failed_at = datetime.fromisoformat(str(event["received_at"]))
+                await self._run_sync(
+                    self.system.record_observation_failure,
+                    str(event["contract_id"]),
+                    reason_code="processing_failed",
+                    failed_at=failed_at,
+                )
                 logger.exception(
-                    "Shadow opportunity observation failed | contract=%s",
-                    envelope.contract_id,
+                    "Shadow opportunity observation failed | cohort=%s sequence=%s",
+                    token.cohort_id,
+                    token.sequence,
                 )
             finally:
                 self._queue.task_done()

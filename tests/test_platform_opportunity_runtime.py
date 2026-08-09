@@ -25,10 +25,12 @@ async def test_worker_drains_queued_observations_before_shutdown():
     class System:
         def __init__(self):
             self.processed = []
+            self.persisted = 0
             self.cohort_id = "cohort:test"
 
         def persist_replay_observation(self, contract_id, book, **kwargs):
-            return {"event": {"sequence": len(self.processed) + 1}}
+            self.persisted += 1
+            return {"event": {"sequence": self.persisted}}
 
         def observe_replay_token(self, token):
             self.processed.append(token.sequence)
@@ -60,6 +62,72 @@ async def test_worker_drains_queued_observations_before_shutdown():
 
     assert system.processed == [1, 2, 3]
     assert worker.processed == 3
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_before_queueing_and_records_queue_drop(tmp_path):
+    """A saturated queue cannot discard a completed read without durable evidence."""
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    worker = PlatformOpportunityWorker(system, queue_capacity=1)
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
+
+    assert worker.submit_book(
+        "polymarket:first",
+        OrderBook(market_id="first"),
+        observed_at=observed_at,
+        fee_schedule=schedule,
+    )
+    assert not worker.submit_book(
+        "polymarket:dropped",
+        OrderBook(market_id="dropped"),
+        observed_at=observed_at,
+        fee_schedule=schedule,
+    )
+
+    assert [
+        event["contract_id"]
+        for event in system.store.replay_observation_events(cohort_id=system.cohort_id)
+    ] == ["polymarket:first", "polymarket:dropped"]
+    assert system.store.observation_failure_telemetry(cohort_id=system.cohort_id) == {
+        "polymarket:dropped": {
+            "queue_drop": {
+                "failure_count": 1,
+                "last_failed_at": "2026-08-09T00:00:00+00:00",
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_worker_records_durable_processing_gap_for_persisted_token(tmp_path):
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    worker = PlatformOpportunityWorker(system)
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
+
+    def fail_decision(_token):
+        raise RuntimeError("deliberate decision failure")
+
+    system.observe_replay_token = fail_decision
+    await worker.start()
+    assert worker.submit_book(
+        "polymarket:decision-failure",
+        OrderBook(market_id="decision-failure"),
+        observed_at=observed_at,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+
+    assert worker.failures == 1
+    assert system.store.observation_failure_telemetry(cohort_id=system.cohort_id) == {
+        "polymarket:decision-failure": {
+            "processing_failed": {
+                "failure_count": 1,
+                "last_failed_at": "2026-08-09T00:00:00+00:00",
+            }
+        }
+    }
 
 
 @pytest.mark.asyncio
