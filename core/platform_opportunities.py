@@ -59,6 +59,17 @@ class PlatformContract:
     catalyst_evidence: str
     catalyst_sources: tuple[str, ...]
     catalyst_conflict_seconds: float | None
+    # Exact event-window evidence is separate from settlement/catalyst clocks.
+    # These fields intentionally retain the complete milestone payload needed
+    # to audit a political lock after the inventory page has moved on.
+    event_start_at: datetime | None
+    event_end_at: datetime | None
+    milestone_id: str | None
+    milestone_category: str | None
+    milestone_type: str | None
+    milestone_source_id: str | None
+    milestone_relationship_role: str | None
+    milestone_provenance: str | None
     revision_hash: str
 
 
@@ -92,12 +103,31 @@ def _contract(payload: dict) -> PlatformContract:
 def _stored_contract(payload: Mapping[str, object]) -> PlatformContract:
     """Rehydrate a revision retained solely by an active political lock."""
     values = dict(payload)
-    for field_name in ("close_time", "occurrence_at", "catalyst_at"):
+    for field_name in (
+        "close_time",
+        "occurrence_at",
+        "catalyst_at",
+        "event_start_at",
+        "event_end_at",
+    ):
         value = values.get(field_name)
         if isinstance(value, str):
             values[field_name] = _aware(datetime.fromisoformat(value))
     for field_name in ("occurrence_sources", "catalyst_sources"):
         values[field_name] = tuple(values.get(field_name) or ())
+    # Revisions written before event-window provenance was introduced remain
+    # readable, but cannot be mistaken for exact end-bounded evidence.
+    for field_name in (
+        "event_start_at",
+        "event_end_at",
+        "milestone_id",
+        "milestone_category",
+        "milestone_type",
+        "milestone_source_id",
+        "milestone_relationship_role",
+        "milestone_provenance",
+    ):
+        values.setdefault(field_name, None)
     return PlatformContract(**values)  # type: ignore[arg-type]
 
 
@@ -127,6 +157,14 @@ def normalize_polymarket(market: Market) -> PlatformContract:
             "catalyst_evidence": "exact_venue_metadata" if close else "unknown",
             "catalyst_sources": ("polymarket.end_date",) if close else (),
             "catalyst_conflict_seconds": None,
+            "event_start_at": None,
+            "event_end_at": None,
+            "milestone_id": None,
+            "milestone_category": None,
+            "milestone_type": None,
+            "milestone_source_id": None,
+            "milestone_relationship_role": None,
+            "milestone_provenance": None,
         }
     )
 
@@ -167,6 +205,14 @@ def normalize_kalshi(market: KalshiMarket) -> PlatformContract:
                 else (("kalshi.close_time",) if market.close_time is not None else ())
             ),
             "catalyst_conflict_seconds": None,
+            "event_start_at": None,
+            "event_end_at": None,
+            "milestone_id": None,
+            "milestone_category": None,
+            "milestone_type": None,
+            "milestone_source_id": None,
+            "milestone_relationship_role": None,
+            "milestone_provenance": None,
         }
     )
 
@@ -239,6 +285,8 @@ class PoliticalEventLock:
     event_id: str
     event_title: str
     occurrence_at: datetime
+    event_start_at: datetime
+    event_end_at: datetime
     locked_until: datetime
     selected_at: datetime
     contract_ids: tuple[str, ...]
@@ -651,6 +699,22 @@ class PlatformOpportunitySystem:
                     _aware(datetime.fromisoformat(str(payload["occurrence_at"])))
                     or now
                 ),
+                event_start_at=(
+                    _aware(
+                        datetime.fromisoformat(
+                            str(payload.get("event_start_at") or payload["occurrence_at"])
+                        )
+                    )
+                    or now
+                ),
+                event_end_at=(
+                    _aware(
+                        datetime.fromisoformat(
+                            str(payload.get("event_end_at") or payload["occurrence_at"])
+                        )
+                    )
+                    or now
+                ),
                 locked_until=(
                     _aware(datetime.fromisoformat(str(payload["locked_until"])))
                     or now
@@ -679,7 +743,17 @@ class PlatformOpportunitySystem:
                 <= now + policy.lookahead
                 and _is_political_contract(contract)
                 and not _is_combo_contract(contract)
-                and (contract.venue != "kalshi" or contract.occurrence_at is not None)
+                # A Kalshi political lock is accepted only from an exact,
+                # end-bounded milestone.  A start alone cannot define when
+                # live-event polling ends, so pins fail closed as well.
+                and (
+                    contract.venue != "kalshi"
+                    or (
+                        contract.occurrence_at is not None
+                        and contract.event_start_at is not None
+                        and contract.event_end_at is not None
+                    )
+                )
             ):
                 candidates[contract.event_id].append(contract)
         ranked = sorted(
@@ -723,11 +797,19 @@ class PlatformOpportunitySystem:
                 for contract in contracts
                 if (contract.occurrence_at or contract.catalyst_at) is not None
             )
+            event_start_at = min(
+                contract.event_start_at or occurrence_at for contract in contracts
+            )
+            event_end_at = min(
+                contract.event_end_at or occurrence_at for contract in contracts
+            )
             lock = PoliticalEventLock(
                 event_id=event_id,
                 event_title=contracts[0].event_title or contracts[0].title,
                 occurrence_at=occurrence_at,
-                locked_until=occurrence_at + policy.cooldown_after,
+                event_start_at=event_start_at,
+                event_end_at=event_end_at,
+                locked_until=event_end_at + policy.cooldown_after,
                 selected_at=now,
                 contract_ids=tuple(contract.contract_id for contract in contracts[: policy.max_contracts_per_event]),
             )
@@ -860,6 +942,11 @@ class PlatformOpportunitySystem:
                 ),
             )
             source = f"kalshi.milestone:{milestone.milestone_id}:start_date"
+            relationship_role = (
+                "primary"
+                if contract.event_id in milestone.primary_event_tickers
+                else "related"
+            )
             enriched.append(
                 replace(
                     contract,
@@ -873,6 +960,17 @@ class PlatformOpportunitySystem:
                         abs((contract.catalyst_at - milestone.start_time).total_seconds())
                         if contract.catalyst_at is not None
                         else None
+                    ),
+                    event_start_at=milestone.start_time,
+                    event_end_at=milestone.end_time,
+                    milestone_id=milestone.milestone_id,
+                    milestone_category=milestone.category,
+                    milestone_type=milestone.milestone_type,
+                    milestone_source_id=milestone.source_id,
+                    milestone_relationship_role=relationship_role,
+                    milestone_provenance=(
+                        f"kalshi.milestone:{milestone.milestone_id}"
+                        f":source_id={milestone.source_id or ''}"
                     ),
                 )
             )
@@ -921,30 +1019,43 @@ class PlatformOpportunitySystem:
                 # A lock owns the complete research window.  It deliberately
                 # bypasses ordinary volume/lookahead ranking so refreshes
                 # cannot silently stop pre-event baselines or cooldown marks.
-                if now < lock.occurrence_at - political_policy.hot_before:
+                if now < lock.event_start_at - political_policy.hot_before:
                     warm.append(
                         MonitoringAssignment(
                             contract.contract_id,
                             contract.venue,
                             contract.native_id,
-                            lock.occurrence_at,
+                            lock.event_start_at,
                             "political_event_lock",
                             1_000_000_000_000.0,
                             "warm",
                             political_policy.warm_poll_seconds,
                         )
                     )
-                elif now < lock.occurrence_at:
+                elif now < lock.event_start_at:
                     eligible.append(
                         MonitoringAssignment(
                             contract.contract_id,
                             contract.venue,
                             contract.native_id,
-                            lock.occurrence_at,
+                            lock.event_start_at,
                             "political_event_lock",
                             1_000_000_000_000.0,
                             "hot",
                             political_policy.hot_poll_seconds,
+                        )
+                    )
+                elif now < lock.event_end_at:
+                    eligible.append(
+                        MonitoringAssignment(
+                            contract.contract_id,
+                            contract.venue,
+                            contract.native_id,
+                            lock.event_start_at,
+                            "political_event_lock",
+                            1_000_000_000_000.0,
+                            "event",
+                            political_policy.event_poll_seconds,
                         )
                     )
                 else:
@@ -953,7 +1064,7 @@ class PlatformOpportunitySystem:
                             contract.contract_id,
                             contract.venue,
                             contract.native_id,
-                            lock.occurrence_at,
+                            lock.event_start_at,
                             "political_event_lock",
                             1_000_000_000_000.0,
                             "cooldown",
@@ -1906,6 +2017,7 @@ class PlatformOpportunitySystem:
     def dashboard_summary(self) -> dict:
         counts = self.store.summary(cohort_id=self.cohort_id)
         now = datetime.now(timezone.utc)
+        political_policy = self.political_watch_policy
         locks = []
         for lock in sorted(
             self._political_locks.values(),
@@ -1913,9 +2025,12 @@ class PlatformOpportunitySystem:
         ):
             state = (
                 "warm"
-                if now < lock.occurrence_at - timedelta(hours=1)
+                if political_policy is not None
+                and now < lock.event_start_at - political_policy.hot_before
                 else "hot"
-                if now < lock.occurrence_at
+                if now < lock.event_start_at
+                else "event"
+                if now < lock.event_end_at
                 else "cooldown"
                 if now <= lock.locked_until
                 else "expired"
@@ -1925,6 +2040,8 @@ class PlatformOpportunitySystem:
                     "event_id": lock.event_id,
                     "event_title": lock.event_title,
                     "occurrence_at": lock.occurrence_at.isoformat(),
+                    "event_start_at": lock.event_start_at.isoformat(),
+                    "event_end_at": lock.event_end_at.isoformat(),
                     "locked_until": lock.locked_until.isoformat(),
                     "state": state,
                     "contract_ids": list(lock.contract_ids),

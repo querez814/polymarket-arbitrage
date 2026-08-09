@@ -509,10 +509,57 @@ def test_kalshi_exact_milestone_sets_occurrence_not_settlement_deadline(tmp_path
     assert contract.occurrence_sources == (
         "kalshi.milestone:milestone-mention:start_date",
     )
+    assert contract.event_start_at == occurrence
+    assert contract.event_end_at == occurrence + timedelta(minutes=45)
+    assert contract.milestone_id == "milestone-mention"
+    assert contract.milestone_category == "Politics"
+    assert contract.milestone_type == "political_speech"
+    assert contract.milestone_source_id == "kalshi"
+    assert contract.milestone_relationship_role == "primary"
     assert contract.catalyst_at == occurrence
-    assert [lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)] == [
-        "KXTRUMPMENTION-26AUG10"
-    ]
+    locks = system.store.active_political_event_locks(now=NOW)
+    assert [lock["event_id"] for lock in locks] == ["KXTRUMPMENTION-26AUG10"]
+    assert locks[0]["event_start_at"] == occurrence.isoformat()
+    assert locks[0]["event_end_at"] == (occurrence + timedelta(minutes=45)).isoformat()
+    assert locks[0]["locked_until"] == (occurrence + timedelta(hours=2, minutes=45)).isoformat()
+
+
+def test_political_lock_uses_milestone_end_for_live_event_cadence(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(max_events=1, max_contracts_per_event=1),
+    )
+    start = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 10, 23, 15, tzinfo=timezone.utc)
+    observed = start - timedelta(hours=2)
+    market = _kalshi(
+        "KXTRUMPMENTION-26AUG10-A",
+        "Will Trump mention immigration?",
+        event_ticker="KXTRUMPMENTION-26AUG10",
+    )
+    milestone = KalshiMilestone(
+        milestone_id="mention-2026-08-10",
+        title="Trump remarks",
+        category="Politics",
+        milestone_type="political_speech",
+        start_time=start,
+        end_time=end,
+        related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        source_id="kalshi-milestones",
+    )
+
+    system.refresh_catalog(
+        polymarket_markets=[], kalshi_markets=[market], kalshi_milestones=[milestone], observed_at=observed
+    )
+    live = system.refresh_catalog(
+        polymarket_markets=[], kalshi_markets=[market], kalshi_milestones=[milestone], observed_at=start + timedelta(minutes=30)
+    ).monitoring
+    assert [(item.cadence, item.interval_seconds) for item in live.hot] == [("event", 2.0)]
+    locks = system.store.active_political_event_locks(now=observed)
+    assert locks[0]["event_start_at"] == "2026-08-10T22:30:00+00:00"
+    assert locks[0]["event_end_at"] == "2026-08-10T23:15:00+00:00"
+    assert locks[0]["locked_until"] == "2026-08-11T01:15:00+00:00"
 
 
 def test_kalshi_ambiguous_distinct_primary_milestones_fail_closed(tmp_path):

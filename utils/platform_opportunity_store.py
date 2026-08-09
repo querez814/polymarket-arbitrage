@@ -25,7 +25,14 @@ def _utc_iso(value: datetime) -> str:
 def _json(value: Any) -> str:
     if is_dataclass(value):
         value = asdict(value)  # type: ignore[arg-type]
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=lambda item: item.isoformat()
+        if isinstance(item, datetime)
+        else str(item),
+    )
 
 
 class PlatformOpportunityStore:
