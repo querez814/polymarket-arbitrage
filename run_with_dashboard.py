@@ -20,6 +20,7 @@ import signal
 import sys
 import threading
 import time
+import uuid
 from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -1144,6 +1145,7 @@ class TradingBotWithDashboard:
                 }
         elif self._kalshi_markets:
             ordinary_kalshi = list(self._kalshi_markets)
+        event_index_status = await self._refresh_kalshi_event_index(now=now)
         kalshi_by_ticker = {market.ticker: market for market in ordinary_kalshi}
         (
             targeted_kalshi,
@@ -1234,6 +1236,7 @@ class TradingBotWithDashboard:
                     "source_status": {
                         "polymarket": poly_catalog_status,
                         "kalshi_ordinary": ordinary_status,
+                        "kalshi_event_index": event_index_status,
                         "kalshi_mandatory_targets": target_status,
                         "kalshi_political_milestones": milestone_status,
                     },
@@ -1261,6 +1264,94 @@ class TradingBotWithDashboard:
                 },
             }
         )
+
+    async def _refresh_kalshi_event_index(self, *, now: datetime) -> dict:
+        """Persist one cursor-safe page of raw Kalshi event inventory.
+
+        The ordinary ``/markets`` catalog is deliberately bounded and cannot
+        provide political-event breadth.  This independent source inventory
+        advances one typed ``/events`` page per catalog pass, retaining its
+        cursor across restarts.  A row can be retired only when the endpoint
+        itself exhausts the active refresh.
+        """
+        system = self.platform_opportunity_system
+        client = self._platform_kalshi_client
+        if system is None or client is None:
+            return {
+                "status": "unavailable",
+                "complete": False,
+                "stop_reason": "dedicated_source_unavailable",
+            }
+        store = system.store
+        state = store.kalshi_event_index_state()
+        refresh_id = state.get("refresh_id")
+        cursor = state.get("next_cursor")
+        if not isinstance(refresh_id, str) or not refresh_id or cursor is None:
+            refresh_id = f"kalshi-event-index-{uuid.uuid4()}"
+            cursor = None
+            store.begin_kalshi_event_index_refresh(
+                refresh_id=refresh_id,
+                started_at=now,
+            )
+        try:
+            page = await client.list_events_page(
+                status="open",
+                with_nested_markets=False,
+                with_milestones=True,
+                cursor=cursor,
+            )
+            source_events = tuple(
+                {
+                    "event_ticker": event.event_ticker,
+                    "series_ticker": event.series_ticker,
+                    "title": event.title,
+                    "category": event.category,
+                }
+                for event in page.events
+            )
+            persisted = store.record_kalshi_event_index_page(
+                refresh_id=refresh_id,
+                events=source_events,
+                next_cursor=page.cursor,
+                observed_at=now,
+            )
+            if page.complete:
+                retired = store.complete_kalshi_event_index_refresh(
+                    refresh_id=refresh_id,
+                    completed_at=now,
+                )
+                return {
+                    "status": "complete",
+                    "complete": True,
+                    "stop_reason": "source_exhausted",
+                    "persisted_events": persisted,
+                    "retired_events": retired,
+                    "next_cursor": None,
+                }
+            return {
+                "status": "bounded",
+                "complete": False,
+                "stop_reason": "cursor_remaining",
+                "persisted_events": persisted,
+                "retired_events": 0,
+                "next_cursor": page.cursor,
+            }
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"[:200]
+            try:
+                store.fail_kalshi_event_index_refresh(
+                    refresh_id=refresh_id,
+                    reason=reason,
+                )
+            except Exception:
+                logger.exception("failed to record Kalshi event-index refresh failure")
+            logger.warning("Kalshi event-index refresh failed: %s", reason)
+            return {
+                "status": "failure",
+                "complete": False,
+                "stop_reason": "fetch_failed",
+                "reason": reason,
+            }
 
     def _mandatory_kalshi_event_tickers(self, *, now: datetime) -> tuple[str, ...]:
         """Return reviewed pins plus durable retained Kalshi lock identities."""

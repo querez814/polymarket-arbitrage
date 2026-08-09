@@ -69,6 +69,129 @@ def test_platform_fee_cache_expires_before_political_fee_evidence_does():
     assert bot._platform_fee_cache_ttl_seconds() == pytest.approx(1.8)
 
 
+@pytest.mark.asyncio
+async def test_kalshi_event_index_refresh_resumes_cursor_and_retires_only_on_exhaustion(
+    tmp_path,
+):
+    """The runtime must retain the raw inventory until its cursor is exhausted."""
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.platform_opportunity_system = PlatformOpportunitySystem(store=store)
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+            self.pages = iter(
+                (
+                    SimpleNamespace(
+                        events=(
+                            SimpleNamespace(
+                                event_ticker="KXFIRST",
+                                series_ticker="KXSERIES",
+                                title="Election fixture",
+                                category="Elections",
+                            ),
+                        ),
+                        cursor="page-2",
+                        complete=False,
+                    ),
+                    SimpleNamespace(
+                        events=(
+                            SimpleNamespace(
+                                event_ticker="KXSECOND",
+                                series_ticker="KXSERIES",
+                                title="Politics fixture",
+                                category="Politics",
+                            ),
+                        ),
+                        cursor=None,
+                        complete=True,
+                    ),
+                )
+            )
+
+        async def list_events_page(self, **kwargs):
+            self.calls.append(kwargs)
+            return next(self.pages)
+
+    client = Client()
+    bot._platform_kalshi_client = client
+
+    bounded = await bot._refresh_kalshi_event_index(now=now)
+
+    assert bounded["status"] == "bounded"
+    assert bounded["next_cursor"] == "page-2"
+    assert store.kalshi_event_index_state()["next_cursor"] == "page-2"
+    assert [row["event_ticker"] for row in store.kalshi_event_index_rows()] == [
+        "KXFIRST"
+    ]
+
+    complete = await bot._refresh_kalshi_event_index(now=now + timedelta(minutes=1))
+
+    assert complete["status"] == "complete"
+    assert complete["retired_events"] == 0
+    assert client.calls == [
+        {
+            "status": "open",
+            "with_nested_markets": False,
+            "with_milestones": True,
+            "cursor": None,
+        },
+        {
+            "status": "open",
+            "with_nested_markets": False,
+            "with_milestones": True,
+            "cursor": "page-2",
+        },
+    ]
+    assert [row["payload"] for row in store.kalshi_event_index_rows()] == [
+        {
+            "event_ticker": "KXFIRST",
+            "series_ticker": "KXSERIES",
+            "title": "Election fixture",
+            "category": "Elections",
+        },
+        {
+            "event_ticker": "KXSECOND",
+            "series_ticker": "KXSERIES",
+            "title": "Politics fixture",
+            "category": "Politics",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_kalshi_event_index_refresh_failure_preserves_active_inventory(tmp_path):
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    store.begin_kalshi_event_index_refresh(refresh_id="previous", started_at=now)
+    store.record_kalshi_event_index_page(
+        refresh_id="previous",
+        events=({"event_ticker": "KXRETAIN", "category": "Politics"},),
+        next_cursor=None,
+        observed_at=now,
+    )
+    store.complete_kalshi_event_index_refresh(refresh_id="previous", completed_at=now)
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.platform_opportunity_system = PlatformOpportunitySystem(store=store)
+
+    class Client:
+        async def list_events_page(self, **_kwargs):
+            raise RuntimeError("429 backoff")
+
+    bot._platform_kalshi_client = Client()
+
+    result = await bot._refresh_kalshi_event_index(now=now + timedelta(minutes=1))
+
+    assert result["status"] == "failure"
+    assert result["stop_reason"] == "fetch_failed"
+    assert [
+        row["event_ticker"] for row in store.kalshi_event_index_rows(active_only=True)
+    ] == ["KXRETAIN"]
+    assert "429 backoff" in str(store.kalshi_event_index_state()["last_failure"])
+
+
 def test_platform_hot_sampler_rotates_due_contracts_across_bounded_batches():
     """Later contracts receive the next public-read slot under sustained load."""
     assignments = tuple(
