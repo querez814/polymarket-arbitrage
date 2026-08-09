@@ -406,7 +406,7 @@ def test_locked_political_event_is_sampled_at_warm_hot_and_cooldown_cadences(tmp
     }
 
 
-def test_fuzzy_calendar_title_does_not_schedule_unrelated_contract(tmp_path):
+def test_polymarket_end_date_is_close_metadata_not_occurrence_evidence(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)
     close = NOW + timedelta(days=10)
@@ -436,9 +436,12 @@ def test_fuzzy_calendar_title_does_not_schedule_unrelated_contract(tmp_path):
 
     assert refresh.catalog_contracts == 1
     contract = system.contracts[0]
-    assert contract.catalyst_at == close
-    assert contract.catalyst_evidence == "exact_venue_metadata"
-    assert contract.catalyst_sources == ("polymarket.end_date",)
+    assert contract.close_time == close
+    assert contract.occurrence_at is None
+    assert contract.occurrence_evidence == "unknown"
+    assert contract.occurrence_sources == ()
+    assert contract.event_start_at is None
+    assert contract.event_end_at is None
     assert refresh.monitoring.hot == ()
 
 

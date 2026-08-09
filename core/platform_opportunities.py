@@ -156,9 +156,13 @@ def normalize_polymarket(market: Market) -> PlatformContract:
             "settlement_source": (
                 market.resolution_source.strip() or market.oracle.strip()
             ),
-            "occurrence_at": close,
-            "occurrence_evidence": "exact_venue_metadata" if close else "unknown",
-            "occurrence_sources": ("polymarket.end_date",) if close else (),
+            # Polymarket's end date is a settlement/close deadline.  It does
+            # not establish when the underlying event occurs, so an exact
+            # occurrence link must be reviewed separately before this contract
+            # can acquire occurrence or event-window evidence.
+            "occurrence_at": None,
+            "occurrence_evidence": "unknown",
+            "occurrence_sources": (),
             "catalyst_at": close,
             "catalyst_evidence": "exact_venue_metadata" if close else "unknown",
             "catalyst_sources": ("polymarket.end_date",) if close else (),
