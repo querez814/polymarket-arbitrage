@@ -509,7 +509,7 @@ def test_only_machine_checkable_structure_authorizes_relative_value(tmp_path):
     assert "vague" not in relation.relation_id
 
 
-def test_structural_relation_is_excluded_when_a_leg_is_not_sampled(tmp_path):
+def test_structural_relation_is_retained_when_sampling_capacity_excludes_a_leg(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(
         store=store,
@@ -520,7 +520,7 @@ def test_structural_relation_is_excluded_when_a_leg_is_not_sampled(tmp_path):
             min_volume=100,
         ),
     )
-    close = NOW + timedelta(hours=2)
+    close = NOW + timedelta(minutes=30)
     refresh = system.refresh_catalog(
         polymarket_markets=[
             _poly("p3", "Will August CPI be above 3%?", end_date=close),
@@ -532,7 +532,12 @@ def test_structural_relation_is_excluded_when_a_leg_is_not_sampled(tmp_path):
 
     assert len(refresh.monitoring.hot) == 1
     assert len(refresh.monitoring.budget_excluded) == 1
-    assert system.discover_structural_relations(observed_at=NOW) == ()
+    assert refresh.monitoring.budget_excluded[0].reason == (
+        "structural_relation_sampling_capacity"
+    )
+    relations = system.discover_structural_relations(observed_at=NOW)
+    assert len(relations) == 1
+    assert set(relations[0].contract_ids) == {"polymarket:p3", "polymarket:p4"}
 
 
 def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_path):

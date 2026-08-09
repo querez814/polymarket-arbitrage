@@ -735,6 +735,10 @@ class PlatformOpportunitySystem:
             retire_absent=True,
         )
         self._refresh_political_locks(observed_at)
+        # Structural eligibility is a property of the catalog metadata, not
+        # of this refresh's bounded polling assignments.  Persist it before
+        # planning so a capacity decision can say why one leg is not sampled.
+        self.discover_structural_relations(observed_at=observed_at)
         monitoring = self.plan_monitoring(observed_at)
         # Relative-value observations need contemporaneous books for every leg.
         # Keep the structural universe aligned with the assignments the runtime
@@ -988,13 +992,24 @@ class PlatformOpportunitySystem:
             item for item in eligible if item.reason != "political_event_lock"
         ]
         hot = [*locked_eligible, *ordinary_eligible[: policy.max_hot_contracts]]
+        hot_contract_ids = {item.contract_id for item in hot}
+        relation_contract_ids = {
+            contract_id
+            for relation in self._relations.values()
+            if not set(relation.contract_ids).issubset(hot_contract_ids)
+            for contract_id in relation.contract_ids
+        }
         excluded = [
             MonitoringAssignment(
                 item.contract_id,
                 item.venue,
                 item.native_id,
                 item.catalyst_at,
-                "hot_lane_capacity",
+                (
+                    "structural_relation_sampling_capacity"
+                    if item.contract_id in relation_contract_ids
+                    else "hot_lane_capacity"
+                ),
                 item.priority_score,
                 item.cadence,
                 item.interval_seconds,
@@ -1017,8 +1032,6 @@ class PlatformOpportunitySystem:
             tuple[str, str, str], list[tuple[float, PlatformContract, str]]
         ] = defaultdict(list)
         for contract in self._contracts.values():
-            if contract.contract_id not in self._sampled_contract_ids:
-                continue
             match = self._THRESHOLD.search(contract.title)
             if not match:
                 continue
