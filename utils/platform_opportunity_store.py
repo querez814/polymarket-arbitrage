@@ -805,9 +805,21 @@ class PlatformOpportunityStore:
                         (cohort_id,),
                     ).fetchone()[0]
                 )
-                existing_position = connection.execute(
-                    "SELECT 1 FROM political_experimental_positions WHERE cohort_id = ? AND contract_id = ? AND base_lane = ?",
-                    (cohort_id, signal["contract_id"], signal["base_lane"]),
+                # These are separate constraints.  A contract may not be
+                # re-opened through a different reporting lane, and a base
+                # lane may not hide a second position under another contract.
+                # Query them under the same immediate transaction that opens
+                # the position so concurrent resolvers cannot pass either
+                # check before the first insert commits.
+                contract_position = connection.execute(
+                    "SELECT 1 FROM political_experimental_positions "
+                    "WHERE cohort_id = ? AND contract_id = ?",
+                    (cohort_id, signal["contract_id"]),
+                ).fetchone()
+                lane_position = connection.execute(
+                    "SELECT 1 FROM political_experimental_positions "
+                    "WHERE cohort_id = ? AND base_lane = ?",
+                    (cohort_id, signal["base_lane"]),
                 ).fetchone()
                 if debit_micros > max_position_reserved_micros:
                     reason = "per_position_reserved_cap"
@@ -820,8 +832,10 @@ class PlatformOpportunityStore:
                     reason = "insufficient_cash"
                 elif open_count >= max_open_positions:
                     reason = "max_open_positions"
-                elif existing_position is not None:
-                    reason = "contract_base_lane_overlap"
+                elif contract_position is not None:
+                    reason = "contract_overlap"
+                elif lane_position is not None:
+                    reason = "base_lane_overlap"
                 if reason is not None:
                     connection.execute(
                         "INSERT INTO political_experimental_fill_attempts "

@@ -531,6 +531,93 @@ def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill
     assert result["reason"] == "request_not_strictly_after_signal_receipt"
 
 
+def test_political_paper_enforces_contract_and_base_lane_overlap_separately(tmp_path):
+    """An open contract and an open base lane are independent exclusivity keys."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:overlap")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.50, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+
+    def resolve(
+        *, signal_id: str, contract_id: str, phase: str, started_at: datetime
+    ) -> dict:
+        source = store.record_replay_observation(
+            cohort_id="cohort:overlap",
+            contract_id=contract_id,
+            normalized_book=book,
+            fee_schedule=_authoritative_kalshi_fee(),
+            lock_phase=phase,
+            observed_at=started_at,
+            request_started_at=started_at,
+            received_at=started_at + timedelta(milliseconds=100),
+        )
+        assert ledger.record_pending_signal(
+            signal_id=signal_id,
+            replay_sequence=source["event"]["sequence"],
+            event_id=f"event:{signal_id}",
+            milestone_id=f"milestone:{signal_id}",
+            contract_id=contract_id,
+            side="yes",
+            base_lane=("hot_pre_event" if phase == "hot" else "event_live"),
+            phase=phase,
+            signal_request_started_at=started_at,
+            signal_received_at=started_at + timedelta(milliseconds=100),
+            expires_at=started_at + timedelta(seconds=10),
+            model_version="depth-imbalance-reaction-experimental-v1",
+            config_hash="config-hash",
+            state_hash=source["state_hash"],
+            fee_hash=source["fee_hash"],
+            features={},
+        )
+        later = store.record_replay_observation(
+            cohort_id="cohort:overlap",
+            contract_id=contract_id,
+            normalized_book=book,
+            fee_schedule=_authoritative_kalshi_fee(),
+            lock_phase=phase,
+            observed_at=started_at + timedelta(seconds=1),
+            request_started_at=started_at + timedelta(milliseconds=101),
+            received_at=started_at + timedelta(seconds=1),
+        )
+        return ledger.resolve_pending_signal(
+            signal_id=signal_id,
+            replay_sequence=later["event"]["sequence"],
+            attempted_at=started_at + timedelta(seconds=1),
+        )
+
+    assert (
+        resolve(
+            signal_id="signal:first",
+            contract_id="kalshi:KXONE",
+            phase="hot",
+            started_at=NOW,
+        )["outcome"]
+        == "filled"
+    )
+    assert (
+        resolve(
+            signal_id="signal:same-contract",
+            contract_id="kalshi:KXONE",
+            phase="event_live",
+            started_at=NOW + timedelta(seconds=2),
+        )["reason"]
+        == "contract_overlap"
+    )
+    assert (
+        resolve(
+            signal_id="signal:same-lane",
+            contract_id="kalshi:KXTWO",
+            phase="hot",
+            started_at=NOW + timedelta(seconds=4),
+        )["reason"]
+        == "base_lane_overlap"
+    )
+
+
 def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
     tmp_path,
 ):
