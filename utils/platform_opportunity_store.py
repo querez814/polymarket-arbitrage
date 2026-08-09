@@ -255,6 +255,21 @@ class PlatformOpportunityStore:
                     attempted_at TEXT NOT NULL,
                     payload_json TEXT NOT NULL
                 );
+                -- A resolver can be asked to consume a signal that was never
+                -- durably created (for example after an interrupted runtime
+                -- handoff).  It cannot use the normal fill-attempt table: that
+                -- table correctly foreign-keys real signals.  Preserve this
+                -- rejection in a separate append-only audit row instead of
+                -- attempting an invalid child insert.
+                CREATE TABLE IF NOT EXISTS political_experimental_orphan_fill_attempts (
+                    cohort_id TEXT NOT NULL,
+                    signal_id TEXT NOT NULL,
+                    replay_sequence INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    attempted_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, signal_id)
+                );
                 CREATE TABLE IF NOT EXISTS political_experimental_positions (
                     position_id TEXT PRIMARY KEY,
                     cohort_id TEXT NOT NULL,
@@ -603,6 +618,28 @@ class PlatformOpportunityStore:
             for row in rows
         ]
 
+    def political_experimental_orphan_fill_attempts(
+        self, *, cohort_id: str
+    ) -> list[dict[str, Any]]:
+        """Return durable no-fills that have no signal row to reference."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT signal_id, replay_sequence, reason, attempted_at, payload_json "
+                "FROM political_experimental_orphan_fill_attempts "
+                "WHERE cohort_id = ? ORDER BY attempted_at, signal_id",
+                (cohort_id,),
+            ).fetchall()
+        return [
+            {
+                "signal_id": str(row["signal_id"]),
+                "replay_sequence": int(row["replay_sequence"]),
+                "reason": str(row["reason"]),
+                "attempted_at": str(row["attempted_at"]),
+                "payload": json.loads(str(row["payload_json"])),
+            }
+            for row in rows
+        ]
+
     def resolve_political_experimental_pending_signal(
         self,
         *,
@@ -665,9 +702,48 @@ class PlatformOpportunityStore:
                     "SELECT * FROM platform_replay_observation_events WHERE cohort_id = ? AND sequence = ?",
                     (cohort_id, replay_sequence),
                 ).fetchone()
+                payload = {
+                    "replay_sequence": replay_sequence,
+                    "quantity": quantity,
+                    "debit_micros": debit_micros,
+                    "economics": economics,
+                }
+                if signal is None:
+                    prior_orphan = connection.execute(
+                        "SELECT reason, payload_json FROM political_experimental_orphan_fill_attempts "
+                        "WHERE cohort_id = ? AND signal_id = ?",
+                        (cohort_id, signal_id),
+                    ).fetchone()
+                    if prior_orphan is not None:
+                        connection.commit()
+                        return {
+                            "outcome": "no_fill",
+                            "reason": str(prior_orphan["reason"]),
+                            "idempotent": True,
+                            "payload": json.loads(str(prior_orphan["payload_json"])),
+                        }
+                    connection.execute(
+                        "INSERT INTO political_experimental_orphan_fill_attempts "
+                        "(cohort_id, signal_id, replay_sequence, reason, attempted_at, payload_json) "
+                        "VALUES (?, ?, ?, 'missing_signal', ?, ?)",
+                        (
+                            cohort_id,
+                            signal_id,
+                            replay_sequence,
+                            attempted_iso,
+                            _json(payload),
+                        ),
+                    )
+                    connection.commit()
+                    return {
+                        "outcome": "no_fill",
+                        "reason": "missing_signal",
+                        "idempotent": False,
+                        "payload": payload,
+                    }
                 reason: str | None = None
-                if signal is None or event is None:
-                    reason = "missing_signal_or_replay_event"
+                if event is None:
+                    reason = "missing_replay_event"
                 elif int(event["sequence"]) <= int(signal["replay_sequence"]):
                     reason = "not_later_replay_sequence"
                 elif event["contract_id"] != signal["contract_id"]:
@@ -693,12 +769,6 @@ class PlatformOpportunityStore:
                     and not bool(status["cohort_valid"])
                 ):
                     reason = "replay_evidence_invalid"
-                payload = {
-                    "replay_sequence": replay_sequence,
-                    "quantity": quantity,
-                    "debit_micros": debit_micros,
-                    "economics": economics,
-                }
                 if reason is not None:
                     connection.execute(
                         "INSERT INTO political_experimental_fill_attempts "

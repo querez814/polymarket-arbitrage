@@ -531,6 +531,68 @@ def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill
     assert result["reason"] == "request_not_strictly_after_signal_receipt"
 
 
+def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
+    tmp_path,
+):
+    """An unknown signal is auditable without violating the fill-attempt FK."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:missing")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    event = store.record_replay_observation(
+        cohort_id="cohort:missing",
+        contract_id="kalshi:KXMISSING",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.5, 100]], "asks": [[0.4, 100]]},
+            "no": {"bids": [[0.59, 100]], "asks": [[0.6, 100]]},
+        },
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+
+    result = ledger.resolve_pending_signal(
+        signal_id="signal:missing",
+        replay_sequence=event["event"]["sequence"],
+        attempted_at=NOW + timedelta(seconds=1),
+    )
+
+    assert result["outcome"] == "no_fill"
+    assert result["reason"] == "missing_signal"
+    expected_attempts = [
+        {
+            "signal_id": "signal:missing",
+            "replay_sequence": event["event"]["sequence"],
+            "reason": "missing_signal",
+            "attempted_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "payload": result["payload"],
+        }
+    ]
+    assert (
+        store.political_experimental_orphan_fill_attempts(cohort_id="cohort:missing")
+        == expected_attempts
+    )
+
+    restarted = PoliticalExperimentalPaperLedger(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        cohort_id="cohort:missing",
+    )
+    retry = restarted.resolve_pending_signal(
+        signal_id="signal:missing",
+        replay_sequence=event["event"]["sequence"],
+        attempted_at=NOW + timedelta(seconds=2),
+    )
+    assert retry == {**result, "idempotent": True}
+    assert (
+        restarted.store.political_experimental_orphan_fill_attempts(
+            cohort_id="cohort:missing"
+        )
+        == expected_attempts
+    )
+
+
 def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     """Replay storage retains normalized depth, never an adapter raw payload."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")

@@ -294,7 +294,18 @@ class PoliticalExperimentalPaperLedger:
         # Store the causal no-fill even when no replay payload can safely be
         # decoded.  Dummy economics are never applied on those paths.
         if signal is None:
-            raise ValueError("political paper pending signal does not exist")
+            return self.store.resolve_political_experimental_pending_signal(
+                cohort_id=self.cohort_id,
+                signal_id=signal_id,
+                replay_sequence=replay_sequence,
+                attempted_at=attempted_at,
+                quantity=1,
+                debit_micros=1,
+                max_total_reserved_micros=max_total_reserved_micros,
+                max_position_reserved_micros=max_position_reserved_micros,
+                max_open_positions=max_open_positions,
+                economics={"preflight_reason": "missing_signal"},
+            )
         if event is None:
             return self.store.resolve_political_experimental_pending_signal(
                 cohort_id=self.cohort_id,
