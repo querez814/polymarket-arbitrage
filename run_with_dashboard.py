@@ -3176,9 +3176,21 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Setup logging
+    # Load the selected profile before creating handlers so profile-specific
+    # log files never first appear under the default logs/ directory.
+    try:
+        logging_config = load_config(args.config).logging
+    except Exception as exc:
+        parser.error(f"Failed to load config: {exc}")
+
     log_level = "DEBUG" if args.verbose else "INFO"
-    setup_logging(console_level=log_level)
+    setup_logging(
+        log_dir=logging_config.log_dir,
+        console_level=log_level,
+        main_log_file=logging_config.main_log_file,
+        trades_log_file=logging_config.trades_log_file,
+        opportunities_log_file=logging_config.opportunities_log_file,
+    )
 
     # Run
     try:

@@ -19,6 +19,13 @@ TRADE = 25  # Between INFO and WARNING
 OPPORTUNITY = 26
 
 
+def _clear_handlers(logger: logging.Logger) -> None:
+    """Remove and close handlers owned by a previous logging setup."""
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
+
+
 def setup_logging(
     log_dir: str = "logs",
     console_level: str = "INFO",
@@ -50,8 +57,13 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
     
-    # Clear existing handlers
-    root_logger.handlers.clear()
+    # Clear existing handlers.
+    _clear_handlers(root_logger)
+    # Named loggers own their dedicated files and are not cleared by replacing
+    # root handlers.  Without this, a second setup can keep writing to a
+    # previous profile's directory.
+    _clear_handlers(logging.getLogger("trades"))
+    _clear_handlers(logging.getLogger("opportunities"))
     
     # Console handler with UTF-8 encoding for Windows
     import io
