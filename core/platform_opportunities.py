@@ -1286,11 +1286,11 @@ class PlatformOpportunitySystem:
                             lock.event_start_at,
                             "political_event_lock",
                             1_000_000_000_000.0,
-                            "event",
+                            "event_live",
                             political_policy.event_poll_seconds,
                         )
                     )
-                else:
+                elif now <= lock.locked_until:
                     eligible.append(
                         MonitoringAssignment(
                             contract.contract_id,
@@ -2272,7 +2272,7 @@ class PlatformOpportunitySystem:
                     "hot"
                     if now < lock.event_start_at
                     else (
-                        "event"
+                        "event_live"
                         if now < lock.event_end_at
                         else "cooldown" if now <= lock.locked_until else "expired"
                     )

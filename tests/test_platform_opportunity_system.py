@@ -958,12 +958,60 @@ def test_political_lock_uses_milestone_end_for_live_event_cadence(tmp_path):
         observed_at=start + timedelta(minutes=30),
     ).monitoring
     assert [(item.cadence, item.interval_seconds) for item in live.hot] == [
-        ("event", 2.0)
+        ("event_live", 2.0)
     ]
     locks = system.store.active_political_event_locks(now=observed)
     assert locks[0]["event_start_at"] == "2026-08-10T22:30:00+00:00"
     assert locks[0]["event_end_at"] == "2026-08-10T23:15:00+00:00"
     assert locks[0]["locked_until"] == "2026-08-11T01:15:00+00:00"
+
+
+def test_political_lock_monitoring_uses_public_lifecycle_states_and_expires(tmp_path):
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=1,
+        warm_before=timedelta(hours=4),
+        hot_before=timedelta(hours=1),
+        cooldown_after=timedelta(hours=2),
+    )
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=policy,
+    )
+    start = NOW + timedelta(hours=2)
+    end = start + timedelta(minutes=45)
+    market = _kalshi(
+        "KXTRUMPMENTION-26AUG10-A",
+        "Will Trump mention immigration?",
+        event_ticker="KXTRUMPMENTION-26AUG10",
+    )
+    milestone = KalshiMilestone(
+        milestone_id="mention-2026-08-10",
+        title="Trump remarks",
+        category="Politics",
+        milestone_type="political_speech",
+        start_time=start,
+        end_time=end,
+        related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        source_id="kalshi-milestones",
+    )
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[market],
+        kalshi_milestones=[milestone],
+        observed_at=NOW,
+    )
+
+    def cadences(at: datetime) -> list[str]:
+        monitoring = system.plan_monitoring(at)
+        return [item.cadence for item in (*monitoring.warm, *monitoring.hot)]
+
+    assert cadences(NOW) == ["warm"]
+    assert cadences(start - timedelta(minutes=30)) == ["hot"]
+    assert cadences(start + timedelta(minutes=1)) == ["event_live"]
+    assert cadences(end + timedelta(minutes=1)) == ["cooldown"]
+    assert cadences(end + policy.cooldown_after + timedelta(microseconds=1)) == []
 
 
 def test_kalshi_ambiguous_distinct_primary_milestones_fail_closed(tmp_path):
@@ -1194,7 +1242,7 @@ def test_exact_primary_milestone_already_live_locks_and_restores_after_restart(
         observed_at=NOW,
     ).monitoring
     assert [(item.reason, item.cadence) for item in first.hot] == [
-        ("political_event_lock", "event")
+        ("political_event_lock", "event_live")
     ]
 
     resumed = PlatformOpportunitySystem(
@@ -1207,7 +1255,7 @@ def test_exact_primary_milestone_already_live_locks_and_restores_after_restart(
         observed_at=NOW + timedelta(minutes=1),
     ).monitoring
     assert [(item.contract_id, item.cadence) for item in restored.hot] == [
-        ("kalshi:KXTRUMPSAY-26AUG10-A", "event")
+        ("kalshi:KXTRUMPSAY-26AUG10-A", "event_live")
     ]
 
 
