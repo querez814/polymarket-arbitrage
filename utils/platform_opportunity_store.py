@@ -23,6 +23,10 @@ class ReplayEvidenceCapacityError(RuntimeError):
     """A cohort cannot remain replay-valid after its durable evidence cap is hit."""
 
 
+class ReplayEvidenceIntegrityError(RuntimeError):
+    """A hash-addressed replay payload no longer matches its stored digest."""
+
+
 def _utc_iso(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -443,9 +447,13 @@ class PlatformOpportunityStore:
             ).fetchone()
         if row is None:
             raise KeyError(payload_hash)
-        return json.loads(
-            zlib.decompress(bytes(row["compressed_payload"])).decode("utf-8")
-        )
+        encoded = zlib.decompress(bytes(row["compressed_payload"]))
+        actual_hash = hashlib.sha256(encoded).hexdigest()
+        if actual_hash != payload_hash:
+            raise ReplayEvidenceIntegrityError(
+                f"replay {table} payload digest does not match {hash_column}"
+            )
+        return json.loads(encoded.decode("utf-8"))
 
     def replay_book_state(self, state_hash: str) -> dict[str, Any]:
         return self._replay_payload(

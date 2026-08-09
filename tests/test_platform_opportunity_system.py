@@ -1,3 +1,5 @@
+import json
+import zlib
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -26,6 +28,7 @@ from core.platform_opportunities import (
 from utils.platform_opportunity_store import (
     PlatformOpportunityStore,
     ReplayEvidenceCapacityError,
+    ReplayEvidenceIntegrityError,
 )
 
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=timezone.utc)
@@ -188,6 +191,33 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     }
     assert counts["captured_bytes"] > 0
     assert counts["store_bytes"] >= counts["captured_bytes"]
+
+
+def test_replay_payload_decode_rejects_a_tampered_hash_addressed_book(tmp_path):
+    """A row addressed by a digest cannot replay altered normalized depth."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    state_hash = store.record_normalized_book_state(normalized_book=book)
+    altered_book = {
+        **book,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.01, 3]]},
+    }
+    altered_payload = zlib.compress(
+        json.dumps(altered_book, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        level=9,
+    )
+    with store._connection:
+        store._connection.execute(
+            "UPDATE normalized_book_states SET compressed_payload = ? WHERE state_hash = ?",
+            (altered_payload, state_hash),
+        )
+
+    with pytest.raises(ReplayEvidenceIntegrityError, match="digest"):
+        store.replay_book_state(state_hash)
 
 
 def test_replay_evidence_byte_cap_rejects_atomically_and_invalidates_cohort(tmp_path):
