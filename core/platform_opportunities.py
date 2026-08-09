@@ -867,10 +867,12 @@ class PlatformOpportunitySystem:
         self._contracts = discovered
         self._snapshot_complete = snapshot_complete
         revisions = self.store.upsert_contracts(
-            contracts,
+            self._contracts.values(),
             observed_at=observed_at,
-            # ``current`` mirrors this response's bounded cohort. Revisions
-            # retain all prior evidence, including lock-only contracts.
+            # ``current`` mirrors the effective bounded cohort, including the
+            # narrow lock-only carry-over that is actually monitored after a
+            # partial response or process restart. Revisions retain all prior
+            # evidence after that lock expires.
             retire_absent=True,
         )
         self._refresh_political_locks(observed_at)

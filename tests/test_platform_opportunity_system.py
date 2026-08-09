@@ -213,7 +213,9 @@ def test_partial_catalog_rehydrates_active_political_lock_after_restart(tmp_path
     assert [item.contract_id for item in partial.monitoring.warm] == [
         "polymarket:election"
     ]
-    assert resumed_store.catalog_counts() == {"current": 0, "revisions": 1}
+    # A restored active lock is part of the effective monitoring cohort.  The
+    # durable catalog must agree with the returned catalog/monitoring plan.
+    assert resumed_store.catalog_counts() == {"current": 1, "revisions": 1}
 
 
 def test_selected_political_event_survives_refresh_volume_displacement_until_cooldown(tmp_path):
