@@ -2065,8 +2065,8 @@ def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill
     assert result["reason"] == "request_not_strictly_after_signal_receipt"
 
 
-def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_path):
-    """Contracts are cohort-global while lanes are exclusive only within one event."""
+def test_political_paper_scopes_base_lane_overlap_to_the_exact_occurrence(tmp_path):
+    """Contracts are cohort-global while lanes are exclusive per milestone occurrence."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:overlap")
     ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
@@ -2080,6 +2080,7 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
         *,
         signal_id: str,
         event_id: str,
+        milestone_id: str,
         contract_id: str,
         phase: str,
         started_at: datetime,
@@ -2098,7 +2099,7 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
             signal_id=signal_id,
             replay_sequence=source["event"]["sequence"],
             event_id=event_id,
-            milestone_id=f"milestone:{signal_id}",
+            milestone_id=milestone_id,
             contract_id=contract_id,
             side="yes",
             base_lane=("hot_pre_event" if phase == "hot" else "event_live"),
@@ -2131,6 +2132,7 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
         resolve(
             signal_id="signal:first",
             event_id="event:one",
+            milestone_id="milestone:one",
             contract_id="kalshi:KXONE",
             phase="hot",
             started_at=NOW,
@@ -2141,6 +2143,7 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
         resolve(
             signal_id="signal:same-contract",
             event_id="event:two",
+            milestone_id="milestone:two",
             contract_id="kalshi:KXONE",
             phase="event_live",
             started_at=NOW + timedelta(seconds=2),
@@ -2149,11 +2152,23 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
     )
     assert (
         resolve(
-            signal_id="signal:same-event-lane",
+            signal_id="signal:same-event-different-occurrence",
             event_id="event:one",
+            milestone_id="milestone:two",
             contract_id="kalshi:KXTWO",
             phase="hot",
             started_at=NOW + timedelta(seconds=4),
+        )["outcome"]
+        == "filled"
+    )
+    assert (
+        resolve(
+            signal_id="signal:same-occurrence-lane",
+            event_id="event:three",
+            milestone_id="milestone:one",
+            contract_id="kalshi:KXFOUR",
+            phase="hot",
+            started_at=NOW + timedelta(seconds=6),
         )["reason"]
         == "base_lane_overlap"
     )
@@ -2161,9 +2176,10 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
         resolve(
             signal_id="signal:independent-event-lane",
             event_id="event:two",
+            milestone_id="milestone:three",
             contract_id="kalshi:KXTHREE",
             phase="hot",
-            started_at=NOW + timedelta(seconds=6),
+            started_at=NOW + timedelta(seconds=8),
         )["outcome"]
         == "filled"
     )

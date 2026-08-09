@@ -385,6 +385,7 @@ class PlatformOpportunityStore:
                     cohort_id TEXT NOT NULL,
                     signal_id TEXT NOT NULL UNIQUE REFERENCES political_experimental_pending_signals(signal_id),
                     event_id TEXT NOT NULL,
+                    milestone_id TEXT NOT NULL,
                     contract_id TEXT NOT NULL,
                     base_lane TEXT NOT NULL,
                     side TEXT NOT NULL CHECK(side IN ('yes', 'no')),
@@ -393,7 +394,7 @@ class PlatformOpportunityStore:
                     opened_at TEXT NOT NULL,
                     liquidation_trigger TEXT,
                     UNIQUE(cohort_id, contract_id),
-                    UNIQUE(cohort_id, event_id, base_lane)
+                    UNIQUE(cohort_id, milestone_id, base_lane)
                 );
                 -- Exit attempts are keyed by the immutable replay observation
                 -- used to value an open position.  This makes retrying a worker
@@ -481,10 +482,12 @@ class PlatformOpportunityStore:
                     "PRAGMA table_info(political_experimental_positions)"
                 )
             }
-            if "event_id" not in position_columns:
-                # Earlier iterations incorrectly made base lanes globally
-                # exclusive.  Preserve existing positions while deriving the
-                # reviewed event identity from their immutable pending signal.
+            if "milestone_id" not in position_columns:
+                # The first event-scoped schema still made all derivative
+                # markets for one exact milestone independently eligible for
+                # the same base lane.  Rebuild it from sealed signal
+                # provenance so occurrence, not mutable event grouping, is
+                # the portfolio overlap authority.
                 self._connection.execute(
                     "ALTER TABLE political_experimental_positions "
                     "RENAME TO political_experimental_positions_legacy"
@@ -495,22 +498,29 @@ class PlatformOpportunityStore:
                     "cohort_id TEXT NOT NULL, "
                     "signal_id TEXT NOT NULL UNIQUE REFERENCES "
                     "political_experimental_pending_signals(signal_id), "
-                    "event_id TEXT NOT NULL, contract_id TEXT NOT NULL, "
+                    "event_id TEXT NOT NULL, milestone_id TEXT NOT NULL, "
+                    "contract_id TEXT NOT NULL, "
                     "base_lane TEXT NOT NULL, "
                     "side TEXT NOT NULL CHECK(side IN ('yes', 'no')), "
                     "quantity INTEGER NOT NULL CHECK(quantity > 0), "
                     "cost_basis_micros INTEGER NOT NULL CHECK(cost_basis_micros > 0), "
-                    "opened_at TEXT NOT NULL, "
+                    "opened_at TEXT NOT NULL, liquidation_trigger TEXT, "
                     "UNIQUE(cohort_id, contract_id), "
-                    "UNIQUE(cohort_id, event_id, base_lane))"
+                    "UNIQUE(cohort_id, milestone_id, base_lane))"
+                )
+                legacy_trigger = (
+                    "p.liquidation_trigger"
+                    if "liquidation_trigger" in position_columns
+                    else "NULL"
                 )
                 self._connection.execute(
                     "INSERT INTO political_experimental_positions "
-                    "(position_id, cohort_id, signal_id, event_id, contract_id, "
-                    "base_lane, side, quantity, cost_basis_micros, opened_at) "
+                    "(position_id, cohort_id, signal_id, event_id, milestone_id, "
+                    "contract_id, base_lane, side, quantity, cost_basis_micros, "
+                    "opened_at, liquidation_trigger) "
                     "SELECT position_id, p.cohort_id, p.signal_id, s.event_id, "
-                    "p.contract_id, p.base_lane, p.side, p.quantity, "
-                    "p.cost_basis_micros, p.opened_at "
+                    "s.milestone_id, p.contract_id, p.base_lane, p.side, p.quantity, "
+                    f"p.cost_basis_micros, p.opened_at, {legacy_trigger} "
                     "FROM political_experimental_positions_legacy AS p "
                     "JOIN political_experimental_pending_signals AS s "
                     "ON s.signal_id = p.signal_id"
@@ -1329,7 +1339,7 @@ class PlatformOpportunityStore:
         """Return the remaining open positions; closed state remains in events."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT position_id, signal_id, event_id, contract_id, base_lane, side, "
+                "SELECT position_id, signal_id, event_id, milestone_id, contract_id, base_lane, side, "
                 "quantity, cost_basis_micros, opened_at, liquidation_trigger "
                 "FROM political_experimental_positions "
                 "WHERE cohort_id = ? ORDER BY opened_at, position_id",
@@ -1365,7 +1375,7 @@ class PlatformOpportunityStore:
                     )
                 account = {key: int(account_row[key]) for key in account_row.keys()}
                 positions = connection.execute(
-                    "SELECT position_id, signal_id, event_id, contract_id, base_lane, "
+                    "SELECT position_id, signal_id, event_id, milestone_id, contract_id, base_lane, "
                     "side, quantity, cost_basis_micros, opened_at, liquidation_trigger, "
                     "NOT EXISTS ("
                     "SELECT 1 FROM political_experimental_exit_attempts AS latest "
@@ -1936,7 +1946,7 @@ class PlatformOpportunityStore:
                 # These are separate constraints. A contract may not be
                 # re-opened through a different reporting lane anywhere in a
                 # cohort, while a base lane is exclusive only inside the same
-                # reviewed event. Query them under the same immediate
+                # sealed milestone occurrence. Query them under the same immediate
                 # transaction that opens the position so concurrent resolvers
                 # cannot pass either check before the first insert commits.
                 contract_position = connection.execute(
@@ -1946,8 +1956,8 @@ class PlatformOpportunityStore:
                 ).fetchone()
                 lane_position = connection.execute(
                     "SELECT 1 FROM political_experimental_positions "
-                    "WHERE cohort_id = ? AND event_id = ? AND base_lane = ?",
-                    (cohort_id, signal["event_id"], signal["base_lane"]),
+                    "WHERE cohort_id = ? AND milestone_id = ? AND base_lane = ?",
+                    (cohort_id, signal["milestone_id"], signal["base_lane"]),
                 ).fetchone()
                 if debit_micros > max_position_reserved_micros:
                     reason = "per_position_reserved_cap"
@@ -1988,12 +1998,13 @@ class PlatformOpportunityStore:
                 reserved = int(account["reserved_micros"]) + debit_micros
                 position_id = f"position:{signal_id}"
                 connection.execute(
-                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, event_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, event_id, milestone_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         position_id,
                         cohort_id,
                         signal_id,
                         signal["event_id"],
+                        signal["milestone_id"],
                         signal["contract_id"],
                         signal["base_lane"],
                         signal["side"],
