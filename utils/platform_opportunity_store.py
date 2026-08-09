@@ -183,6 +183,11 @@ class PlatformOpportunityStore:
                     fee_request_started_at TEXT,
                     fee_received_at TEXT,
                     fee_latency_ms INTEGER,
+                    reviewed_lock_event_id TEXT,
+                    reviewed_milestone_id TEXT,
+                    reviewed_event_start_at TEXT,
+                    reviewed_event_end_at TEXT,
+                    reviewed_lock_selected_at TEXT,
                     venue_timestamp TEXT,
                     timestamp_provenance TEXT NOT NULL,
                     PRIMARY KEY(cohort_id, sequence)
@@ -300,7 +305,28 @@ class PlatformOpportunityStore:
                     payload_json TEXT NOT NULL,
                     PRIMARY KEY(cohort_id, position_id, replay_sequence)
                 );
-                """)
+            """)
+            # Existing databases predate sealed reviewed-lock attribution.
+            # Keep those rows readable while preventing later catalog state
+            # from being projected backward onto newly persisted evidence.
+            replay_columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(platform_replay_observation_events)"
+                )
+            }
+            for column in (
+                "reviewed_lock_event_id",
+                "reviewed_milestone_id",
+                "reviewed_event_start_at",
+                "reviewed_event_end_at",
+                "reviewed_lock_selected_at",
+            ):
+                if column not in replay_columns:
+                    self._connection.execute(
+                        "ALTER TABLE platform_replay_observation_events "
+                        f"ADD COLUMN {column} TEXT"
+                    )
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
             columns = {
@@ -1668,6 +1694,7 @@ class PlatformOpportunityStore:
         book_received_at: datetime | None = None,
         fee_request_started_at: datetime | None = None,
         fee_received_at: datetime | None = None,
+        reviewed_lock: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         """Atomically retain canonical evidence before a book is scored.
 
@@ -1706,6 +1733,16 @@ class PlatformOpportunityStore:
             request_started_at, book_received_at or received_at
         )
         fee_latency_ms = latency_ms(fee_request_started_at, fee_received_at)
+        reviewed_lock = dict(reviewed_lock or {})
+        required_lock_keys = {
+            "event_id",
+            "milestone_id",
+            "event_start_at",
+            "event_end_at",
+            "selected_at",
+        }
+        if reviewed_lock and set(reviewed_lock) != required_lock_keys:
+            raise ValueError("replay reviewed-lock provenance is incomplete")
         with self._lock, self._connection:
             connection = self._connection
             status = connection.execute(
@@ -1799,7 +1836,9 @@ class PlatformOpportunityStore:
                 "(cohort_id, sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
                 "request_started_at, received_at, book_received_at, book_latency_ms, "
                 "fee_request_started_at, fee_received_at, fee_latency_ms, venue_timestamp, "
-                "timestamp_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                "timestamp_provenance, reviewed_lock_event_id, reviewed_milestone_id, "
+                "reviewed_event_start_at, reviewed_event_end_at, reviewed_lock_selected_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)",
                 (
                     cohort_id,
                     sequence,
@@ -1816,6 +1855,11 @@ class PlatformOpportunityStore:
                     fee_receipt_iso,
                     fee_latency_ms,
                     "local_request_receipt" if request_iso else "local_observed_at",
+                    reviewed_lock.get("event_id"),
+                    reviewed_lock.get("milestone_id"),
+                    reviewed_lock.get("event_start_at"),
+                    reviewed_lock.get("event_end_at"),
+                    reviewed_lock.get("selected_at"),
                 ),
             )
             event = {
@@ -1836,6 +1880,11 @@ class PlatformOpportunityStore:
                 "timestamp_provenance": (
                     "local_request_receipt" if request_iso else "local_observed_at"
                 ),
+                "reviewed_lock_event_id": reviewed_lock.get("event_id"),
+                "reviewed_milestone_id": reviewed_lock.get("milestone_id"),
+                "reviewed_event_start_at": reviewed_lock.get("event_start_at"),
+                "reviewed_event_end_at": reviewed_lock.get("event_end_at"),
+                "reviewed_lock_selected_at": reviewed_lock.get("selected_at"),
             }
             self._record_successful_observation_row(
                 connection,
@@ -1854,7 +1903,8 @@ class PlatformOpportunityStore:
                 "SELECT sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
                 "request_started_at, received_at, book_received_at, book_latency_ms, "
                 "fee_request_started_at, fee_received_at, fee_latency_ms, venue_timestamp, "
-                "timestamp_provenance "
+                "timestamp_provenance, reviewed_lock_event_id, reviewed_milestone_id, "
+                "reviewed_event_start_at, reviewed_event_end_at, reviewed_lock_selected_at "
                 "FROM platform_replay_observation_events WHERE cohort_id = ? "
                 "ORDER BY sequence",
                 (cohort_id,),
@@ -1872,7 +1922,9 @@ class PlatformOpportunityStore:
                 "SELECT sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
                 "request_started_at, received_at, book_received_at, book_latency_ms, "
                 "fee_request_started_at, fee_received_at, fee_latency_ms, venue_timestamp, "
-                "timestamp_provenance FROM platform_replay_observation_events "
+                "timestamp_provenance, reviewed_lock_event_id, reviewed_milestone_id, "
+                "reviewed_event_start_at, reviewed_event_end_at, reviewed_lock_selected_at "
+                "FROM platform_replay_observation_events "
                 "WHERE cohort_id = ? AND sequence = ?",
                 (cohort_id, sequence),
             ).fetchone()

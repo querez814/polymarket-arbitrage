@@ -857,6 +857,42 @@ class PlatformOpportunitySystem:
             return "expired"
         return "unclassified"
 
+    def _replay_lock_provenance(
+        self,
+        contract_id: str,
+        *,
+        request_started_at: datetime | None,
+        received_at: datetime,
+    ) -> dict[str, str] | None:
+        """Seal the reviewed lock which existed when evidence was requested.
+
+        A replay token is historical evidence.  It must not consult the live
+        lock table later, because a replacement lock selected after the read
+        could otherwise claim an earlier observation.
+        """
+        causal_at = _aware(request_started_at) or _aware(received_at)
+        if causal_at is None:
+            return None
+        matches = [
+            lock
+            for lock in self._political_locks.values()
+            if contract_id in lock.contract_ids and lock.selected_at <= causal_at
+        ]
+        if len(matches) != 1:
+            return None
+        lock = matches[0]
+        selected = dict(lock.selected_contract)
+        milestone_id = selected.get("milestone_id")
+        if not isinstance(milestone_id, str) or not milestone_id:
+            return None
+        return {
+            "event_id": lock.event_id,
+            "milestone_id": milestone_id,
+            "event_start_at": lock.event_start_at.isoformat(),
+            "event_end_at": lock.event_end_at.isoformat(),
+            "selected_at": lock.selected_at.isoformat(),
+        }
+
     def persist_replay_observation(
         self,
         contract_id: str,
@@ -876,6 +912,7 @@ class PlatformOpportunitySystem:
         received = _aware(received_at)
         fee_request_started = _aware(fee_request_started_at)
         fee_received = _aware(fee_received_at)
+        replay_received = received or observed
         return self.store.record_replay_observation(
             cohort_id=self.cohort_id,
             contract_id=contract_id,
@@ -895,6 +932,11 @@ class PlatformOpportunitySystem:
             book_received_at=_aware(book_received_at),
             fee_request_started_at=fee_request_started,
             fee_received_at=fee_received,
+            reviewed_lock=self._replay_lock_provenance(
+                contract_id,
+                request_started_at=request_started,
+                received_at=replay_received,
+            ),
         )
 
     def replay_book_for_state_hash(
@@ -980,25 +1022,21 @@ class PlatformOpportunitySystem:
         if received_at is None:
             raise ValueError("replay token has no timezone-aware receipt")
         contract_id = str(event["contract_id"])
-        locks = [
-            lock
-            for lock in self.store.active_political_event_locks(now=received_at)
-            if contract_id in {str(item) for item in lock.get("contract_ids", ())}
-        ]
-        if len(locks) != 1:
-            raise ValueError("replay token has ambiguous or missing reviewed lock")
-        selected_contract = locks[0].get("selected_contract")
-        if not isinstance(selected_contract, Mapping):
-            raise ValueError("reviewed lock has no canonical selected contract")
-        milestone_id = selected_contract.get("milestone_id")
-        if not isinstance(milestone_id, str) or not milestone_id:
-            raise ValueError("reviewed lock has no canonical milestone")
+        provenance = {
+            "event_id": event.get("reviewed_lock_event_id"),
+            "milestone_id": event.get("reviewed_milestone_id"),
+            "event_start_at": event.get("reviewed_event_start_at"),
+            "event_end_at": event.get("reviewed_event_end_at"),
+            "selected_at": event.get("reviewed_lock_selected_at"),
+        }
+        if not all(isinstance(value, str) and value for value in provenance.values()):
+            raise ValueError("replay token has no sealed reviewed-lock provenance")
         request_started_at = event.get("request_started_at")
         if not isinstance(request_started_at, str) or not request_started_at:
             raise ValueError("replay token has no causal request start")
         return {
-            "event_id": str(locks[0]["event_id"]),
-            "milestone_id": milestone_id,
+            "event_id": str(provenance["event_id"]),
+            "milestone_id": str(provenance["milestone_id"]),
             "contract_id": contract_id,
             "phase": phase,
             "base_lane": base_lane,
@@ -1006,6 +1044,9 @@ class PlatformOpportunitySystem:
             "received_at": str(event["received_at"]),
             "state_hash": str(event["state_hash"]),
             "fee_hash": str(event["fee_hash"]),
+            "event_start_at": str(provenance["event_start_at"]),
+            "event_end_at": str(provenance["event_end_at"]),
+            "lock_selected_at": str(provenance["selected_at"]),
         }
 
     def record_successful_observation(

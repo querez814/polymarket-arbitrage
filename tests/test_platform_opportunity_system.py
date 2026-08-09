@@ -2997,8 +2997,8 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
     assert expired.intents == ()
 
 
-def test_political_replay_context_derives_only_the_durable_reviewed_lock(tmp_path):
-    """Token hand-off cannot accept sampler-supplied event or milestone text."""
+def test_political_replay_context_uses_sealed_reviewed_lock_provenance(tmp_path):
+    """Later lock replacement cannot rewrite a token's event attribution."""
     policy = PoliticalWatchPolicy(
         max_events=1,
         max_contracts_per_event=1,
@@ -3046,6 +3046,12 @@ def test_political_replay_context_derives_only_the_durable_reviewed_lock(tmp_pat
         fee_schedule=_zero_fee("kalshi"),
     )
 
+    # Simulate a later catalog refresh retiring/replacing the live lock.  The
+    # token must retain the lock that was already durable at read time.
+    system._political_locks.clear()
+    system.store._connection.execute("DELETE FROM political_event_locks")
+    system.store._connection.commit()
+
     context = system.political_replay_context(
         ReplayObservationToken(system.cohort_id, replay["event"]["sequence"])
     )
@@ -3060,6 +3066,9 @@ def test_political_replay_context_derives_only_the_durable_reviewed_lock(tmp_pat
         "received_at": hot.isoformat(),
         "state_hash": replay["state_hash"],
         "fee_hash": replay["fee_hash"],
+        "event_start_at": start.isoformat(),
+        "event_end_at": end.isoformat(),
+        "lock_selected_at": NOW.isoformat(),
     }
 
 

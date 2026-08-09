@@ -302,6 +302,11 @@ async def test_worker_persists_replay_event_before_scoring_an_observation(tmp_pa
         "fee_request_started_at": None,
         "fee_received_at": None,
         "fee_latency_ms": None,
+        "reviewed_lock_event_id": None,
+        "reviewed_milestone_id": None,
+        "reviewed_event_start_at": None,
+        "reviewed_event_end_at": None,
+        "reviewed_lock_selected_at": None,
         "venue_timestamp": None,
         "timestamp_provenance": "local_request_receipt",
     }
