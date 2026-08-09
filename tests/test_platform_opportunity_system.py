@@ -99,6 +99,47 @@ def _zero_fee(venue: str = "polymarket") -> VenueFeeSchedule:
     )
 
 
+def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
+    """Replay storage retains normalized depth, never an adapter raw payload."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    book = {
+        "schema_version": 1,
+        "yes": {
+            "bids": [[0.61, 4], [0.60, 7]],
+            "asks": [[0.62, 3], [0.63, 9]],
+        },
+        "no": {
+            "bids": [[0.37, 9], [0.36, 3]],
+            "asks": [[0.39, 7], [0.40, 4]],
+        },
+    }
+    fee = {
+        "schema_version": 1,
+        "venue": "kalshi",
+        "fee_type": "quadratic",
+        "rate": "0.07",
+        "exponent": "2",
+        "multiplier": "1",
+        "source": "official",
+    }
+
+    first_state = store.record_normalized_book_state(normalized_book=book)
+    second_state = store.record_normalized_book_state(normalized_book=book)
+    first_fee = store.record_fee_schedule_payload(fee_schedule=fee)
+    second_fee = store.record_fee_schedule_payload(fee_schedule=fee)
+
+    assert first_state == second_state
+    assert first_fee == second_fee
+    assert store.replay_book_state(first_state) == book
+    assert store.replay_fee_schedule(first_fee) == fee
+    assert store.replay_evidence_counts() == {
+        "book_states": 1,
+        "fee_schedules": 1,
+        "captured_bytes": store.replay_evidence_counts()["captured_bytes"],
+    }
+    assert store.replay_evidence_counts()["captured_bytes"] > 0
+
+
 def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(

@@ -8,8 +8,11 @@ module can submit an exchange order.
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import sqlite3
 import threading
+import zlib
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -138,6 +141,22 @@ class PlatformOpportunityStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_platform_observation_failures_cohort
                     ON platform_observation_failures(cohort_id);
+
+                -- These payloads are deliberately normalized representations,
+                -- not venue responses.  Hash-addressed rows let many durable
+                -- observations refer to one replayable state/fee definition.
+                CREATE TABLE IF NOT EXISTS normalized_book_states (
+                    state_hash TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL,
+                    compressed_payload BLOB NOT NULL,
+                    captured_bytes INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS normalized_fee_schedules (
+                    fee_hash TEXT PRIMARY KEY,
+                    schema_version INTEGER NOT NULL,
+                    compressed_payload BLOB NOT NULL,
+                    captured_bytes INTEGER NOT NULL
+                );
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -169,6 +188,120 @@ class PlatformOpportunityStore:
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+    @staticmethod
+    def _canonical_replay_payload(
+        payload: dict[str, Any], *, kind: str
+    ) -> tuple[str, bytes]:
+        """Validate and compact a bounded, normalized replay payload.
+
+        This boundary intentionally accepts only the unified book shape.  It
+        avoids a future accidental path which stores raw adapter JSON and
+        silently calls its timestamps or level ordering canonical evidence.
+        """
+        if not isinstance(payload.get("schema_version"), int):
+            raise ValueError(f"{kind} schema_version is required")
+        if kind == "book":
+            allowed = {"schema_version", "yes", "no"}
+            if set(payload) != allowed:
+                raise ValueError("normalized book has unsupported fields")
+            for token in ("yes", "no"):
+                token_payload = payload.get(token)
+                if not isinstance(token_payload, dict) or set(token_payload) != {
+                    "bids",
+                    "asks",
+                }:
+                    raise ValueError("normalized book requires yes/no bids and asks")
+                for side, descending in (("bids", True), ("asks", False)):
+                    levels = token_payload[side]
+                    if not isinstance(levels, list) or len(levels) > 50:
+                        raise ValueError("normalized book level count is invalid")
+                    prior: float | None = None
+                    for level in levels:
+                        if (
+                            not isinstance(level, list)
+                            or len(level) != 2
+                            or not all(isinstance(item, (int, float)) for item in level)
+                        ):
+                            raise ValueError("normalized book levels must be numeric pairs")
+                        price, size = float(level[0]), float(level[1])
+                        if not all(math.isfinite(item) and item > 0 for item in (price, size)):
+                            raise ValueError("normalized book levels must be finite positive")
+                        if prior is not None and (
+                            price > prior if descending else price < prior
+                        ):
+                            raise ValueError("normalized book levels are not best-to-worst")
+                        prior = price
+        encoded = _json(payload).encode("utf-8")
+        compressed = zlib.compress(encoded, level=9)
+        if len(compressed) > 16 * 1024:
+            raise ValueError(f"{kind} normalized payload exceeds 16 KiB cap")
+        return hashlib.sha256(encoded).hexdigest(), compressed
+
+    def _record_replay_payload(
+        self, *, table: str, hash_column: str, payload: dict[str, Any], kind: str
+    ) -> str:
+        payload_hash, compressed = self._canonical_replay_payload(payload, kind=kind)
+        with self._lock, self._connection:
+            self._connection.execute(
+                f"INSERT OR IGNORE INTO {table} "
+                f"({hash_column}, schema_version, compressed_payload, captured_bytes) "
+                "VALUES (?, ?, ?, ?)",
+                (payload_hash, int(payload["schema_version"]), compressed, len(compressed)),
+            )
+        return payload_hash
+
+    def record_normalized_book_state(self, *, normalized_book: dict[str, Any]) -> str:
+        """Deduplicate one canonical unified-model book state for replay."""
+        return self._record_replay_payload(
+            table="normalized_book_states",
+            hash_column="state_hash",
+            payload=normalized_book,
+            kind="book",
+        )
+
+    def record_fee_schedule_payload(self, *, fee_schedule: dict[str, Any]) -> str:
+        """Deduplicate a canonical fee schedule referenced by replay events."""
+        return self._record_replay_payload(
+            table="normalized_fee_schedules",
+            hash_column="fee_hash",
+            payload=fee_schedule,
+            kind="fee schedule",
+        )
+
+    def _replay_payload(self, *, table: str, hash_column: str, payload_hash: str) -> dict[str, Any]:
+        with self._lock:
+            row = self._connection.execute(
+                f"SELECT compressed_payload FROM {table} WHERE {hash_column} = ?",
+                (payload_hash,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(payload_hash)
+        return json.loads(zlib.decompress(bytes(row["compressed_payload"])).decode("utf-8"))
+
+    def replay_book_state(self, state_hash: str) -> dict[str, Any]:
+        return self._replay_payload(
+            table="normalized_book_states", hash_column="state_hash", payload_hash=state_hash
+        )
+
+    def replay_fee_schedule(self, fee_hash: str) -> dict[str, Any]:
+        return self._replay_payload(
+            table="normalized_fee_schedules", hash_column="fee_hash", payload_hash=fee_hash
+        )
+
+    def replay_evidence_counts(self) -> dict[str, int]:
+        with self._lock:
+            books = self._connection.execute(
+                "SELECT COUNT(*), COALESCE(SUM(captured_bytes), 0) FROM normalized_book_states"
+            ).fetchone()
+            fees = self._connection.execute(
+                "SELECT COUNT(*), COALESCE(SUM(captured_bytes), 0) FROM normalized_fee_schedules"
+            ).fetchone()
+        return {
+            "book_states": int(books[0]),
+            "fee_schedules": int(fees[0]),
+            "captured_bytes": int(books[1]) + int(fees[1]),
+        }
 
     def upsert_contracts(
         self,
