@@ -23,6 +23,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Mapping
 
@@ -103,6 +104,7 @@ from core.platform_opportunities import (
     polymarket_fee_schedule_from_market_info,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
+from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from utils.config_loader import (
     BotConfig,
     load_config,
@@ -199,6 +201,7 @@ class TradingBotWithDashboard:
         self.platform_opportunity_store = None
         self.platform_opportunity_system = None
         self.platform_opportunity_worker = None
+        self.political_experimental_paper_ledger = None
         self._platform_poly_client = None
         self._platform_kalshi_client = None
         self._platform_hot_task = None
@@ -720,6 +723,14 @@ class TradingBotWithDashboard:
                 "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
                 "horizons": {},
             },
+            "political_experimental_paper": {
+                "enabled": (
+                    policy.enabled and policy.political_experimental_paper_enabled
+                ),
+                "label": "experimental paper simulation",
+                "execution_authority": "none",
+                "snapshot": None,
+            },
             "acceptance": {},
             "book_read_failures": 0,
             "fee_metadata_failures": 0,
@@ -776,6 +787,22 @@ class TradingBotWithDashboard:
                 "relative_value": policy.relative_value_authority,
             },
         )
+        if policy.political_experimental_paper_enabled:
+            ledger = PoliticalExperimentalPaperLedger(
+                store=self.platform_opportunity_store,
+                cohort_id=self.platform_opportunity_system.cohort_id,
+            )
+            starting_cash_micros = int(
+                Decimal(str(policy.political_paper_starting_cash)) * 1_000_000
+            )
+            ledger.initialize(
+                starting_cash_micros=starting_cash_micros,
+                initialized_at=datetime.now(timezone.utc),
+            )
+            self.political_experimental_paper_ledger = ledger
+            dashboard_state.platform_opportunity["political_experimental_paper"][
+                "snapshot"
+            ] = ledger.snapshot()
 
         def publish(payload: dict) -> None:
             catalog = payload.pop("catalog", None)
@@ -873,6 +900,7 @@ class TradingBotWithDashboard:
             self.platform_opportunity_store.close()
             self.platform_opportunity_store = None
         self.platform_opportunity_system = None
+        self.political_experimental_paper_ledger = None
 
     def _platform_catalyst_references(self) -> list[CatalystReference]:
         snapshot = self._event_calendar_snapshot

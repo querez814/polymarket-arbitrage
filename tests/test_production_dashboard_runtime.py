@@ -18,6 +18,7 @@ from core.platform_opportunities import (
     VenueFeeSchedule,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
+from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.production_runtime import ProductionArbitrageRuntime
 from core.execution_journal import ExecutionJournal
 from core.operations import PersistentOperatorControls
@@ -707,6 +708,65 @@ async def test_shadow_startup_failure_degrades_without_aborting_bot(monkeypatch)
         "research disk unavailable"
         in dashboard_state.platform_opportunity["last_error"]
     )
+
+
+@pytest.mark.asyncio
+async def test_platform_runtime_initializes_isolated_political_paper_ledger(tmp_path):
+    """Political paper exists only behind both explicit read-only feature gates."""
+    config = BotConfig()
+    config.api.polymarket_platform = "us"
+    config.mode.kalshi_enabled = False
+    config.platform_opportunity.enabled = True
+    config.platform_opportunity.political_experimental_paper_enabled = True
+    config.platform_opportunity.catalog_path = str(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(config)
+
+    await bot._configure_platform_opportunity_system()
+
+    assert isinstance(
+        bot.political_experimental_paper_ledger, PoliticalExperimentalPaperLedger
+    )
+    assert bot.political_experimental_paper_ledger.cohort_id == (
+        bot.platform_opportunity_system.cohort_id
+    )
+    assert bot.political_experimental_paper_ledger.snapshot()["account"] == {
+        "starting_cash_micros": 1_000_000_000,
+        "cash_micros": 1_000_000_000,
+        "reserved_micros": 0,
+        "realized_pnl_micros": 0,
+    }
+    assert (
+        dashboard_state.platform_opportunity["political_experimental_paper"][
+            "execution_authority"
+        ]
+        == "none"
+    )
+
+    await bot._shutdown_platform_opportunity_system()
+    assert bot.political_experimental_paper_ledger is None
+
+
+@pytest.mark.asyncio
+async def test_platform_runtime_does_not_construct_political_ledger_without_both_flags(
+    tmp_path,
+):
+    config = BotConfig()
+    config.api.polymarket_platform = "us"
+    config.mode.kalshi_enabled = False
+    config.platform_opportunity.enabled = True
+    config.platform_opportunity.political_experimental_paper_enabled = False
+    config.platform_opportunity.catalog_path = str(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(config)
+
+    await bot._configure_platform_opportunity_system()
+
+    assert bot.political_experimental_paper_ledger is None
+    assert (
+        dashboard_state.platform_opportunity["political_experimental_paper"]["enabled"]
+        is False
+    )
+
+    await bot._shutdown_platform_opportunity_system()
 
 
 @pytest.mark.asyncio
