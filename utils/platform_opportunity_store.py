@@ -308,6 +308,7 @@ class PlatformOpportunityStore:
                     quantity INTEGER NOT NULL CHECK(quantity > 0),
                     cost_basis_micros INTEGER NOT NULL CHECK(cost_basis_micros > 0),
                     opened_at TEXT NOT NULL,
+                    liquidation_trigger TEXT,
                     UNIQUE(cohort_id, contract_id),
                     UNIQUE(cohort_id, event_id, base_lane)
                 );
@@ -433,6 +434,20 @@ class PlatformOpportunityStore:
                 )
                 self._connection.execute(
                     "DROP TABLE political_experimental_positions_legacy"
+                )
+            position_columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(political_experimental_positions)"
+                )
+            }
+            if "liquidation_trigger" not in position_columns:
+                # Forced exits may consume only part of the displayed depth.
+                # Keep the first sealed trigger on the open remainder so a
+                # later neutral book cannot cancel a required liquidation.
+                self._connection.execute(
+                    "ALTER TABLE political_experimental_positions "
+                    "ADD COLUMN liquidation_trigger TEXT"
                 )
             account_columns = {
                 str(row["name"])
@@ -898,7 +913,8 @@ class PlatformOpportunityStore:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT position_id, signal_id, event_id, contract_id, base_lane, side, "
-                "quantity, cost_basis_micros, opened_at FROM political_experimental_positions "
+                "quantity, cost_basis_micros, opened_at, liquidation_trigger "
+                "FROM political_experimental_positions "
                 "WHERE cohort_id = ? ORDER BY opened_at, position_id",
                 (cohort_id,),
             ).fetchall()
@@ -933,7 +949,7 @@ class PlatformOpportunityStore:
                 account = {key: int(account_row[key]) for key in account_row.keys()}
                 positions = connection.execute(
                     "SELECT position_id, signal_id, event_id, contract_id, base_lane, "
-                    "side, quantity, cost_basis_micros, opened_at "
+                    "side, quantity, cost_basis_micros, opened_at, liquidation_trigger "
                     "FROM political_experimental_positions WHERE cohort_id = ? "
                     "ORDER BY opened_at, position_id",
                     (cohort_id,),
@@ -1145,8 +1161,16 @@ class PlatformOpportunityStore:
                     outcome, event_type = "closed", "position_closed"
                 else:
                     connection.execute(
-                        "UPDATE political_experimental_positions SET quantity = ?, cost_basis_micros = ? WHERE position_id = ?",
-                        (remaining_quantity, remaining_basis, position_id),
+                        "UPDATE political_experimental_positions "
+                        "SET quantity = ?, cost_basis_micros = ?, "
+                        "liquidation_trigger = COALESCE(liquidation_trigger, ?) "
+                        "WHERE position_id = ?",
+                        (
+                            remaining_quantity,
+                            remaining_basis,
+                            economics.get("exit_trigger"),
+                            position_id,
+                        ),
                     )
                     outcome, event_type = "partial", "position_partially_closed"
                 connection.execute(

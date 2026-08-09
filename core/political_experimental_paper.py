@@ -425,6 +425,13 @@ class PoliticalExperimentalPaperLedger:
         maximum_hold_seconds: Decimal,
     ) -> str | None:
         """Select the frozen exit rule from sealed evidence in precedence order."""
+        sticky_trigger = position.get("liquidation_trigger")
+        if isinstance(sticky_trigger, str) and sticky_trigger:
+            # A forced liquidation can partial-fill against the 10%-of-depth
+            # paper convention.  Its remaining quantity must continue to
+            # liquidate on later canonical books even if the original market
+            # condition has disappeared.
+            return sticky_trigger
         # Reviewed-lock provenance was sealed onto this replay token at
         # persistence. A token from the same reviewed event therefore supplies
         # the authoritative boundary without consulting mutable catalog state.
