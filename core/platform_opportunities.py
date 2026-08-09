@@ -390,6 +390,39 @@ def _is_political_lock_candidate(
     )
 
 
+_ONE_OFF_MILESTONE_TYPE_QUALITY = {
+    "speech": 3,
+    "political_speech": 3,
+    "debate": 3,
+    "political_debate": 3,
+    "hearing": 3,
+    "press_conference": 3,
+    "press_briefing": 3,
+    "political_event": 2,
+}
+
+
+def _normalized_milestone_metadata(value: str | None) -> str:
+    """Normalize reviewed metadata without treating blank fields as evidence."""
+    return "_".join(_word_tokens(value)) if value else ""
+
+
+def _reviewed_milestone_quality(contract: PlatformContract) -> tuple[int, int]:
+    """Rank explicit source and known one-off type above generic metadata.
+
+    Political lock admission already requires an exact primary milestone.  This
+    quality score is only an automatic-selection tiebreaker; it deliberately
+    does not infer quality from event titles or from populated-but-blank fields.
+    """
+    source_quality = int(
+        bool(_normalized_milestone_metadata(contract.milestone_source_id))
+    )
+    type_quality = _ONE_OFF_MILESTONE_TYPE_QUALITY.get(
+        _normalized_milestone_metadata(contract.milestone_type), 0
+    )
+    return (source_quality, type_quality)
+
+
 def _is_combo_contract(contract: PlatformContract) -> bool:
     """MVE/combo bundles are not single political-event contracts."""
     text = " ".join(
@@ -823,15 +856,15 @@ class PlatformOpportunitySystem:
 
         def automatic_event_rank(
             item: tuple[str, list[PlatformContract]],
-        ) -> tuple[datetime, int, float, str]:
+        ) -> tuple[datetime, int, int, float, str]:
             """Rank reviewed event windows before commercial metadata.
 
             Each candidate has already passed exact-primary occurrence
             admission.  The nearest occurrence takes precedence so a large,
             far-future market cannot crowd out tomorrow's collection window.
-            Among equally near events, more complete reviewed milestone
-            source/type metadata wins; liquidity and volume remain only the
-            final automatic tiebreaker before a stable event identifier.
+            Among equally near events, an explicit non-blank venue source and
+            allowlisted one-off milestone type win; liquidity and volume remain
+            only the final automatic tiebreaker before a stable event ID.
             """
             event_id, contracts = item
             event_start_at = min(
@@ -839,17 +872,19 @@ class PlatformOpportunitySystem:
                 for contract in contracts
                 if contract.event_start_at is not None
             )
-            reviewed_metadata = max(
-                int(contract.milestone_source_id is not None)
-                + int(contract.milestone_type is not None)
-                + int(contract.milestone_category is not None)
-                + int(contract.milestone_provenance is not None)
-                for contract in contracts
+            source_quality, type_quality = max(
+                _reviewed_milestone_quality(contract) for contract in contracts
             )
             commercial_score = max(
                 contract.volume + contract.liquidity for contract in contracts
             )
-            return (event_start_at, -reviewed_metadata, -commercial_score, event_id)
+            return (
+                event_start_at,
+                -source_quality,
+                -type_quality,
+                -commercial_score,
+                event_id,
+            )
 
         ranked = sorted(candidates.items(), key=automatic_event_rank)
         # Pins are reviewed event identities, not a separate eligibility path:

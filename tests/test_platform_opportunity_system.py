@@ -467,6 +467,72 @@ def test_automatic_political_selection_prefers_nearest_event_before_volume(tmp_p
     ] == ["KXTOMORROW-26AUG"]
 
 
+def test_automatic_political_selection_prefers_explicit_one_off_type_over_volume(
+    tmp_path,
+):
+    """Equal-window generic metadata cannot out-rank a reviewed speech."""
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=1,
+            max_contracts_per_event=1,
+        ),
+    )
+    occurrence = NOW + timedelta(days=1)
+
+    refresh = system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXGENERIC-26AUG-T1",
+                "Will the President make an announcement?",
+                event_ticker="KXGENERIC-26AUG",
+                volume=1_000_000,
+            ),
+            _kalshi(
+                "KXSPEECH-26AUG-T1",
+                "Will the President mention immigration?",
+                event_ticker="KXSPEECH-26AUG",
+                volume=1,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "generic-event",
+                "Presidential announcement",
+                "Politics",
+                "event",
+                occurrence,
+                occurrence + timedelta(minutes=30),
+                ("KXGENERIC-26AUG",),
+                ("KXGENERIC-26AUG",),
+                "official-schedule",
+            ),
+            KalshiMilestone(
+                "explicit-speech",
+                "Presidential remarks",
+                "Politics",
+                "political_speech",
+                occurrence,
+                occurrence + timedelta(minutes=30),
+                ("KXSPEECH-26AUG",),
+                ("KXSPEECH-26AUG",),
+                "official-schedule",
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    assert [
+        item.contract_id
+        for item in refresh.monitoring.warm
+        if item.reason == "political_event_lock"
+    ] == ["kalshi:KXSPEECH-26AUG-T1"]
+    assert [
+        lock["event_id"] for lock in system.store.active_political_event_locks(now=NOW)
+    ] == ["KXSPEECH-26AUG"]
+
+
 def test_polymarket_settlement_metadata_never_creates_a_political_lock(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     policy = PoliticalWatchPolicy(
