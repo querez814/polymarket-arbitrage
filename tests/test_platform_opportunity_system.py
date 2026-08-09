@@ -140,19 +140,26 @@ def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
     assert store.catalog_counts() == {"current": 1, "revisions": 3}
 
 
-def test_calendar_enrichment_corroborates_but_does_not_own_discovery(tmp_path):
+def test_fuzzy_calendar_title_does_not_schedule_unrelated_contract(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)
-    close = NOW + timedelta(hours=4)
-    release = NOW + timedelta(hours=3, minutes=59)
+    close = NOW + timedelta(days=10)
+    release = NOW + timedelta(minutes=30)
 
     refresh = system.refresh_catalog(
-        polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
+        polymarket_markets=[
+            _poly(
+                "bnb-price",
+                "Will BNB price be above $700 in 2026?",
+                event_id="crypto-price-2026",
+                end_date=close,
+            )
+        ],
         kalshi_markets=[],
         catalyst_references=[
             CatalystReference(
-                reference_id="bls-cpi-2026-08",
-                title="August CPI release",
+                reference_id="bls-ppi-2026-08",
+                title="PPI price index release 2026",
                 scheduled_at=release,
                 source="https://www.bls.gov/schedule/",
                 authoritative=True,
@@ -163,12 +170,10 @@ def test_calendar_enrichment_corroborates_but_does_not_own_discovery(tmp_path):
 
     assert refresh.catalog_contracts == 1
     contract = system.contracts[0]
-    assert contract.catalyst_at == release
-    assert contract.catalyst_evidence == "corroborated"
-    assert contract.catalyst_sources == (
-        "polymarket.end_date",
-        "https://www.bls.gov/schedule/",
-    )
+    assert contract.catalyst_at == close
+    assert contract.catalyst_evidence == "exact_venue_metadata"
+    assert contract.catalyst_sources == ("polymarket.end_date",)
+    assert refresh.monitoring.hot == ()
 
 
 def test_kalshi_expected_expiration_drives_catalyst_not_later_legal_close(tmp_path):

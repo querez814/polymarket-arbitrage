@@ -550,61 +550,17 @@ class PlatformOpportunitySystem:
         contracts: Sequence[PlatformContract],
         references: Sequence[CatalystReference],
     ) -> list[PlatformContract]:
-        enriched: list[PlatformContract] = []
-        for contract in contracts:
-            contract_tokens = self._title_tokens(
-                f"{contract.event_title} {contract.title}"
-            )
-            candidates: list[tuple[float, CatalystReference]] = []
-            for reference in references:
-                reference_tokens = self._title_tokens(reference.title)
-                overlap = len(contract_tokens & reference_tokens)
-                denominator = max(1, min(len(contract_tokens), len(reference_tokens)))
-                score = overlap / denominator
-                if score >= 0.5:
-                    candidates.append((score, reference))
-            if not candidates:
-                enriched.append(contract)
-                continue
-            _, reference = max(
-                candidates,
-                key=lambda item: (item[0], item[1].authoritative, item[1].reference_id),
-            )
-            scheduled = _aware(reference.scheduled_at)
-            if scheduled is None:  # Defensive; CatalystReference requires datetime.
-                enriched.append(contract)
-                continue
-            corroborated = bool(
-                reference.authoritative
-                and contract.catalyst_at is not None
-                and abs((scheduled - contract.catalyst_at).total_seconds()) <= 3600
-            )
-            evidence = (
-                "corroborated"
-                if corroborated
-                else (
-                    "authoritative_calendar"
-                    if reference.authoritative
-                    else "model_inferred"
-                )
-            )
-            sources = tuple(
-                dict.fromkeys((*contract.catalyst_sources, reference.source))
-            )
-            payload = {
-                **asdict(contract),
-                "catalyst_at": scheduled,
-                "catalyst_evidence": evidence,
-                "catalyst_sources": sources,
-                "catalyst_conflict_seconds": (
-                    abs((scheduled - contract.catalyst_at).total_seconds())
-                    if contract.catalyst_at is not None
-                    else None
-                ),
-            }
-            payload.pop("revision_hash")
-            enriched.append(_contract(payload))
-        return enriched
+        """Leave timing untouched until it has a contract-specific proof.
+
+        Calendar titles are deliberately not a join key: common words such as
+        "price" and a year previously caused unrelated crypto contracts to be
+        scheduled as PPI.  A future milestone/link ingestion path must provide
+        a venue-native contract identifier before it can alter ``catalyst_at``.
+        ``CatalystReference`` currently carries only title-level evidence, so
+        it is retained for callers but cannot automatically schedule contracts.
+        """
+        del references
+        return list(contracts)
 
     def plan_monitoring(self, now: datetime) -> MonitoringPlan:
         now = _aware(now) or now
