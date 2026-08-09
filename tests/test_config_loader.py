@@ -169,6 +169,26 @@ def test_political_v2_profile_disables_legacy_discovery_and_semantic_runtime():
 
 
 @pytest.mark.parametrize(
+    "overlap_flag",
+    [
+        "political_paper_one_open_position_per_contract",
+        "political_paper_one_open_position_per_base_lane",
+    ],
+)
+def test_political_experimental_paper_requires_both_overlap_guards(overlap_flag):
+    config = BotConfig()
+    config.platform_opportunity.political_experimental_paper_enabled = True
+    setattr(config.platform_opportunity, overlap_flag, False)
+
+    with pytest.raises(
+        ConfigError,
+        match=rf"platform_opportunity\.{overlap_flag} must be true when "
+        "political_experimental_paper_enabled is true",
+    ):
+        validate_config(config)
+
+
+@pytest.mark.parametrize(
     "collision_field",
     ["paper", "execution", "operator", "semantic"],
 )

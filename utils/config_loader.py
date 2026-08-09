@@ -1152,6 +1152,20 @@ def validate_config(config: BotConfig) -> None:
     ):
         if not isinstance(getattr(platform, name), bool):
             errors.append(f"platform_opportunity.{name} must be a boolean")
+    # The experimental political release-control ledger has only one supported
+    # overlap posture.  Its authoritative transaction always enforces both
+    # guards, so accepting ``false`` here would persist a policy that claims a
+    # looser risk limit than the ledger actually applies.
+    if platform.political_experimental_paper_enabled:
+        for name in (
+            "political_paper_one_open_position_per_contract",
+            "political_paper_one_open_position_per_base_lane",
+        ):
+            if getattr(platform, name) is not True:
+                errors.append(
+                    f"platform_opportunity.{name} must be true when "
+                    "political_experimental_paper_enabled is true"
+                )
     if (
         isinstance(platform.political_paper_entry_depth_fraction, (int, float))
         and not isinstance(platform.political_paper_entry_depth_fraction, bool)
