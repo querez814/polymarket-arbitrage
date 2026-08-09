@@ -284,6 +284,20 @@ class PlatformOpportunityStore:
                     UNIQUE(cohort_id, contract_id),
                     UNIQUE(cohort_id, event_id, base_lane)
                 );
+                -- Exit attempts are keyed by the immutable replay observation
+                -- used to value an open position.  This makes retrying a worker
+                -- after a crash idempotent without permitting the same book to
+                -- release capital twice.
+                CREATE TABLE IF NOT EXISTS political_experimental_exit_attempts (
+                    cohort_id TEXT NOT NULL,
+                    position_id TEXT NOT NULL,
+                    replay_sequence INTEGER NOT NULL,
+                    outcome TEXT NOT NULL CHECK(outcome IN ('closed', 'partial', 'no_exit')),
+                    reason TEXT,
+                    attempted_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, position_id, replay_sequence)
+                );
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -684,6 +698,219 @@ class PlatformOpportunityStore:
             }
             for row in rows
         ]
+
+    def political_experimental_positions(
+        self, *, cohort_id: str
+    ) -> list[dict[str, Any]]:
+        """Return the remaining open positions; closed state remains in events."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT position_id, signal_id, event_id, contract_id, base_lane, side, "
+                "quantity, cost_basis_micros, opened_at FROM political_experimental_positions "
+                "WHERE cohort_id = ? ORDER BY opened_at, position_id",
+                (cohort_id,),
+            ).fetchall()
+        return [{key: row[key] for key in row.keys()} for row in rows]
+
+    def exit_political_experimental_position(
+        self,
+        *,
+        cohort_id: str,
+        position_id: str,
+        replay_sequence: int,
+        attempted_at: datetime,
+        quantity: int,
+        credit_micros: int,
+        basis_release_micros: int,
+        economics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically release a replay-backed whole-contract political position.
+
+        The ledger derives ``quantity`` and ``credit_micros`` from the exact
+        persisted bid book.  This transaction proves the book is later than
+        the opening replay, applies proportional basis release, and records an
+        append-only account after-state.
+        """
+        if (
+            not isinstance(quantity, int)
+            or isinstance(quantity, bool)
+            or quantity <= 0
+            or not isinstance(credit_micros, int)
+            or credit_micros < 0
+            or not isinstance(basis_release_micros, int)
+            or basis_release_micros <= 0
+        ):
+            raise ValueError(
+                "political paper exit values must be positive integer micros"
+            )
+        attempted_iso = _utc_iso(attempted_at)
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                prior = connection.execute(
+                    "SELECT outcome, reason, payload_json FROM political_experimental_exit_attempts "
+                    "WHERE cohort_id = ? AND position_id = ? AND replay_sequence = ?",
+                    (cohort_id, position_id, replay_sequence),
+                ).fetchone()
+                if prior is not None:
+                    connection.commit()
+                    return {
+                        "outcome": str(prior["outcome"]),
+                        "reason": prior["reason"],
+                        "idempotent": True,
+                        "payload": json.loads(str(prior["payload_json"])),
+                    }
+                position = connection.execute(
+                    "SELECT p.*, f.replay_sequence AS opened_replay_sequence FROM political_experimental_positions AS p "
+                    "JOIN political_experimental_fill_attempts AS f ON f.signal_id = p.signal_id "
+                    "WHERE p.cohort_id = ? AND p.position_id = ?",
+                    (cohort_id, position_id),
+                ).fetchone()
+                event = connection.execute(
+                    "SELECT contract_id FROM platform_replay_observation_events WHERE cohort_id = ? AND sequence = ?",
+                    (cohort_id, replay_sequence),
+                ).fetchone()
+                payload = {
+                    "replay_sequence": replay_sequence,
+                    "quantity": quantity,
+                    "credit_micros": credit_micros,
+                    "basis_release_micros": basis_release_micros,
+                    "economics": economics,
+                }
+                reason: str | None = None
+                if position is None:
+                    reason = "missing_open_position"
+                elif event is None:
+                    reason = "missing_replay_event"
+                elif replay_sequence <= int(position["opened_replay_sequence"]):
+                    reason = "not_later_replay_sequence"
+                elif str(event["contract_id"]) != str(position["contract_id"]):
+                    reason = "contract_mismatch"
+                elif quantity > int(position["quantity"]):
+                    reason = "exit_quantity_exceeds_position"
+                elif basis_release_micros > int(position["cost_basis_micros"]):
+                    reason = "basis_release_exceeds_position"
+                if reason is not None:
+                    connection.execute(
+                        "INSERT INTO political_experimental_exit_attempts "
+                        "(cohort_id, position_id, replay_sequence, outcome, reason, attempted_at, payload_json) VALUES (?, ?, ?, 'no_exit', ?, ?, ?)",
+                        (
+                            cohort_id,
+                            position_id,
+                            replay_sequence,
+                            reason,
+                            attempted_iso,
+                            _json(payload),
+                        ),
+                    )
+                    connection.commit()
+                    return {
+                        "outcome": "no_exit",
+                        "reason": reason,
+                        "idempotent": False,
+                        "payload": payload,
+                    }
+                assert position is not None
+                account = connection.execute(
+                    "SELECT * FROM political_experimental_paper_accounts WHERE cohort_id = ?",
+                    (cohort_id,),
+                ).fetchone()
+                if account is None:
+                    raise RuntimeError(
+                        "political experimental paper account is not initialized"
+                    )
+                remaining_quantity = int(position["quantity"]) - quantity
+                remaining_basis = (
+                    int(position["cost_basis_micros"]) - basis_release_micros
+                )
+                if remaining_quantity == 0 and remaining_basis != 0:
+                    # The last close must release every remaining micro, even
+                    # after earlier floor-proportional partial exits.
+                    basis_release_micros += remaining_basis
+                    remaining_basis = 0
+                    payload["basis_release_micros"] = basis_release_micros
+                if remaining_quantity > 0 and remaining_basis <= 0:
+                    raise RuntimeError("partial exit must retain positive cost basis")
+                cash = int(account["cash_micros"]) + credit_micros
+                reserved = int(account["reserved_micros"]) - basis_release_micros
+                realized = (
+                    int(account["realized_pnl_micros"])
+                    + credit_micros
+                    - basis_release_micros
+                )
+                if (
+                    reserved < 0
+                    or cash < 0
+                    or cash + reserved
+                    != int(account["starting_cash_micros"]) + realized
+                ):
+                    raise RuntimeError(
+                        "political experimental paper account identity violated"
+                    )
+                if remaining_quantity == 0:
+                    connection.execute(
+                        "DELETE FROM political_experimental_positions WHERE position_id = ?",
+                        (position_id,),
+                    )
+                    outcome, event_type = "closed", "position_closed"
+                else:
+                    connection.execute(
+                        "UPDATE political_experimental_positions SET quantity = ?, cost_basis_micros = ? WHERE position_id = ?",
+                        (remaining_quantity, remaining_basis, position_id),
+                    )
+                    outcome, event_type = "partial", "position_partially_closed"
+                connection.execute(
+                    "UPDATE political_experimental_paper_accounts SET cash_micros = ?, reserved_micros = ?, realized_pnl_micros = ?, updated_at = ? WHERE cohort_id = ?",
+                    (cash, reserved, realized, attempted_iso, cohort_id),
+                )
+                payload.update(
+                    {
+                        "position_id": position_id,
+                        "remaining_quantity": remaining_quantity,
+                        "remaining_basis_micros": remaining_basis,
+                    }
+                )
+                sequence = int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM political_experimental_paper_events WHERE cohort_id = ?",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                connection.execute(
+                    "INSERT INTO political_experimental_paper_events (cohort_id, sequence, event_type, occurred_at, cash_micros, reserved_micros, realized_pnl_micros, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        cohort_id,
+                        sequence,
+                        event_type,
+                        attempted_iso,
+                        cash,
+                        reserved,
+                        realized,
+                        _json(payload),
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO political_experimental_exit_attempts (cohort_id, position_id, replay_sequence, outcome, reason, attempted_at, payload_json) VALUES (?, ?, ?, ?, NULL, ?, ?)",
+                    (
+                        cohort_id,
+                        position_id,
+                        replay_sequence,
+                        outcome,
+                        attempted_iso,
+                        _json(payload),
+                    ),
+                )
+                connection.commit()
+                return {
+                    "outcome": outcome,
+                    "reason": None,
+                    "idempotent": False,
+                    "payload": payload,
+                }
+            except Exception:
+                connection.rollback()
+                raise
 
     def resolve_political_experimental_pending_signal(
         self,

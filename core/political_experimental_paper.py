@@ -8,7 +8,7 @@ evidence, signals, fills, and accounting events to share one SQLite transaction.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Any
 
@@ -391,4 +391,95 @@ class PoliticalExperimentalPaperLedger:
                 "levels": levels,
                 "balance_change_micros": -debit_micros,
             },
+        )
+
+    def exit_position(
+        self,
+        *,
+        position_id: str,
+        replay_sequence: int,
+        minimum_hold_seconds: int = 2,
+        displayed_depth_fraction: Decimal = Decimal("0.10"),
+    ) -> dict[str, Any]:
+        """Close as much of an open position as the later canonical bids allow.
+
+        The replay receipt, rather than a caller clock, is the paper exit
+        time.  Each displayed bid contributes at most the configured whole
+        contract fraction and all economics remain independently conservative.
+        """
+        if minimum_hold_seconds < 0 or not Decimal(
+            "0"
+        ) < displayed_depth_fraction <= Decimal("1"):
+            raise ValueError("political paper exit limits are invalid")
+        positions = {
+            str(item["position_id"]): item
+            for item in self.store.political_experimental_positions(
+                cohort_id=self.cohort_id
+            )
+        }
+        position = positions.get(position_id)
+        events = {
+            int(item["sequence"]): item
+            for item in self.store.replay_observation_events(cohort_id=self.cohort_id)
+        }
+        event = events.get(replay_sequence)
+        if position is None:
+            raise ValueError("political paper exit requires an open position")
+        if event is None:
+            raise ValueError("political paper exit requires a durable replay event")
+        received_at = datetime.fromisoformat(str(event["received_at"]))
+        opened_at = datetime.fromisoformat(str(position["opened_at"]))
+        if received_at < opened_at + timedelta(seconds=minimum_hold_seconds):
+            raise ValueError("political paper minimum hold has not elapsed")
+        book = self.store.replay_book_state(str(event["state_hash"]))
+        fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        token = book.get(str(position["side"]))
+        bids = token.get("bids", []) if isinstance(token, dict) else []
+        remaining = int(position["quantity"])
+        level_economics: list[tuple[str, PoliticalPaperTradeEconomics]] = []
+        for price, displayed_size in bids:
+            quantity = min(
+                remaining,
+                int(Decimal(str(displayed_size)) * displayed_depth_fraction),
+            )
+            if quantity <= 0:
+                continue
+            economics = self.exit_economics(
+                quantity=quantity,
+                displayed_bid=str(price),
+                fee_schedule=fee_schedule,
+            )
+            level_economics.append((str(price), economics))
+            remaining -= quantity
+            if remaining == 0:
+                break
+        if not level_economics:
+            raise ValueError(
+                "political paper exit has no whole-contract executable bids"
+            )
+        quantity = sum(item.quantity for _, item in level_economics)
+        credit_micros = sum(item.balance_change_micros for _, item in level_economics)
+        basis_release_micros = (
+            int(position["cost_basis_micros"]) * quantity // int(position["quantity"])
+        )
+        levels = [
+            {
+                "displayed_bid": displayed_bid,
+                "quantity": economics.quantity,
+                "effective_price": economics.effective_price,
+                "raw_fee": economics.raw_fee,
+                "rounded_trade_fee": economics.rounded_trade_fee,
+                "balance_change_micros": economics.balance_change_micros,
+            }
+            for displayed_bid, economics in level_economics
+        ]
+        return self.store.exit_political_experimental_position(
+            cohort_id=self.cohort_id,
+            position_id=position_id,
+            replay_sequence=replay_sequence,
+            attempted_at=received_at,
+            quantity=quantity,
+            credit_micros=credit_micros,
+            basis_release_micros=basis_release_micros,
+            economics={"levels": levels},
         )

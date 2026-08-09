@@ -471,6 +471,62 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         "payload": result["payload"],
     }
 
+    first_exit = store.record_replay_observation(
+        cohort_id="cohort:causal",
+        contract_id="kalshi:KXCAUSAL",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.55, 40]], "asks": [[0.56, 100]]},
+            "no": {"bids": [[0.44, 100]], "asks": [[0.45, 40]]},
+        },
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=4),
+        request_started_at=NOW + timedelta(seconds=3),
+        received_at=NOW + timedelta(seconds=4),
+    )
+    partially_closed = ledger.exit_position(
+        position_id=result["payload"]["position_id"],
+        replay_sequence=first_exit["event"]["sequence"],
+    )
+    assert partially_closed["outcome"] == "partial"
+    assert partially_closed["payload"]["quantity"] == 4
+    assert partially_closed["payload"]["credit_micros"] == 2_090_000
+    assert partially_closed["payload"]["basis_release_micros"] == 1_708_000
+
+    final_exit = store.record_replay_observation(
+        cohort_id="cohort:causal",
+        contract_id="kalshi:KXCAUSAL",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.55, 60]], "asks": [[0.56, 100]]},
+            "no": {"bids": [[0.44, 100]], "asks": [[0.45, 60]]},
+        },
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=6),
+        request_started_at=NOW + timedelta(seconds=5),
+        received_at=NOW + timedelta(seconds=6),
+    )
+    closed = ledger.exit_position(
+        position_id=result["payload"]["position_id"],
+        replay_sequence=final_exit["event"]["sequence"],
+    )
+    assert closed["outcome"] == "closed"
+    assert closed["payload"]["quantity"] == 6
+    assert closed["payload"]["credit_micros"] == 3_130_000
+    assert closed["payload"]["remaining_quantity"] == 0
+    assert store.political_experimental_positions(cohort_id="cohort:causal") == []
+    assert store.political_experimental_paper_events(cohort_id="cohort:causal")[-1] == {
+        "sequence": 4,
+        "event_type": "position_closed",
+        "occurred_at": (NOW + timedelta(seconds=6)).isoformat(),
+        "cash_micros": 1_000_950_000,
+        "reserved_micros": 0,
+        "realized_pnl_micros": 950_000,
+        "payload": closed["payload"],
+    }
+
 
 def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_asks(
     tmp_path,
