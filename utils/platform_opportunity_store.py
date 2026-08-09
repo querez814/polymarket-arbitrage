@@ -949,8 +949,18 @@ class PlatformOpportunityStore:
                 account = {key: int(account_row[key]) for key in account_row.keys()}
                 positions = connection.execute(
                     "SELECT position_id, signal_id, event_id, contract_id, base_lane, "
-                    "side, quantity, cost_basis_micros, opened_at, liquidation_trigger "
-                    "FROM political_experimental_positions WHERE cohort_id = ? "
+                    "side, quantity, cost_basis_micros, opened_at, liquidation_trigger, "
+                    "NOT EXISTS ("
+                    "SELECT 1 FROM political_experimental_exit_attempts AS latest "
+                    "WHERE latest.cohort_id = p.cohort_id "
+                    "AND latest.position_id = p.position_id "
+                    "AND latest.replay_sequence = ("
+                    "SELECT MAX(attempt.replay_sequence) "
+                    "FROM political_experimental_exit_attempts AS attempt "
+                    "WHERE attempt.cohort_id = p.cohort_id "
+                    "AND attempt.position_id = p.position_id) "
+                    "AND latest.outcome = 'no_exit') AS valuation_complete "
+                    "FROM political_experimental_positions AS p WHERE cohort_id = ? "
                     "ORDER BY opened_at, position_id",
                     (cohort_id,),
                 ).fetchall()
@@ -959,6 +969,7 @@ class PlatformOpportunityStore:
                         **{key: row[key] for key in row.keys()},
                         "quantity": int(row["quantity"]),
                         "cost_basis_micros": int(row["cost_basis_micros"]),
+                        "valuation_complete": bool(row["valuation_complete"]),
                     }
                     for row in positions
                 ]
@@ -1006,6 +1017,9 @@ class PlatformOpportunityStore:
         return {
             "account": account,
             "open_positions": open_positions,
+            "valuation_complete": all(
+                bool(position["valuation_complete"]) for position in open_positions
+            ),
             "counts": {
                 "signals": int(signal_counts["signals"] or 0),
                 "pending": int(signal_counts["pending"] or 0),
@@ -1016,6 +1030,93 @@ class PlatformOpportunityStore:
                 "partial_exits": int(event_counts["partial_exits"] or 0),
             },
         }
+
+    def _record_political_experimental_no_exit(
+        self,
+        *,
+        cohort_id: str,
+        position_id: str,
+        replay_sequence: int,
+        attempted_at: datetime,
+        reason: str,
+        trigger: str | None,
+    ) -> dict[str, Any]:
+        """Persist a non-monetary failed valuation or liquidation attempt.
+
+        This is intentionally an internal companion to the ledger's sealed
+        replay transition.  It changes neither cash nor reserved basis, but a
+        forced-exit trigger is retained so later canonical evidence continues
+        the liquidation rather than silently cancelling it.
+        """
+        if (
+            not isinstance(replay_sequence, int)
+            or isinstance(replay_sequence, bool)
+            or replay_sequence <= 0
+            or not isinstance(reason, str)
+            or not reason
+        ):
+            raise ValueError("political paper no-exit identity is invalid")
+        attempted_iso = _utc_iso(attempted_at)
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                prior = connection.execute(
+                    "SELECT outcome, reason, payload_json FROM political_experimental_exit_attempts "
+                    "WHERE cohort_id = ? AND position_id = ? AND replay_sequence = ?",
+                    (cohort_id, position_id, replay_sequence),
+                ).fetchone()
+                if prior is not None:
+                    connection.commit()
+                    return {
+                        "outcome": str(prior["outcome"]),
+                        "reason": prior["reason"],
+                        "idempotent": True,
+                        "payload": json.loads(str(prior["payload_json"])),
+                    }
+                position = connection.execute(
+                    "SELECT 1 FROM political_experimental_positions "
+                    "WHERE cohort_id = ? AND position_id = ?",
+                    (cohort_id, position_id),
+                ).fetchone()
+                if position is None:
+                    raise ValueError(
+                        "political paper no-exit requires an open position"
+                    )
+                payload = {
+                    "replay_sequence": replay_sequence,
+                    **({"exit_trigger": trigger} if trigger is not None else {}),
+                }
+                connection.execute(
+                    "INSERT INTO political_experimental_exit_attempts "
+                    "(cohort_id, position_id, replay_sequence, outcome, reason, attempted_at, payload_json) "
+                    "VALUES (?, ?, ?, 'no_exit', ?, ?, ?)",
+                    (
+                        cohort_id,
+                        position_id,
+                        replay_sequence,
+                        reason,
+                        attempted_iso,
+                        _json(payload),
+                    ),
+                )
+                if trigger is not None:
+                    connection.execute(
+                        "UPDATE political_experimental_positions "
+                        "SET liquidation_trigger = COALESCE(liquidation_trigger, ?) "
+                        "WHERE cohort_id = ? AND position_id = ?",
+                        (trigger, cohort_id, position_id),
+                    )
+                connection.commit()
+                return {
+                    "outcome": "no_exit",
+                    "reason": reason,
+                    "idempotent": False,
+                    "payload": payload,
+                }
+            except Exception:
+                connection.rollback()
+                raise
 
     def exit_political_experimental_position(
         self,

@@ -730,6 +730,7 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
             "realized_pnl_micros": 950_000,
         },
         "open_positions": [],
+        "valuation_complete": True,
         "counts": {
             "signals": 1,
             "pending": 0,
@@ -1106,6 +1107,118 @@ def test_political_paper_partial_forced_exit_latches_liquidation_until_closed(tm
         == "hard_stop_net_return_minus_0.05"
     )
     assert ledger.snapshot()["counts"]["open"] == 0
+
+
+def test_forced_exit_with_stale_evidence_is_durable_no_exit_and_stays_latched(tmp_path):
+    """A failed forced valuation cannot hide an open position or clear its trigger."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:exit-age")
+    ledger.initialize(
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+        policy={
+            "max_book_request_latency_seconds": "2",
+            "max_fee_fetch_latency_seconds": "2",
+            "max_fee_schedule_age_seconds": "60",
+        },
+    )
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.55, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+    source = store.record_replay_observation(
+        cohort_id="cohort:exit-age",
+        contract_id="kalshi:KXEXITAGE",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:exit-age",
+        replay_sequence=source["event"]["sequence"],
+        event_id="event-exit-age",
+        milestone_id="milestone-exit-age",
+        contract_id="kalshi:KXEXITAGE",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=source["state_hash"],
+        fee_hash=source["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    fill = store.record_replay_observation(
+        cohort_id="cohort:exit-age",
+        contract_id="kalshi:KXEXITAGE",
+        normalized_book=book,
+        fee_schedule={
+            **_authoritative_kalshi_fee(),
+            "observed_at": (NOW + timedelta(seconds=1)).isoformat(),
+            "fetched_at": (NOW + timedelta(seconds=1)).isoformat(),
+        },
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=900),
+        received_at=NOW + timedelta(seconds=1),
+        book_received_at=NOW + timedelta(seconds=1),
+        fee_request_started_at=NOW + timedelta(milliseconds=900),
+        fee_received_at=NOW + timedelta(seconds=1),
+    )
+    fill_transitions = ledger.process_observation(
+        replay_sequence=fill["event"]["sequence"]
+    )
+    assert fill_transitions[0]["outcome"] == "filled", fill_transitions
+
+    stale_exit = store.record_replay_observation(
+        cohort_id="cohort:exit-age",
+        contract_id="kalshi:KXEXITAGE",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW + timedelta(seconds=600),
+        received_at=NOW + timedelta(seconds=601),
+        book_received_at=NOW + timedelta(seconds=601),
+        fee_request_started_at=NOW + timedelta(seconds=600),
+        fee_received_at=NOW + timedelta(seconds=601),
+    )
+    [no_exit] = ledger.process_observation(
+        replay_sequence=stale_exit["event"]["sequence"]
+    )
+    assert no_exit["outcome"] == "no_exit"
+    assert no_exit["reason"] == "fee_metadata_stale"
+    snapshot = ledger.snapshot()
+    assert snapshot["valuation_complete"] is False
+    assert snapshot["open_positions"][0]["liquidation_trigger"] == "max_hold_10_minutes"
+
+    settled = store.record_replay_observation(
+        cohort_id="cohort:exit-age",
+        contract_id="kalshi:KXEXITAGE",
+        normalized_book=book,
+        fee_schedule={
+            **_authoritative_kalshi_fee(),
+            "observed_at": (NOW + timedelta(seconds=602)).isoformat(),
+            "fetched_at": (NOW + timedelta(seconds=602)).isoformat(),
+        },
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=602),
+        request_started_at=NOW + timedelta(seconds=601),
+        received_at=NOW + timedelta(seconds=602),
+        book_received_at=NOW + timedelta(seconds=602),
+        fee_request_started_at=NOW + timedelta(seconds=601),
+        fee_received_at=NOW + timedelta(seconds=602),
+    )
+    [closed] = ledger.process_observation(replay_sequence=settled["event"]["sequence"])
+    assert closed["outcome"] == "closed"
+    assert ledger.snapshot()["valuation_complete"] is True
 
 
 @pytest.mark.parametrize(

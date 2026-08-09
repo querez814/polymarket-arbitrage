@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Mapping
 
 from utils.platform_opportunity_store import PlatformOpportunityStore
+from utils.platform_opportunity_store import ReplayEvidenceIntegrityError
 
 _ONE_CENT = Decimal("0.01")
 _ONE_CENTICENT = Decimal("0.0001")
@@ -857,10 +858,41 @@ class PoliticalExperimentalPaperLedger:
         opened_at = datetime.fromisoformat(str(position["opened_at"]))
         if received_at < opened_at + timedelta(seconds=float(minimum_hold_seconds)):
             raise ValueError("political paper minimum hold has not elapsed")
-        book = self.store.replay_book_state(str(event["state_hash"]))
-        fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        try:
+            book = self.store.replay_book_state(str(event["state_hash"]))
+            fee_schedule = self.store.replay_fee_schedule(str(event["fee_hash"]))
+        except (KeyError, ReplayEvidenceIntegrityError, ValueError):
+            return self.store._record_political_experimental_no_exit(
+                cohort_id=self.cohort_id,
+                position_id=position_id,
+                replay_sequence=replay_sequence,
+                attempted_at=received_at,
+                reason="replay_evidence_invalid",
+                trigger=trigger,
+            )
+        timing_reason = self._replay_evidence_timing_reason(
+            event=event, fee_schedule=fee_schedule
+        )
+        if timing_reason is not None:
+            return self.store._record_political_experimental_no_exit(
+                cohort_id=self.cohort_id,
+                position_id=position_id,
+                replay_sequence=replay_sequence,
+                attempted_at=received_at,
+                reason=timing_reason,
+                trigger=trigger,
+            )
         token = book.get(str(position["side"]))
         bids = token.get("bids", []) if isinstance(token, dict) else []
+        if not bids:
+            return self.store._record_political_experimental_no_exit(
+                cohort_id=self.cohort_id,
+                position_id=position_id,
+                replay_sequence=replay_sequence,
+                attempted_at=received_at,
+                reason="empty_executable_bids",
+                trigger=trigger,
+            )
         remaining = int(position["quantity"])
         level_economics: list[tuple[str, PoliticalPaperTradeEconomics]] = []
         for price, displayed_size in bids:
@@ -880,8 +912,13 @@ class PoliticalExperimentalPaperLedger:
             if remaining == 0:
                 break
         if not level_economics:
-            raise ValueError(
-                "political paper exit has no whole-contract executable bids"
+            return self.store._record_political_experimental_no_exit(
+                cohort_id=self.cohort_id,
+                position_id=position_id,
+                replay_sequence=replay_sequence,
+                attempted_at=received_at,
+                reason="fractional_or_zero_executable_depth",
+                trigger=trigger,
             )
         quantity = sum(item.quantity for _, item in level_economics)
         levels, credit_micros = self._order_level_payloads(
