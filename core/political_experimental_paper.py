@@ -378,12 +378,41 @@ class PoliticalExperimentalPaperLedger:
             if str(position["contract_id"]) != contract_id:
                 continue
             opened_at = datetime.fromisoformat(str(position["opened_at"]))
-            if received_at < opened_at + timedelta(seconds=float(maximum_hold_seconds)):
+            trigger: str | None = None
+            # Reviewed-lock provenance was sealed onto this replay token at
+            # persistence.  A token from the same reviewed event therefore
+            # supplies the authoritative boundary without consulting mutable
+            # catalog/lock state.  Boundary precedes every other frozen exit
+            # condition, including the ten-minute maximum hold.
+            if (
+                event["reviewed_lock_event_id"] is not None
+                and str(event["reviewed_lock_event_id"]) == str(position["event_id"])
+                and event["reviewed_event_end_at"] is not None
+            ):
+                try:
+                    event_end_at = datetime.fromisoformat(
+                        str(event["reviewed_event_end_at"])
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        "sealed reviewed event boundary must be an ISO datetime"
+                    ) from exc
+                if event_end_at.tzinfo is None:
+                    raise ValueError(
+                        "sealed reviewed event boundary must be timezone-aware"
+                    )
+                if received_at >= event_end_at:
+                    trigger = "event_boundary"
+            if trigger is None and received_at >= opened_at + timedelta(
+                seconds=float(maximum_hold_seconds)
+            ):
+                trigger = "max_hold_10_minutes"
+            if trigger is None:
                 continue
             exit_result = self._exit_position(
                 position_id=str(position["position_id"]),
                 replay_sequence=replay_sequence,
-                trigger="max_hold_10_minutes",
+                trigger=trigger,
             )
             transitions.append(exit_result)
         candidates = [

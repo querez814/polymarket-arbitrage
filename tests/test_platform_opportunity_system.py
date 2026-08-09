@@ -818,6 +818,92 @@ def test_political_paper_process_observation_exits_max_hold_without_caller_choic
     assert ledger.snapshot()["counts"]["open"] == 0
 
 
+def test_political_paper_process_observation_prioritizes_reviewed_event_boundary(
+    tmp_path,
+):
+    """A sealed reviewed-event boundary closes an older position before max hold."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:boundary")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.55, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.44, 100]], "asks": [[0.60, 100]]},
+    }
+    reviewed_lock = {
+        "event_id": "event-boundary",
+        "milestone_id": "milestone-boundary",
+        "event_start_at": (NOW - timedelta(minutes=1)).isoformat(),
+        "event_end_at": (NOW + timedelta(seconds=4)).isoformat(),
+        "selected_at": (NOW - timedelta(minutes=2)).isoformat(),
+    }
+    first = store.record_replay_observation(
+        cohort_id="cohort:boundary",
+        contract_id="kalshi:KXBOUNDARY",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="event_live",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+        reviewed_lock=reviewed_lock,
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:boundary",
+        replay_sequence=first["event"]["sequence"],
+        event_id="event-boundary",
+        milestone_id="milestone-boundary",
+        contract_id="kalshi:KXBOUNDARY",
+        side="yes",
+        base_lane="event_live",
+        phase="event_live",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=10),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=first["state_hash"],
+        fee_hash=first["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    fill = store.record_replay_observation(
+        cohort_id="cohort:boundary",
+        contract_id="kalshi:KXBOUNDARY",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="event_live",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+        reviewed_lock=reviewed_lock,
+    )
+    assert (
+        ledger.process_observation(replay_sequence=fill["event"]["sequence"])[0][
+            "outcome"
+        ]
+        == "filled"
+    )
+    boundary = store.record_replay_observation(
+        cohort_id="cohort:boundary",
+        contract_id="kalshi:KXBOUNDARY",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="event_live",
+        observed_at=NOW + timedelta(seconds=4),
+        request_started_at=NOW + timedelta(seconds=3),
+        received_at=NOW + timedelta(seconds=4),
+        reviewed_lock=reviewed_lock,
+    )
+
+    transitions = ledger.process_observation(
+        replay_sequence=boundary["event"]["sequence"]
+    )
+
+    assert transitions[0]["outcome"] == "closed"
+    assert transitions[0]["payload"]["economics"]["exit_trigger"] == "event_boundary"
+    assert ledger.snapshot()["counts"]["open"] == 0
+
+
 @pytest.mark.parametrize(
     ("book_delay", "fee_delay", "fee_age", "expected_reason"),
     [
