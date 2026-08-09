@@ -147,6 +147,11 @@ class DashboardState:
             "mode": "disabled",
             "status": "disabled",
             "execution_authority": "none",
+            "main_paper_fills_pnl": "disabled",
+            "strategy_lanes": {
+                "directional_reaction": {"authority": "disabled"},
+                "relative_value": {"authority": "disabled"},
+            },
             "catalog": {"contracts": 0, "revisions": 0},
             "monitoring": {"hot": [], "warm_count": 0, "budget_excluded": []},
             "relations": 0,
@@ -156,6 +161,7 @@ class DashboardState:
             "sampled_contract_ids": [],
             "research_pnl": {
                 "authority": "shadow_research_only",
+                "label": "shadow_research_marks",
                 "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
                 "horizons": {},
             },
@@ -3285,6 +3291,7 @@ def get_embedded_html() -> str:
                 ? opportunity.political_event_locks : [];
             const researchPnl = opportunity.research_pnl || {};
             const actualExit = researchPnl.actual_exit || {};
+            const strategyLanes = opportunity.strategy_lanes || {};
             summary.textContent = opportunity.enabled
                 ? `${Number(catalog.contracts || 0)} catalog contracts · ${hot.length} hot · ${Number(monitoring.warm_count || 0)} warm · ${excluded.length} budget-excluded · ${Number(opportunity.relations || 0)} structural relations · execution authority: ${opportunity.execution_authority || 'none'}`
                 : 'Shadow system disabled by configuration';
@@ -3292,12 +3299,12 @@ def get_embedded_html() -> str:
             const acceptance = opportunity.acceptance || {};
             lanes.innerHTML = [
                 ['Locked arbitrage', 'existing execution lane; unchanged'],
-                ['Relative value', `${Number(intents.relative_value || 0)} shadow intents · ${(acceptance.relative_value || {}).passed ? 'pilot gate passed' : 'proof pending'}`],
-                ['Directional reaction', `${Number(intents.directional_reaction || 0)} shadow intents · ${(acceptance.directional_reaction || {}).passed ? 'pilot gate passed' : 'proof pending'}`],
+                ['Relative value', `${(strategyLanes.relative_value || {}).authority || 'disabled'} · ${Number(intents.relative_value || 0)} shadow intents · proof pending`],
+                ['Directional reaction', `${(strategyLanes.directional_reaction || {}).authority || 'disabled'} · ${Number(intents.directional_reaction || 0)} shadow intents · unvalidated forward study`],
                 ['Political watchlist', locks.length
                     ? locks.map(lock => `${lock.event_title || lock.event_id} (${lock.state || 'unknown'}; ${Array.isArray(lock.sampled_contract_ids) ? lock.sampled_contract_ids.length : 0}/${Array.isArray(lock.contract_ids) ? lock.contract_ids.length : 0} sampled)`).join(' · ')
                     : 'No selected political events'],
-                ['Research marks', `actual-exit: ${Number(actualExit.scored_marks || 0)}/${Number(actualExit.marks || 0)} scored · capacity PnL ${Number(actualExit.capacity_pnl || 0).toFixed(3)} · shadow research only`],
+                ['Research marks', `${researchPnl.label || 'shadow_research_marks'}, not receipts or positions · main paper fills/PnL ${(opportunity.main_paper_fills_pnl || 'disabled')} · actual-exit: ${Number(actualExit.scored_marks || 0)}/${Number(actualExit.marks || 0)} scored · capacity PnL ${Number(actualExit.capacity_pnl || 0).toFixed(3)}`],
                 ['Research worker', `${Number(worker.queued || 0)} queued · ${Number(worker.processed || 0)} processed · ${Number(worker.dropped || 0)} dropped · ${Number(worker.failures || 0)} failures`],
             ].map(row => `<div style="border-left: 2px solid var(--accent-green); padding-left: 0.65rem;">
                 <div style="font-size: 0.82rem; font-weight: 600;">${escapeHtml(row[0])}</div>

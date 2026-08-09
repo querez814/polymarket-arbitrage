@@ -16,7 +16,7 @@ import statistics
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Sequence, cast
+from typing import Iterable, Literal, Sequence, cast
 from collections.abc import Mapping
 
 from kalshi_client.models import KalshiMarket, KalshiMilestone
@@ -661,6 +661,11 @@ class _BookFeatures:
     seconds_to_catalyst: float = 0.0
 
 
+LaneAuthority = Literal["disabled", "forward_only_unvalidated"]
+_LANE_AUTHORITIES = frozenset(("disabled", "forward_only_unvalidated"))
+_STRATEGY_LANES = ("directional_reaction", "relative_value")
+
+
 class PlatformOpportunitySystem:
     """Coordinates catalog persistence and bounded monitoring allocation."""
 
@@ -675,6 +680,7 @@ class PlatformOpportunitySystem:
         slippage_per_contract: float = 0.002,
         max_shadow_notional: float = 100.0,
         experiment_id: str = "platform-first-v1",
+        lane_authorities: Mapping[str, LaneAuthority] | None = None,
     ):
         self.store = store
         self.monitoring_policy = monitoring_policy or MonitoringPolicy()
@@ -690,6 +696,17 @@ class PlatformOpportunitySystem:
         if not experiment_id.strip():
             raise ValueError("experiment_id must be non-empty")
         self.experiment_id = experiment_id.strip()
+        configured_authorities = dict(lane_authorities or {})
+        unknown_lanes = configured_authorities.keys() - set(_STRATEGY_LANES)
+        if unknown_lanes:
+            raise ValueError(f"unknown strategy lanes: {sorted(unknown_lanes)}")
+        self.lane_authorities: dict[str, LaneAuthority] = {
+            lane: "disabled" for lane in _STRATEGY_LANES
+        }
+        for lane, authority in configured_authorities.items():
+            if authority not in _LANE_AUTHORITIES:
+                raise ValueError(f"unsupported {lane} authority: {authority}")
+            self.lane_authorities[lane] = authority
         self._contracts: dict[str, PlatformContract] = {}
         self._snapshot_complete = True
         self._features: dict[str, deque[_BookFeatures]] = defaultdict(
@@ -719,6 +736,7 @@ class PlatformOpportunitySystem:
                     "additional_fee_buffer": self.additional_fee_buffer_per_contract,
                     "max_shadow_notional": self.max_shadow_notional,
                     "acceptance": asdict(self.acceptance_policy),
+                    "lane_authorities": self.lane_authorities,
                 }
             )[:24]
         )
@@ -1700,6 +1718,8 @@ class PlatformOpportunitySystem:
         history = self._features[contract_id]
         prior = history[-1] if history else None
         history.append(features)
+        if self.lane_authorities["directional_reaction"] == "disabled":
+            return ObservationResult(relation_result.intents, tuple(marks))
         if prior is None:
             return ObservationResult(relation_result.intents, tuple(marks))
         momentum = features.mid - prior.mid
@@ -1844,6 +1864,8 @@ class PlatformOpportunitySystem:
             history = self._relation_residuals[relation.relation_id]
             baseline = sum(history) / len(history) if len(history) >= 2 else None
             history.append(residual)
+            if self.lane_authorities["relative_value"] == "disabled":
+                continue
             if baseline is None or abs(residual - baseline) < 0.03:
                 continue
             last = self._last_intent_at.get((relation.relation_id, "relative_value"))
@@ -2376,6 +2398,11 @@ class PlatformOpportunitySystem:
             "cohort_id": self.cohort_id,
             "fee_model": "authoritative_venue_metadata",
             "fee_covered_contracts": len(self._fee_schedules),
+            "strategy_lanes": {
+                lane: {"authority": self.lane_authorities[lane]}
+                for lane in _STRATEGY_LANES
+            },
+            "main_paper_fills_pnl": "disabled",
             "catalog": {
                 "contracts": counts["current"],
                 "revisions": counts["revisions"],
@@ -2395,5 +2422,8 @@ class PlatformOpportunitySystem:
                 for contract_id in sorted(self._sampled_contract_ids)
                 if contract_id in observation_failures
             },
-            "research_pnl": self.store.research_mark_summary(cohort_id=self.cohort_id),
+            "research_pnl": {
+                **self.store.research_mark_summary(cohort_id=self.cohort_id),
+                "label": "shadow_research_marks",
+            },
         }

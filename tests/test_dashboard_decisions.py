@@ -147,6 +147,9 @@ def test_dashboard_exposes_platform_first_shadow_system():
 
     payload = state.to_dict()["platform_opportunity"]
     assert payload["execution_authority"] == "none"
+    assert payload["main_paper_fills_pnl"] == "disabled"
+    assert payload["strategy_lanes"]["relative_value"]["authority"] == "disabled"
+    assert payload["research_pnl"]["label"] == "shadow_research_marks"
     assert payload["catalog"]["contracts"] == 42
     assert payload["research_pnl"]["authority"] == "shadow_research_only"
     page = TestClient(app).get("/").text

@@ -674,6 +674,13 @@ class TradingBotWithDashboard:
             "mode": "shadow_only" if policy.enabled else "disabled",
             "status": "starting" if policy.enabled else "disabled",
             "execution_authority": "none",
+            "main_paper_fills_pnl": "disabled",
+            "strategy_lanes": {
+                "directional_reaction": {
+                    "authority": policy.directional_reaction_authority
+                },
+                "relative_value": {"authority": policy.relative_value_authority},
+            },
             "catalog": {"contracts": 0, "revisions": 0},
             "monitoring": {"hot": [], "warm_count": 0, "budget_excluded": []},
             "relations": 0,
@@ -683,6 +690,7 @@ class TradingBotWithDashboard:
             "sampled_contract_ids": [],
             "research_pnl": {
                 "authority": "shadow_research_only",
+                "label": "shadow_research_marks",
                 "actual_exit": {"marks": 0, "scored_marks": 0, "capacity_pnl": 0.0},
                 "horizons": {},
             },
@@ -726,6 +734,10 @@ class TradingBotWithDashboard:
             slippage_per_contract=policy.slippage_per_contract,
             max_shadow_notional=policy.max_shadow_notional,
             experiment_id=policy.experiment_id,
+            lane_authorities={
+                "directional_reaction": policy.directional_reaction_authority,
+                "relative_value": policy.relative_value_authority,
+            },
         )
 
         def publish(payload: dict) -> None:

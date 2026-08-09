@@ -67,7 +67,11 @@ platform_opportunity:
   political_milestone_concurrency: 4
   political_milestone_cache_seconds: 900
   additional_fee_buffer_per_contract: 0
-  slippage_per_contract: 0.002
+  # This is an unvalidated forward study. The residual structural rule is not
+  # an arbitrage lane and remains disabled pending evidence.
+  directional_reaction_authority: forward_only_unvalidated
+  relative_value_authority: disabled
+  slippage_per_contract: 0.01
   max_shadow_notional: 100
   min_event_clusters: 50
   min_intents: 200

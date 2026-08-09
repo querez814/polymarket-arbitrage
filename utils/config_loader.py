@@ -10,7 +10,7 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import yaml
 
@@ -270,6 +270,14 @@ class PlatformOpportunityConfig:
     catalog_wall_time_seconds: float = 120.0
     additional_fee_buffer_per_contract: float = 0.0
     slippage_per_contract: float = 0.002
+    # Research lanes are fail-closed unless a profile explicitly declares
+    # their limited forward-study authority.
+    directional_reaction_authority: Literal[
+        "disabled", "forward_only_unvalidated"
+    ] = "disabled"
+    relative_value_authority: Literal["disabled", "forward_only_unvalidated"] = (
+        "disabled"
+    )
     max_shadow_notional: float = 100.0
     min_event_clusters: int = 50
     min_intents: int = 200
@@ -1035,6 +1043,11 @@ def validate_config(config: BotConfig) -> None:
         or not platform.experiment_id.strip()
     ):
         errors.append("platform_opportunity.experiment_id must be non-empty")
+    for name in ("directional_reaction_authority", "relative_value_authority"):
+        if getattr(platform, name) not in {"disabled", "forward_only_unvalidated"}:
+            errors.append(
+                f"platform_opportunity.{name} must be disabled or forward_only_unvalidated"
+            )
     for name in (
         "lookahead_days",
         "hot_poll_seconds",

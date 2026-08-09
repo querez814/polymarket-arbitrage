@@ -16,6 +16,7 @@ from core.platform_opportunities import (
     MonitoringPolicy,
     PoliticalWatchPolicy,
     PlatformOpportunitySystem,
+    LaneAuthority,
     StructuralRelation,
     VenueFeeSchedule,
     _normalized_milestone_metadata,
@@ -23,6 +24,10 @@ from core.platform_opportunities import (
 from utils.platform_opportunity_store import PlatformOpportunityStore
 
 NOW = datetime(2026, 8, 8, 16, 0, tzinfo=timezone.utc)
+
+
+def _lane_authorities(*lanes: str) -> dict[str, LaneAuthority]:
+    return {lane: "forward_only_unvalidated" for lane in lanes}
 
 
 def _poly(
@@ -1328,9 +1333,40 @@ def test_structural_relation_is_retained_when_sampling_capacity_excludes_a_leg(
     assert set(relations[0].contract_ids) == {"polymarket:p3", "polymarket:p4"}
 
 
+def test_disabled_directional_lane_collects_features_without_creating_an_intent(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    close = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    system.set_fee_schedule("polymarket:p1", _zero_fee())
+    system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=NOW,
+    )
+    result = system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+        observed_at=NOW + timedelta(seconds=5),
+    )
+
+    assert result.intents == ()
+    assert len(system._features["polymarket:p1"]) == 2
+    assert system.dashboard_summary()["strategy_lanes"]["directional_reaction"] == {
+        "authority": "disabled"
+    }
+
+
 def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
-    system = PlatformOpportunitySystem(store=store)
+    system = PlatformOpportunitySystem(
+        store=store, lane_authorities=_lane_authorities("directional_reaction")
+    )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
         polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
@@ -1390,7 +1426,8 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
 
 def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path):
     system = PlatformOpportunitySystem(
-        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        lane_authorities=_lane_authorities("directional_reaction"),
     )
     close = NOW + timedelta(minutes=30)
     system.refresh_catalog(
@@ -1414,7 +1451,8 @@ def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path)
 
 def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
     system = PlatformOpportunitySystem(
-        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        lane_authorities=_lane_authorities("directional_reaction"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -1441,7 +1479,8 @@ def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
 
 def test_directional_intent_uses_signed_composite_not_momentum_alone(tmp_path):
     system = PlatformOpportunitySystem(
-        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        lane_authorities=_lane_authorities("directional_reaction"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -1470,7 +1509,8 @@ def test_directional_intent_uses_signed_composite_not_momentum_alone(tmp_path):
 
 def test_zero_exit_capacity_records_insufficient_depth_marks_without_crashing(tmp_path):
     system = PlatformOpportunitySystem(
-        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        lane_authorities=_lane_authorities("directional_reaction"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -1504,7 +1544,9 @@ def test_zero_exit_capacity_records_insufficient_depth_marks_without_crashing(tm
     assert all(mark.net_return is None for mark in marks)
 
 
-def test_relative_value_lane_uses_structural_residual_not_semantic_similarity(tmp_path):
+def test_relative_value_lane_is_disabled_before_residual_signal_can_create_intent(
+    tmp_path,
+):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)
     close = NOW + timedelta(hours=2)
@@ -1516,7 +1558,7 @@ def test_relative_value_lane_uses_structural_residual_not_semantic_similarity(tm
         kalshi_markets=[],
         observed_at=NOW,
     )
-    relation = system.discover_structural_relations(observed_at=NOW)[0]
+    system.discover_structural_relations(observed_at=NOW)
     system.set_fee_schedule("polymarket:p3", _zero_fee())
     system.set_fee_schedule("polymarket:p4", _zero_fee())
 
@@ -1553,10 +1595,10 @@ def test_relative_value_lane_uses_structural_residual_not_semantic_similarity(tm
     )
 
     relative = [intent for intent in emitted.intents if intent.lane == "relative_value"]
-    assert len(relative) == 1
-    assert relative[0].relation_id == relation.relation_id
-    assert relative[0].direction == "long_restrictive_yes_long_broad_no"
-    assert relative[0].model_version == "structural-residual-baseline-v1"
+    assert relative == []
+    assert system.dashboard_summary()["strategy_lanes"]["relative_value"] == {
+        "authority": "disabled"
+    }
 
 
 def test_acceptance_is_per_lane_and_fails_closed_before_preregistered_sample(tmp_path):
@@ -1584,7 +1626,9 @@ def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
     restart_now = datetime.now(timezone.utc)
     close = restart_now + timedelta(hours=2)
     first_store = PlatformOpportunityStore(path)
-    first = PlatformOpportunitySystem(store=first_store)
+    first = PlatformOpportunitySystem(
+        store=first_store, lane_authorities=_lane_authorities("directional_reaction")
+    )
     first.refresh_catalog(
         polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
         kalshi_markets=[],
@@ -1605,7 +1649,9 @@ def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
     first_store.close()
 
     second_store = PlatformOpportunityStore(path)
-    second = PlatformOpportunitySystem(store=second_store)
+    second = PlatformOpportunitySystem(
+        store=second_store, lane_authorities=_lane_authorities("directional_reaction")
+    )
     second.refresh_catalog(
         polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
         kalshi_markets=[],
@@ -1638,8 +1684,16 @@ def test_acceptance_never_mixes_model_or_cost_cohorts(tmp_path):
 def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     close = NOW + timedelta(hours=2)
-    first = PlatformOpportunitySystem(store=store, experiment_id="first")
-    second = PlatformOpportunitySystem(store=store, experiment_id="second")
+    first = PlatformOpportunitySystem(
+        store=store,
+        experiment_id="first",
+        lane_authorities=_lane_authorities("directional_reaction"),
+    )
+    second = PlatformOpportunitySystem(
+        store=store,
+        experiment_id="second",
+        lane_authorities=_lane_authorities("directional_reaction"),
+    )
     assert first.cohort_id != second.cohort_id
 
     for system, market_id in ((first, "first"), (second, "second")):
