@@ -1115,27 +1115,61 @@ class PlatformOpportunitySystem:
             _event_pin_id(contracts[0]): (event_id, contracts)
             for event_id, contracts in candidates.items()
         }
-        selected = [
-            pinned[event_id]
-            for event_id in policy.reviewed_pinned_event_ids
-            if event_id in pinned
-        ]
+
+        def milestone_ids_for(
+            contracts: Sequence[PlatformContract],
+        ) -> set[str]:
+            return {
+                contract.milestone_id
+                for contract in contracts
+                if contract.milestone_id is not None
+            }
+
+        # A retained lock already consumed its reviewed occurrence, even when
+        # its source event is absent from this catalog refresh.  Seed the
+        # selection set from both its durable selected-contract metadata and
+        # any restored contracts, so a derivative ticker cannot take another
+        # slot after a refresh or restart.
+        consumed_milestones: set[str] = set()
+        for lock in retained.values():
+            selected_metadata = dict(lock.selected_contract)
+            selected_milestone = selected_metadata.get("milestone_id")
+            if selected_milestone is not None:
+                consumed_milestones.add(selected_milestone)
+            consumed_milestones.update(
+                milestone_ids_for(
+                    [
+                        self._contracts[contract_id]
+                        for contract_id in lock.contract_ids
+                        if contract_id in self._contracts
+                    ]
+                )
+            )
+
+        selected: list[tuple[str, list[PlatformContract]]] = []
+        # Pins have deterministic priority, but consume the same occurrence
+        # capacity as automatic selections.  A second reviewed derivative is
+        # therefore skipped rather than silently locking the same milestone.
+        for pin_id in policy.reviewed_pinned_event_ids:
+            item = pinned.get(pin_id)
+            if item is None:
+                continue
+            milestone_ids = milestone_ids_for(item[1])
+            if consumed_milestones.intersection(milestone_ids):
+                continue
+            selected.append(item)
+            consumed_milestones.update(milestone_ids)
         # Different Kalshi derivative event tickers can refer to one exact
         # reviewed milestone.  They are separate catalog identities, but one
         # underlying occurrence may consume only one automatic lock slot.
-        automatic_milestones: set[str] = set()
         for item in ranked:
             if _event_pin_id(item[1][0]) in policy.reviewed_pinned_event_ids:
                 continue
-            milestone_ids = {
-                contract.milestone_id
-                for contract in item[1]
-                if contract.milestone_id is not None
-            }
-            if automatic_milestones.intersection(milestone_ids):
+            milestone_ids = milestone_ids_for(item[1])
+            if consumed_milestones.intersection(milestone_ids):
                 continue
             selected.append(item)
-            automatic_milestones.update(milestone_ids)
+            consumed_milestones.update(milestone_ids)
         for event_id, contracts in selected:
             if len(retained) >= policy.max_events:
                 break

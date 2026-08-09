@@ -898,6 +898,166 @@ def test_automatic_political_locks_dedupe_a_shared_reviewed_milestone(tmp_path):
     assert {lock["event_id"] for lock in locks} & {"KXTOMORROW-26"}
 
 
+def test_reviewed_pin_consumes_shared_milestone_before_automatic_selection(tmp_path):
+    """A reviewed pin and its derivative cannot lock one occurrence twice."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    system = PlatformOpportunitySystem(
+        store=store,
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=2,
+            max_contracts_per_event=1,
+            reviewed_pinned_event_ids=("kalshi:KXPINNED-26",),
+        ),
+    )
+    occurrence = NOW + timedelta(hours=4)
+    tomorrow = NOW + timedelta(days=1)
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXPINNED-26-A",
+                "Reviewed political event",
+                event_ticker="KXPINNED-26",
+                volume=1,
+            ),
+            _kalshi(
+                "KXPINNED-DERIVATIVE-26-A",
+                "Derivative of reviewed event",
+                event_ticker="KXPINNED-DERIVATIVE-26",
+                volume=1_000_000,
+            ),
+            _kalshi(
+                "KXOTHER-26-A",
+                "Separate political event",
+                event_ticker="KXOTHER-26",
+                volume=100,
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "reviewed-occurrence",
+                "Reviewed occurrence",
+                "Politics",
+                "speech",
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXPINNED-26", "KXPINNED-DERIVATIVE-26"),
+                ("KXPINNED-26", "KXPINNED-DERIVATIVE-26"),
+                "reviewed-calendar",
+            ),
+            KalshiMilestone(
+                "separate-occurrence",
+                "Separate occurrence",
+                "Politics",
+                "speech",
+                tomorrow,
+                tomorrow + timedelta(minutes=45),
+                ("KXOTHER-26",),
+                ("KXOTHER-26",),
+                "reviewed-calendar",
+            ),
+        ],
+        observed_at=NOW,
+    )
+
+    assert {
+        lock["event_id"] for lock in store.active_political_event_locks(now=NOW)
+    } == {"KXPINNED-26", "KXOTHER-26"}
+
+
+def test_retained_lock_consumes_shared_milestone_after_restart(tmp_path):
+    """A restarted worker seeds automatic selection from active lock evidence."""
+    database = tmp_path / "opportunities.db"
+    occurrence = NOW + timedelta(days=2)
+    first = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(database),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=1, max_contracts_per_event=1
+        ),
+    )
+    first.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXRETAINED-26-A",
+                "Retained political event",
+                event_ticker="KXRETAINED-26",
+            )
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "retained-occurrence",
+                "Retained occurrence",
+                "Politics",
+                "speech",
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXRETAINED-26",),
+                ("KXRETAINED-26",),
+                "reviewed-calendar",
+            )
+        ],
+        observed_at=NOW,
+    )
+
+    restarted = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(database),
+        political_watch_policy=PoliticalWatchPolicy(
+            max_events=2, max_contracts_per_event=1
+        ),
+    )
+    restarted.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[
+            _kalshi(
+                "KXRETAINED-DERIVATIVE-26-A",
+                "Retained event derivative",
+                event_ticker="KXRETAINED-DERIVATIVE-26",
+                volume=1_000_000,
+            ),
+            _kalshi(
+                "KXRESTART-OTHER-26-A",
+                "President's separate restarted remarks",
+                event_ticker="KXRESTART-OTHER-26",
+            ),
+        ],
+        kalshi_milestones=[
+            KalshiMilestone(
+                "retained-occurrence",
+                "Retained occurrence",
+                "Politics",
+                "speech",
+                occurrence,
+                occurrence + timedelta(minutes=45),
+                ("KXRETAINED-DERIVATIVE-26",),
+                ("KXRETAINED-DERIVATIVE-26",),
+                "reviewed-calendar",
+            ),
+            KalshiMilestone(
+                "restarted-separate-occurrence",
+                "Separate restarted occurrence",
+                "Politics",
+                "speech",
+                occurrence + timedelta(hours=2),
+                occurrence + timedelta(hours=2, minutes=45),
+                ("KXRESTART-OTHER-26",),
+                ("KXRESTART-OTHER-26",),
+                "reviewed-calendar",
+            ),
+        ],
+        observed_at=NOW + timedelta(minutes=1),
+    )
+
+    locked_event_ids = {
+        lock["event_id"]
+        for lock in restarted.store.active_political_event_locks(now=NOW)
+    }
+    assert locked_event_ids == {"KXRETAINED-26", "KXRESTART-OTHER-26"}, (
+        locked_event_ids,
+        restarted._political_locks,
+    )
+
+
 def test_week_long_live_political_milestone_cannot_displace_short_horizon_event(
     tmp_path,
 ):
