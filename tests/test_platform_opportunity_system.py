@@ -36,6 +36,7 @@ from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
     PoliticalSizingExitEvidence,
     PoliticalSizingOpportunity,
+    evaluate_required_political_sizing_scenarios,
     evaluate_political_sizing_scenario,
 )
 from utils.platform_opportunity_store import (
@@ -96,7 +97,6 @@ def test_read_only_sizing_fans_identical_sealed_evidence_without_store_mutation(
         fee_schedule=_authoritative_kalshi_fee(),
         levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
     )
-
     reports = [
         evaluate_political_sizing_scenario(
             scenario=scenario,
@@ -126,6 +126,59 @@ def test_read_only_sizing_fans_identical_sealed_evidence_without_store_mutation(
         ).fetchall()
         == before
     )
+
+
+def test_required_sizing_fanout_keeps_control_and_counterfactuals_separate():
+    """The seven required reports consume one sealed stream, never seven signals."""
+    entry = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:fanout",
+        signal_id="signal:fanout",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:entry",
+        event_id="event-a",
+        milestone_id="milestone-a",
+        contract_id="contract-a",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+    )
+    exit_evidence = PoliticalSizingExitEvidence(
+        evidence_cohort_id="evidence:fanout",
+        contract_id="contract-a",
+        exit_replay_sequence=3,
+        exit_replay_hash="hash:exit",
+        trigger="event_boundary",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.55", Decimal("100")),),
+    )
+
+    bundle = evaluate_required_political_sizing_scenarios(
+        opportunities=(entry,),
+        exit_evidence=(exit_evidence,),
+        starting_cash_micros=1_000_000_000,
+    )
+
+    assert bundle.read_only_not_realized is True
+    assert bundle.control.scenario_name == "control_p25_t100"
+    assert [report.scenario_name for report in bundle.counterfactuals] == [
+        "cf_p50_t100",
+        "cf_p50_t200",
+        "cf_p100_t400",
+        "cf_p150_t600",
+        "cf_p200_t800",
+        "cf_liquidity_ceiling",
+    ]
+    assert len(bundle.reports) == 7
+    assert all(
+        report.evidence_cohort_id == "evidence:fanout"
+        and report.allocations[0].signal_id == "signal:fanout"
+        and report.allocations[0].entry_replay_hash == "hash:entry"
+        and report.exits[0].exit_replay_hash == "hash:exit"
+        for report in bundle.reports
+    )
+    assert entry.entry_replay_hash == "hash:entry"
+    assert exit_evidence.exit_replay_hash == "hash:exit"
 
 
 def test_read_only_sizing_enforces_occurrence_overlap_without_changing_evidence():

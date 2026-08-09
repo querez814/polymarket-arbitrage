@@ -13,7 +13,10 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
-from core.political_sizing_scenarios import PoliticalSizingScenario
+from core.political_sizing_scenarios import (
+    PoliticalSizingScenario,
+    required_political_sizing_scenarios,
+)
 
 
 @dataclass(frozen=True)
@@ -151,6 +154,28 @@ class PoliticalSizingScenarioReport:
     open_unrealized_pnl_micros: int | None
     open_valuation_complete: bool
     maximum_drawdown_micros: int | None
+
+
+@dataclass(frozen=True)
+class PoliticalSizingReportBundle:
+    """One explicitly read-only fan-out of a shared sealed evidence cohort.
+
+    The control interpretation remains an isolated report; the other six
+    reports are labeled counterfactual and are never part of control paper
+    accounting.  Keeping the reports together makes a later durable
+    dashboard/report projection unable to accidentally omit a required policy
+    or treat a larger sizing policy as a separate signal source.
+    """
+
+    evidence_cohort_id: str
+    read_only_not_realized: bool
+    control: PoliticalSizingScenarioReport
+    counterfactuals: tuple[PoliticalSizingScenarioReport, ...]
+
+    @property
+    def reports(self) -> tuple[PoliticalSizingScenarioReport, ...]:
+        """Return the control report followed by the six counterfactuals."""
+        return (self.control, *self.counterfactuals)
 
 
 def evaluate_political_sizing_scenario(
@@ -483,6 +508,40 @@ def evaluate_political_sizing_scenario(
         open_unrealized_pnl_micros=None,
         open_valuation_complete=not open_positions,
         maximum_drawdown_micros=(maximum_drawdown_micros if completed_exit else None),
+    )
+
+
+def evaluate_required_political_sizing_scenarios(
+    *,
+    opportunities: Sequence[PoliticalSizingOpportunity],
+    exit_evidence: Sequence[PoliticalSizingExitEvidence] = (),
+    starting_cash_micros: int,
+    displayed_depth_fraction: Decimal = Decimal("0.10"),
+) -> PoliticalSizingReportBundle:
+    """Fan one immutable causal evidence stream into all seven scenarios.
+
+    This is intentionally only a composition boundary around the pure
+    evaluator.  It neither stores the reports nor invokes an adapter, so it
+    cannot turn a sizing interpretation into another decision, fill, or venue
+    request.
+    """
+    if not opportunities:
+        raise ValueError("political sizing requires sealed opportunities")
+    reports = tuple(
+        evaluate_political_sizing_scenario(
+            scenario=scenario,
+            opportunities=opportunities,
+            exit_evidence=exit_evidence,
+            starting_cash_micros=starting_cash_micros,
+            displayed_depth_fraction=displayed_depth_fraction,
+        )
+        for scenario in required_political_sizing_scenarios()
+    )
+    return PoliticalSizingReportBundle(
+        evidence_cohort_id=opportunities[0].evidence_cohort_id,
+        read_only_not_realized=True,
+        control=reports[0],
+        counterfactuals=reports[1:],
     )
 
 
