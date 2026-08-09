@@ -167,6 +167,22 @@ async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
     system.store.close()
 
 
+def test_platform_observation_failure_without_system_degrades_dashboard(caplog):
+    """An optional system that has shut down cannot crash failure handling."""
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.platform_opportunity_system = None
+
+    bot._record_platform_observation_failure(
+        "kalshi:unavailable",
+        reason_code="book_read_failed",
+        failed_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+    )
+
+    assert dashboard_state.platform_opportunity["status"] == "degraded"
+    assert "not initialized" in dashboard_state.platform_opportunity["last_error"]
+    assert "not initialized" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_live_cross_platform_pair_uses_owned_production_runtime():
     config = BotConfig()

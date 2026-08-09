@@ -1229,15 +1229,28 @@ class TradingBotWithDashboard:
         failed_at: datetime,
     ) -> None:
         """Keep public sampling alive if optional failure telemetry is unavailable."""
+        system = self.platform_opportunity_system
+        if system is None:
+            # Shutdown/startup races can leave the optional shadow system absent.
+            # Degrade transparently instead of relying on an AttributeError path.
+            dashboard_state.platform_opportunity.update(
+                {
+                    "status": "degraded",
+                    "last_error": "platform observation telemetry not initialized",
+                }
+            )
+            logger.warning(
+                "Platform observation failure telemetry not initialized | contract=%s",
+                contract_id,
+            )
+            return
         try:
-            self.platform_opportunity_system.record_observation_failure(
+            system.record_observation_failure(
                 contract_id,
                 reason_code=reason_code,
                 failed_at=failed_at,
             )
-            dashboard_state.platform_opportunity.update(
-                self.platform_opportunity_system.dashboard_summary()
-            )
+            dashboard_state.platform_opportunity.update(system.dashboard_summary())
         except Exception as exc:
             # A shadow-only telemetry outage must never leave the sampler task
             # dead while its dashboard state still claims to be running.
