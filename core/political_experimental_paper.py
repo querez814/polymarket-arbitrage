@@ -409,7 +409,7 @@ class PoliticalExperimentalPaperLedger:
         # boundary.
         signal = candidates[0]
         transitions.append(
-            self.resolve_pending_signal(
+            self._resolve_pending_signal(
                 signal_id=str(signal["signal_id"]), replay_sequence=replay_sequence
             )
         )
@@ -617,7 +617,7 @@ class PoliticalExperimentalPaperLedger:
             raise ValueError("immutable political paper exit policy is invalid")
         return minimum_hold_seconds, displayed_depth_fraction
 
-    def resolve_pending_signal(
+    def _resolve_pending_signal(
         self,
         *,
         signal_id: str,
@@ -816,23 +816,12 @@ class PoliticalExperimentalPaperLedger:
             },
         )
 
-    def exit_position(
-        self,
-        *,
-        position_id: str,
-        replay_sequence: int,
-    ) -> dict[str, Any]:
-        """Manually exercise the sealed replay-backed exit primitive in tests."""
-        return self._exit_position(
-            position_id=position_id, replay_sequence=replay_sequence, trigger=None
-        )
-
     def _exit_position(
         self,
         *,
         position_id: str,
         replay_sequence: int,
-        trigger: str | None,
+        trigger: str | None = None,
     ) -> dict[str, Any]:
         """Close as much of an open position as the later canonical bids allow.
 

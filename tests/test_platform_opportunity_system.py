@@ -349,12 +349,13 @@ def test_political_paper_entry_resolution_uses_only_immutable_policy_limits(
         Decimal("0.10"),
     )
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        ledger.resolve_pending_signal(
+        ledger._resolve_pending_signal(
             signal_id="signal:policy",
             replay_sequence=1,
             max_position_reserved_micros=1,
         )
     assert not hasattr(store, "resolve_political_experimental_pending_signal")
+    assert not hasattr(ledger, "resolve_pending_signal")
 
 
 def test_political_paper_exit_uses_only_immutable_policy_limits(tmp_path):
@@ -374,14 +375,15 @@ def test_political_paper_exit_uses_only_immutable_policy_limits(tmp_path):
     )
 
     assert ledger._exit_limits() == (Decimal("2"), Decimal("0.10"))
+    assert not hasattr(ledger, "exit_position")
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        ledger.exit_position(
+        ledger._exit_position(
             position_id="position:policy",
             replay_sequence=1,
             minimum_hold_seconds=0,
         )
     with pytest.raises(TypeError, match="unexpected keyword argument"):
-        ledger.exit_position(
+        ledger._exit_position(
             position_id="position:policy",
             replay_sequence=1,
             displayed_depth_fraction=Decimal("1"),
@@ -587,7 +589,7 @@ def test_political_paper_ttl_sweeper_durably_consumes_expired_signal_on_restart(
         restarted.store.political_experimental_pending_signals(cohort_id="cohort:ttl")
         == []
     )
-    assert restarted.resolve_pending_signal(
+    assert restarted._resolve_pending_signal(
         signal_id="signal:ttl",
         replay_sequence=1,
     ) == {
@@ -679,7 +681,7 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         request_started_at=NOW + timedelta(seconds=3),
         received_at=NOW + timedelta(seconds=4),
     )
-    partially_closed = ledger.exit_position(
+    partially_closed = ledger._exit_position(
         position_id=result["payload"]["position_id"],
         replay_sequence=first_exit["event"]["sequence"],
     )
@@ -702,7 +704,7 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         request_started_at=NOW + timedelta(seconds=5),
         received_at=NOW + timedelta(seconds=6),
     )
-    closed = ledger.exit_position(
+    closed = ledger._exit_position(
         position_id=result["payload"]["position_id"],
         replay_sequence=final_exit["event"]["sequence"],
     )
@@ -1095,7 +1097,7 @@ def test_political_paper_rejects_slow_or_stale_replay_evidence(
         fee_received_at=fee_observed_at + fee_delay,
     )
 
-    result = ledger.resolve_pending_signal(
+    result = ledger._resolve_pending_signal(
         signal_id="signal:timing",
         replay_sequence=later["event"]["sequence"],
     )
@@ -1164,7 +1166,7 @@ def test_political_paper_aggregates_only_whole_contract_depth_from_persisted_ask
         received_at=NOW + timedelta(seconds=1),
     )
 
-    result = ledger.resolve_pending_signal(
+    result = ledger._resolve_pending_signal(
         signal_id="signal:multi-level",
         replay_sequence=fill_event["event"]["sequence"],
     )
@@ -1252,7 +1254,7 @@ def test_political_paper_fills_an_affordable_prefix_of_deeper_depth(tmp_path):
         received_at=NOW + timedelta(seconds=1),
     )
 
-    result = ledger.resolve_pending_signal(
+    result = ledger._resolve_pending_signal(
         signal_id="signal:prefix",
         replay_sequence=later["event"]["sequence"],
     )
@@ -1319,7 +1321,7 @@ def test_political_paper_rejects_an_overlapping_later_request_as_a_named_no_fill
         request_started_at=NOW + timedelta(milliseconds=50),
         received_at=NOW + timedelta(seconds=1),
     )
-    result = ledger.resolve_pending_signal(
+    result = ledger._resolve_pending_signal(
         signal_id="signal:overlap",
         replay_sequence=second["event"]["sequence"],
     )
@@ -1384,7 +1386,7 @@ def test_political_paper_scopes_base_lane_overlap_to_the_independent_event(tmp_p
             request_started_at=started_at + timedelta(milliseconds=101),
             received_at=started_at + timedelta(seconds=1),
         )
-        return ledger.resolve_pending_signal(
+        return ledger._resolve_pending_signal(
             signal_id=signal_id,
             replay_sequence=later["event"]["sequence"],
         )
@@ -1453,7 +1455,7 @@ def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
         received_at=NOW + timedelta(milliseconds=100),
     )
 
-    result = ledger.resolve_pending_signal(
+    result = ledger._resolve_pending_signal(
         signal_id="signal:missing",
         replay_sequence=event["event"]["sequence"],
     )
@@ -1478,7 +1480,7 @@ def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
         cohort_id="cohort:missing",
     )
-    retry = restarted.resolve_pending_signal(
+    retry = restarted._resolve_pending_signal(
         signal_id="signal:missing",
         replay_sequence=event["event"]["sequence"],
     )
