@@ -2380,6 +2380,47 @@ def test_acceptance_never_mixes_model_or_cost_cohorts(tmp_path):
     assert changed.acceptance_report("directional_reaction").intents == 0
 
 
+def test_cohort_identity_changes_for_monitoring_political_and_replay_policy(tmp_path):
+    """A decision-changing restart cannot append evidence to an old cohort."""
+    path = tmp_path / "opportunities.db"
+    baseline = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(path, replay_byte_cap=4 * 1024**3),
+        monitoring_policy=MonitoringPolicy(max_hot_contracts=100),
+        political_watch_policy=PoliticalWatchPolicy(
+            reviewed_pinned_event_ids=("kalshi:KXTRUMPMENTION-26AUG10",),
+        ),
+    )
+    changed_monitoring = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(path, replay_byte_cap=4 * 1024**3),
+        monitoring_policy=MonitoringPolicy(max_hot_contracts=99),
+        political_watch_policy=baseline.political_watch_policy,
+    )
+    changed_political = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(path, replay_byte_cap=4 * 1024**3),
+        monitoring_policy=baseline.monitoring_policy,
+        political_watch_policy=PoliticalWatchPolicy(
+            reviewed_pinned_event_ids=("kalshi:KXSCRSENS-26",),
+        ),
+    )
+    changed_replay_limit = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(path, replay_byte_cap=3 * 1024**3),
+        monitoring_policy=baseline.monitoring_policy,
+        political_watch_policy=baseline.political_watch_policy,
+    )
+
+    assert (
+        len(
+            {
+                baseline.cohort_id,
+                changed_monitoring.cohort_id,
+                changed_political.cohort_id,
+                changed_replay_limit.cohort_id,
+            }
+        )
+        == 4
+    )
+
+
 def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     close = NOW + timedelta(hours=2)

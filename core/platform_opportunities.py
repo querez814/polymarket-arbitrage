@@ -738,14 +738,27 @@ class PlatformOpportunitySystem:
             "cohort:"
             + _fingerprint(
                 {
+                    # This is an evidence-cohort identity, rather than merely
+                    # a model label.  Any configuration which can change what
+                    # is watched, when it is watched, or how a mark is valued
+                    # must make a restart write into a distinct cohort.
+                    "cohort_schema_version": 2,
                     "directional_model": "microstructure-baseline-v1",
                     "relative_model": "structural-residual-baseline-v1",
                     "scoring_schema": "later-book-capacity-v1",
+                    "replay_schema": "normalized-replay-v1",
                     "experiment_id": self.experiment_id,
                     "fee_model": "authoritative-venue-fees-v1",
                     "slippage": self.slippage_per_contract,
                     "additional_fee_buffer": self.additional_fee_buffer_per_contract,
                     "max_shadow_notional": self.max_shadow_notional,
+                    "monitoring_policy": asdict(self.monitoring_policy),
+                    "political_watch_policy": (
+                        asdict(self.political_watch_policy)
+                        if self.political_watch_policy is not None
+                        else None
+                    ),
+                    "replay_byte_cap": self.store.replay_byte_cap,
                     "acceptance": asdict(self.acceptance_policy),
                     "lane_authorities": self.lane_authorities,
                 }
