@@ -302,6 +302,69 @@ def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path)
     assert result.intents == ()
 
 
+def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    close = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    system.set_fee_schedule("polymarket:p1", _zero_fee())
+
+    system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=NOW,
+    )
+    result = system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.49, ask=0.51, bid_size=20, ask_size=300),
+        observed_at=NOW + timedelta(seconds=5),
+    )
+
+    assert result.intents == ()
+    assert system.store.intent_rows(lane="directional_reaction") == []
+
+
+def test_zero_exit_capacity_records_insufficient_depth_marks_without_crashing(tmp_path):
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    close = NOW + timedelta(hours=2)
+    system.refresh_catalog(
+        polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
+        kalshi_markets=[],
+        observed_at=NOW,
+    )
+    system.set_fee_schedule("polymarket:p1", _zero_fee())
+    system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=NOW,
+    )
+    emitted = system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+        observed_at=NOW + timedelta(seconds=5),
+    )
+    assert len(emitted.intents) == 1
+
+    scored = system.observe_book(
+        "polymarket:p1",
+        _book("p1", bid=0.57, ask=0.59, bid_size=0, ask_size=250),
+        observed_at=NOW + timedelta(seconds=36),
+    )
+
+    marks = [mark for mark in scored.marks if mark.horizon_seconds == 30]
+    assert len(marks) == 4
+    assert {mark.reason for mark in marks} == {"insufficient_later_executable_depth"}
+    assert all(mark.max_notional == 0 for mark in marks)
+    assert all(mark.net_return is None for mark in marks)
+
+
 def test_relative_value_lane_uses_structural_residual_not_semantic_similarity(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(store=store)

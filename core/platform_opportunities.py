@@ -920,6 +920,12 @@ class PlatformOpportunitySystem:
         if prior is None:
             return ObservationResult(relation_result.intents, tuple(marks))
         momentum = features.mid - prior.mid
+        # This lane is a directional *reaction*: without a price movement, an
+        # order-book imbalance alone cannot choose a coherent direction.  In
+        # particular, do not let the old yes-if-positive-else-no fallback turn
+        # zero momentum into a zero-strength NO intent.
+        if not math.isfinite(momentum) or abs(momentum) <= 1e-9:
+            return ObservationResult(relation_result.intents, tuple(marks))
         composite = (
             momentum
             + 0.015 * features.imbalance
@@ -1313,6 +1319,8 @@ class PlatformOpportunitySystem:
 
     @staticmethod
     def _walk(levels: Sequence[tuple[float, float]], contracts: float) -> float | None:
+        if not math.isfinite(contracts) or contracts <= 0:
+            return None
         remaining = contracts
         value = 0.0
         for price, size in levels:
