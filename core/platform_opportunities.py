@@ -1871,7 +1871,7 @@ class PlatformOpportunitySystem:
         return totals[max(0, int(samples * 0.025) - 1)]
 
     def dashboard_summary(self) -> dict:
-        counts = self.store.summary()
+        counts = self.store.summary(cohort_id=self.cohort_id)
         now = datetime.now(timezone.utc)
         locks = []
         for lock in sorted(
@@ -1918,5 +1918,5 @@ class PlatformOpportunitySystem:
             "marks": counts["marks"],
             "political_event_locks": locks,
             "sampled_contract_ids": sorted(self._sampled_contract_ids),
-            "research_pnl": self.store.research_mark_summary(),
+            "research_pnl": self.store.research_mark_summary(cohort_id=self.cohort_id),
         }

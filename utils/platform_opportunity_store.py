@@ -413,17 +413,34 @@ class PlatformOpportunityStore:
             if json.loads(row["payload_json"]).get("cohort_id") == cohort_id
         }
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self, *, cohort_id: str | None = None) -> dict[str, Any]:
+        """Summarize catalog evidence and shadow outcomes for one cohort.
+
+        Catalog and structural-relation rows describe the shared bounded
+        inventory.  Intents and marks are experiment evidence, so they must
+        be scoped through their intent's immutable cohort payload.
+        """
         with self._lock:
             relations = self._connection.execute(
                 "SELECT COUNT(*) FROM structural_relations"
             ).fetchone()[0]
+            intent_query = "SELECT lane, COUNT(*) AS count FROM shadow_intents"
+            intent_params: tuple[Any, ...] = ()
+            if cohort_id is not None:
+                intent_query += " WHERE json_extract(payload_json, '$.cohort_id') = ?"
+                intent_params = (cohort_id,)
             intents = self._connection.execute(
-                "SELECT lane, COUNT(*) AS count FROM shadow_intents GROUP BY lane"
+                intent_query + " GROUP BY lane", intent_params
             ).fetchall()
-            marks = self._connection.execute(
-                "SELECT COUNT(*) FROM shadow_marks"
-            ).fetchone()[0]
+            mark_query = "SELECT COUNT(*) FROM shadow_marks m"
+            mark_params: tuple[Any, ...] = ()
+            if cohort_id is not None:
+                mark_query += (
+                    " JOIN shadow_intents i ON i.intent_id = m.intent_id"
+                    " WHERE json_extract(i.payload_json, '$.cohort_id') = ?"
+                )
+                mark_params = (cohort_id,)
+            marks = self._connection.execute(mark_query, mark_params).fetchone()[0]
         return {
             **self.catalog_counts(),
             "relations": int(relations),
@@ -431,16 +448,28 @@ class PlatformOpportunityStore:
             "marks": int(marks),
         }
 
-    def research_mark_summary(self) -> dict[str, Any]:
+    def research_mark_summary(
+        self, *, cohort_id: str | None = None
+    ) -> dict[str, Any]:
         """Return research-only marks split by actual exit and fixed horizon."""
+        query = (
+            "SELECT m.horizon_seconds, COUNT(*) AS marks, "
+            "COUNT(m.capacity_pnl) AS scored_marks, "
+            "COALESCE(SUM(m.capacity_pnl), 0.0) AS capacity_pnl "
+            "FROM shadow_marks m"
+        )
+        params: tuple[Any, ...] = ()
+        if cohort_id is not None:
+            query += (
+                " JOIN shadow_intents i ON i.intent_id = m.intent_id"
+                " WHERE json_extract(i.payload_json, '$.cohort_id') = ?"
+            )
+            params = (cohort_id,)
+        else:
+            query += " WHERE 1 = 1"
+        query += " AND m.capacity_fraction = 0.1 GROUP BY m.horizon_seconds ORDER BY m.horizon_seconds"
         with self._lock:
-            rows = self._connection.execute(
-                "SELECT horizon_seconds, COUNT(*) AS marks, "
-                "COUNT(capacity_pnl) AS scored_marks, "
-                "COALESCE(SUM(capacity_pnl), 0.0) AS capacity_pnl "
-                "FROM shadow_marks WHERE capacity_fraction = 0.1 "
-                "GROUP BY horizon_seconds ORDER BY horizon_seconds"
-            ).fetchall()
+            rows = self._connection.execute(query, params).fetchall()
         by_horizon = {
             str(int(row["horizon_seconds"])): {
                 "marks": int(row["marks"]),

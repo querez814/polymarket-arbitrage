@@ -907,3 +907,49 @@ def test_acceptance_never_mixes_model_or_cost_cohorts(tmp_path):
 
     assert original.cohort_id != changed.cohort_id
     assert changed.acceptance_report("directional_reaction").intents == 0
+
+
+def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    close = NOW + timedelta(hours=2)
+    first = PlatformOpportunitySystem(store=store, experiment_id="first")
+    second = PlatformOpportunitySystem(store=store, experiment_id="second")
+    assert first.cohort_id != second.cohort_id
+
+    for system, market_id in ((first, "first"), (second, "second")):
+        contract_id = f"polymarket:{market_id}"
+        system.refresh_catalog(
+            polymarket_markets=[
+                _poly(market_id, "Will CPI be above 3%?", end_date=close)
+            ],
+            kalshi_markets=[],
+            observed_at=NOW,
+        )
+        system.set_fee_schedule(contract_id, _zero_fee())
+        system.observe_book(
+            contract_id,
+            _book(market_id, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+            observed_at=NOW,
+        )
+        assert len(
+            system.observe_book(
+                contract_id,
+                _book(market_id, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+                observed_at=NOW + timedelta(seconds=5),
+            ).intents
+        ) == 1
+
+    first.observe_book(
+        "polymarket:first",
+        _book("first", bid=0.57, ask=0.59, bid_size=200, ask_size=100),
+        observed_at=NOW + timedelta(seconds=36),
+    )
+
+    first_dashboard = first.dashboard_summary()
+    second_dashboard = second.dashboard_summary()
+    assert first_dashboard["intents"] == {"directional_reaction": 1}
+    assert second_dashboard["intents"] == {"directional_reaction": 1}
+    assert first_dashboard["marks"] == 4
+    assert second_dashboard["marks"] == 0
+    assert first_dashboard["research_pnl"]["horizons"]["30"]["marks"] == 1
+    assert second_dashboard["research_pnl"]["horizons"] == {}
