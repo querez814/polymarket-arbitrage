@@ -999,7 +999,44 @@ class PlatformOpportunitySystem:
                 "canonical replay token has invalid fee or timing"
             ) from exc
         self.set_fee_schedule(contract_id, schedule)
-        return self._observe_book(contract_id, book, observed_at=received_at)
+        result = self._observe_book(contract_id, book, observed_at=received_at)
+        # Persist the exact political reaction (or explicit absence) before
+        # control returns to the worker callback.  A restart must materialize
+        # this envelope, never infer a second chance from rebuilt feature
+        # history after a scored callback was lost.
+        political_signals = tuple(
+            intent
+            for intent in result.intents
+            if intent.lane == _DEPTH_IMBALANCE_REACTION_LANE
+            and intent.cohort_id == token.cohort_id
+        )
+        if len(political_signals) > 1:
+            raise ValueError("one replay token produced conflicting political signals")
+        self.store.record_political_scored_decision(
+            cohort_id=token.cohort_id,
+            replay_sequence=token.sequence,
+            model_version=_DEPTH_IMBALANCE_REACTION_LANE,
+            model_config_hash=_fingerprint(
+                {
+                    "cohort_id": self.cohort_id,
+                    "lane": _DEPTH_IMBALANCE_REACTION_LANE,
+                    "signal_rearm_seconds": self.political_signal_rearm.total_seconds(),
+                }
+            ),
+            signal=political_signals[0] if political_signals else None,
+            created_at=received_at,
+        )
+        return result
+
+    def political_scored_decision(self, token: ReplayObservationToken) -> dict:
+        """Return the sealed score hand-off for political paper materialization."""
+        if token.cohort_id != self.cohort_id:
+            raise ValueError("replay token belongs to another cohort")
+        return self.store.political_scored_decision(
+            cohort_id=token.cohort_id,
+            replay_sequence=token.sequence,
+            model_version=_DEPTH_IMBALANCE_REACTION_LANE,
+        )
 
     def political_replay_context(self, token: ReplayObservationToken) -> dict[str, str]:
         """Derive immutable reviewed-lock attribution for one replay token.

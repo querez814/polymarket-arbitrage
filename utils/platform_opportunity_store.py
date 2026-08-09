@@ -220,6 +220,31 @@ class PlatformOpportunityStore:
                         REFERENCES platform_replay_observation_events(cohort_id, sequence)
                 );
 
+                -- A scorer may successfully derive a reaction and then lose
+                -- its in-memory callback before the political ledger can
+                -- materialize the pending signal.  Retain that bridge beside
+                -- the canonical replay token, including an explicit
+                -- no-signal decision, so recovery never has to reconstruct
+                -- mutable feature history.
+                CREATE TABLE IF NOT EXISTS political_scored_decisions (
+                    cohort_id TEXT NOT NULL,
+                    replay_sequence INTEGER NOT NULL,
+                    model_version TEXT NOT NULL,
+                    model_config_hash TEXT NOT NULL,
+                    signal_id TEXT,
+                    outcome TEXT NOT NULL CHECK(outcome IN ('signal', 'no_signal')),
+                    state_hash TEXT NOT NULL,
+                    fee_hash TEXT NOT NULL,
+                    event_id TEXT,
+                    milestone_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, replay_sequence, model_version),
+                    UNIQUE(cohort_id, signal_id),
+                    FOREIGN KEY(cohort_id, replay_sequence)
+                        REFERENCES platform_replay_observation_events(cohort_id, sequence)
+                );
+
                 -- The political experimental paper ledger is purpose-built
                 -- for causal shadow fills.  It is intentionally separate from
                 -- generic paper trading and records integer micros only.
@@ -2137,6 +2162,69 @@ class PlatformOpportunityStore:
                 (cohort_id,),
             ).fetchall()
         return [int(row["sequence"]) for row in rows]
+
+    def record_political_scored_decision(
+        self,
+        *,
+        cohort_id: str,
+        replay_sequence: int,
+        model_version: str,
+        model_config_hash: str,
+        signal: Any | None,
+        created_at: datetime,
+    ) -> bool:
+        """Seal one political score before any downstream callback runs.
+
+        A decision is deliberately keyed to canonical replay evidence, rather
+        than current feature state.  ``signal is None`` is persisted too: it
+        is a terminal score and lets ordered restart recovery advance without
+        rerunning the scorer.
+        """
+        if not model_version or not model_config_hash:
+            raise ValueError("scored decision requires sealed model identity")
+        event = self.replay_observation_event(
+            cohort_id=cohort_id, sequence=replay_sequence
+        )
+        payload = _json(signal) if signal is not None else _json({})
+        signal_id = str(signal.intent_id) if signal is not None else None
+        with self._lock, self._connection:
+            inserted = self._connection.execute(
+                "INSERT OR IGNORE INTO political_scored_decisions "
+                "(cohort_id, replay_sequence, model_version, model_config_hash, "
+                "signal_id, outcome, state_hash, fee_hash, event_id, milestone_id, "
+                "payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    cohort_id,
+                    replay_sequence,
+                    model_version,
+                    model_config_hash,
+                    signal_id,
+                    "signal" if signal is not None else "no_signal",
+                    str(event["state_hash"]),
+                    str(event["fee_hash"]),
+                    event.get("reviewed_lock_event_id"),
+                    event.get("reviewed_milestone_id"),
+                    payload,
+                    _utc_iso(created_at),
+                ),
+            ).rowcount
+        return bool(inserted)
+
+    def political_scored_decision(
+        self, *, cohort_id: str, replay_sequence: int, model_version: str
+    ) -> dict[str, Any]:
+        """Load the immutable score envelope for a canonical replay token."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM political_scored_decisions WHERE cohort_id = ? "
+                "AND replay_sequence = ? AND model_version = ?",
+                (cohort_id, replay_sequence, model_version),
+            ).fetchone()
+        if row is None:
+            raise ValueError("political scored decision does not exist")
+        payload = dict(row)
+        payload["signal"] = json.loads(str(payload.pop("payload_json")))
+        return payload
 
     def record_replay_processing_receipt(
         self, *, cohort_id: str, sequence: int, completed_at: datetime

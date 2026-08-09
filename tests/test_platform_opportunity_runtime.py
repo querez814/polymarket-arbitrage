@@ -9,6 +9,7 @@ from kalshi_client.models import KalshiMarket, KalshiMilestone
 from core.platform_opportunities import (
     PoliticalWatchPolicy,
     PlatformOpportunitySystem,
+    ReplayObservationToken,
     VenueFeeSchedule,
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
@@ -211,6 +212,14 @@ async def test_worker_restart_drains_persisted_token_without_a_queue_notificatio
     await worker.stop()
 
     assert delivered == [1]
+    # The worker persisted a terminal no-signal envelope before acknowledging
+    # the token.  A later restart can advance this token without rebuilding
+    # scorer feature history merely to rediscover that absence.
+    decision = resumed.political_scored_decision(
+        ReplayObservationToken(resumed.cohort_id, 1)
+    )
+    assert decision["outcome"] == "no_signal"
+    assert decision["signal"] == {}
     assert (
         resumed.store.unprocessed_replay_observation_sequences(
             cohort_id=resumed.cohort_id

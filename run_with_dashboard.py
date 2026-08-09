@@ -868,7 +868,7 @@ class TradingBotWithDashboard:
                     catalog
                 )
 
-        def record_political_paper_signals(token, result) -> None:
+        def record_political_paper_signals(token, _result) -> None:
             """Process old signals, then persist scored replay-derived reactions.
 
             No event, milestone, clock, book, fee, or account values cross
@@ -884,13 +884,8 @@ class TradingBotWithDashboard:
             # persist a signal but never give its causal next book a chance to
             # fill it.
             ledger.process_observation(replay_sequence=token.sequence)
-            reaction_intents = tuple(
-                intent
-                for intent in result.intents
-                if intent.lane == "depth_imbalance_reaction_experimental_v1"
-                and intent.cohort_id == token.cohort_id
-            )
-            if reaction_intents:
+            decision = self.platform_opportunity_system.political_scored_decision(token)
+            if decision["outcome"] == "signal":
                 context = self.platform_opportunity_system.political_replay_context(
                     token
                 )
@@ -899,16 +894,15 @@ class TradingBotWithDashboard:
                         cohort_id=token.cohort_id
                     )
                 )
-                for intent in reaction_intents:
-                    if intent.contract_id != context["contract_id"]:
-                        continue
+                signal = decision["signal"]
+                if signal["contract_id"] == context["contract_id"]:
                     ledger.record_pending_signal(
-                        signal_id=intent.intent_id,
+                        signal_id=str(decision["signal_id"]),
                         replay_sequence=token.sequence,
                         event_id=context["event_id"],
                         milestone_id=context["milestone_id"],
                         contract_id=context["contract_id"],
-                        side=intent.direction,
+                        side=str(signal["direction"]),
                         base_lane=context["base_lane"],
                         phase=context["phase"],
                         signal_request_started_at=datetime.fromisoformat(
@@ -917,12 +911,12 @@ class TradingBotWithDashboard:
                         signal_received_at=datetime.fromisoformat(
                             context["received_at"]
                         ),
-                        expires_at=intent.expires_at,
+                        expires_at=datetime.fromisoformat(str(signal["expires_at"])),
                         model_version="depth_imbalance_reaction_experimental_v1",
                         config_hash=str(policy["policy_hash"]),
                         state_hash=context["state_hash"],
                         fee_hash=context["fee_hash"],
-                        features=intent.feature_snapshot,
+                        features=dict(signal["feature_snapshot"]),
                     )
             dashboard_state.platform_opportunity["political_experimental_paper"][
                 "snapshot"
