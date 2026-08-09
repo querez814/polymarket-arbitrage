@@ -211,6 +211,9 @@ async def test_typed_event_catalog_pages_exact_targets_and_deduplicates(monkeypa
     assert [market.event_title for market in result.events[0].markets] == [
         "Trump says a word"
     ]
+    assert [market.event_ticker for market in result.events[0].markets] == [
+        "KXTRUMPSAY-26AUG10"
+    ]
     assert [item.milestone_id for item in result.milestones] == ["trump-speech"]
     assert calls[0]["tickers"] == "KXTRUMPSAY-26AUG10,KXSCRSENS-26"
     assert "status" not in calls[0]

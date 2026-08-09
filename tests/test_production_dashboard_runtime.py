@@ -937,27 +937,44 @@ async def test_platform_catalog_fetches_exact_political_milestones_and_passes_th
                 )
             ]
 
-        async def list_all_milestones(self, **kwargs):
+        async def list_event_catalog(self, **kwargs):
             assert kwargs == {
+                "status": None,
+                "tickers": ("KXTRUMPMENTION-26AUG10",),
+                "with_nested_markets": True,
+                "with_milestones": True,
                 "max_pages": 2,
-                "max_milestones": 20,
-                "related_event_ticker": "KXTRUMPMENTION-26AUG10",
             }
-            from kalshi_client.models import KalshiMilestone
-
-            return [
-                KalshiMilestone(
-                    milestone_id="mention",
-                    title="Trump remarks",
-                    category="Politics",
-                    milestone_type="speech",
-                    start_time=now - timedelta(minutes=15),
-                    end_time=now + timedelta(minutes=45),
-                    related_event_tickers=("KXTRUMPMENTION-26AUG10",),
-                    primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
-                    source_id="source",
-                )
-            ]
+            market = KalshiMarket(
+                ticker="KXTRUMPMENTION-26AUG10-T1",
+                event_ticker="KXTRUMPMENTION-26AUG10",
+                series_ticker="KXTRUMPMENTION",
+                title="Will Trump mention tariffs?",
+                event_title="Trump remarks",
+                category="Politics",
+            )
+            return SimpleNamespace(
+                complete=True,
+                stop_reason="source_exhausted",
+                events=(
+                    SimpleNamespace(
+                        event_ticker="KXTRUMPMENTION-26AUG10", markets=(market,)
+                    ),
+                ),
+                milestones=(
+                    KalshiMilestone(
+                        milestone_id="mention",
+                        title="Trump remarks",
+                        category="Politics",
+                        milestone_type="speech",
+                        start_time=now - timedelta(minutes=15),
+                        end_time=now + timedelta(minutes=45),
+                        related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                        primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+                        source_id="source",
+                    ),
+                ),
+            )
 
     class Worker:
         async def refresh_catalog(self, **kwargs):
@@ -983,10 +1000,91 @@ async def test_platform_catalog_fetches_exact_political_milestones_and_passes_th
         for item in bot.platform_opportunity_worker.received["kalshi_milestones"]
     ] == ["mention"]
     status = dashboard_state.platform_opportunity["catalog"]["source_status"][
-        "kalshi_political_milestones"
+        "kalshi_mandatory_targets"
     ]
     assert status["requested_event_tickers"] == 1
-    assert status["successful_event_tickers"] == 1
+    assert status["joined_event_tickers"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mandatory_targets_override_ordinary_rows_and_missing_target_cannot_join():
+    """Exact complete target reads are the fresh reviewed-lock admission seam."""
+
+    class KalshiCatalog:
+        last_catalog_status = {"complete": False, "stop_reason": "market_budget"}
+
+        async def list_full_market_catalog(self, **_kwargs):
+            return [
+                KalshiMarket(
+                    ticker="KXTRUMPSAY-26AUG10-T1",
+                    event_ticker="KXTRUMPSAY-26AUG10",
+                    series_ticker="KXTRUMPSAY",
+                    title="ordinary incomplete context",
+                ),
+                KalshiMarket(
+                    ticker="KXSCRSENS-26-A",
+                    event_ticker="KXSCRSENS-26",
+                    series_ticker="KXSCRSENS",
+                    title="must not join when target missing",
+                ),
+            ]
+
+        async def list_event_catalog(self, **kwargs):
+            assert kwargs["status"] is None
+            assert kwargs["tickers"] == ("KXTRUMPSAY-26AUG10", "KXSCRSENS-26")
+            enriched = KalshiMarket(
+                ticker="KXTRUMPSAY-26AUG10-T1",
+                event_ticker="KXTRUMPSAY-26AUG10",
+                series_ticker="KXTRUMPSAY",
+                title="target enriched context",
+                event_title="Official remarks",
+                category="Politics",
+            )
+            return SimpleNamespace(
+                complete=True,
+                stop_reason="source_exhausted",
+                events=(
+                    SimpleNamespace(
+                        event_ticker="KXTRUMPSAY-26AUG10", markets=(enriched,)
+                    ),
+                ),
+                milestones=(),
+            )
+
+        async def list_all_milestones(self, **_kwargs):
+            return []
+
+    class Worker:
+        async def refresh_catalog(self, **kwargs):
+            self.received = kwargs
+            return SimpleNamespace(
+                catalog_contracts=len(kwargs["kalshi_markets"]),
+                revisions_written=1,
+                monitoring=SimpleNamespace(hot=(), warm=(), budget_excluded=()),
+            )
+
+    config = BotConfig()
+    config.platform_opportunity.reviewed_pinned_event_ids = [
+        "kalshi:KXTRUMPSAY-26AUG10",
+        "kalshi:KXSCRSENS-26",
+    ]
+    bot = TradingBotWithDashboard(config)
+    bot._platform_kalshi_client = KalshiCatalog()
+    bot.platform_opportunity_worker = Worker()
+
+    await bot._refresh_platform_catalog()
+
+    assert [
+        market.ticker
+        for market in bot.platform_opportunity_worker.received["kalshi_markets"]
+    ] == ["KXTRUMPSAY-26AUG10-T1"]
+    market = bot.platform_opportunity_worker.received["kalshi_markets"][0]
+    assert market.event_title == "Official remarks"
+    targets = dashboard_state.platform_opportunity["catalog"]["source_status"][
+        "kalshi_mandatory_targets"
+    ]
+    assert targets["events"]["KXTRUMPSAY-26AUG10"]["state"] == "joined"
+    assert targets["events"]["KXSCRSENS-26"]["state"] == "missing"
 
 
 @pytest.mark.asyncio
@@ -1039,6 +1137,7 @@ async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_
         def __init__(self):
             self.catalog_calls = []
             self.milestone_calls = []
+            self.target_calls = []
 
         async def list_full_market_catalog(
             self,
@@ -1098,6 +1197,39 @@ async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_
                 )
             ]
 
+        async def list_event_catalog(self, **kwargs):
+            self.target_calls.append(kwargs)
+            milestone = (
+                await self.list_all_milestones(
+                    max_pages=2,
+                    max_milestones=20,
+                    related_event_ticker="KXTRUMPMENTION-26AUG10",
+                )
+            )[0]
+            markets = tuple(
+                KalshiMarket(
+                    ticker=f"KXTRUMPMENTION-26AUG10-T{index}",
+                    event_ticker="KXTRUMPMENTION-26AUG10",
+                    series_ticker="KXTRUMPMENTION",
+                    title=f"Will Trump mention topic {index}?",
+                    event_title="Trump remarks",
+                    category="Politics",
+                    volume=1_000,
+                    open_interest=500,
+                )
+                for index in range(1, 3)
+            )
+            return SimpleNamespace(
+                complete=True,
+                stop_reason="source_exhausted",
+                events=(
+                    SimpleNamespace(
+                        event_ticker="KXTRUMPMENTION-26AUG10", markets=markets
+                    ),
+                ),
+                milestones=(milestone,),
+            )
+
     class NoMutationVenue:
         def __init__(self, venue):
             self.venue = venue
@@ -1141,11 +1273,13 @@ async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_
     await bot._refresh_platform_catalog()
 
     assert client.catalog_calls[0]["mve_filter"] == "exclude"
-    assert client.milestone_calls == [
+    assert client.target_calls == [
         {
+            "status": None,
+            "tickers": ("KXTRUMPMENTION-26AUG10",),
+            "with_nested_markets": True,
+            "with_milestones": True,
             "max_pages": 2,
-            "max_milestones": 20,
-            "related_event_ticker": "KXTRUMPMENTION-26AUG10",
         }
     ]
     assert dashboard_state.platform_opportunity["catalog"]["multivariate_requests"] == 0

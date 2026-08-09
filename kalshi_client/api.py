@@ -708,6 +708,7 @@ class KalshiClient:
                         )
                     market = self._parse_market(
                         raw_market,
+                        event_ticker=event_ticker,
                         event_title=event_title if isinstance(event_title, str) else "",
                         event_category=(
                             event_category if isinstance(event_category, str) else ""
@@ -1405,6 +1406,7 @@ class KalshiClient:
         self,
         data: dict,
         *,
+        event_ticker: str = "",
         event_title: str = "",
         event_category: str = "",
         event_series_ticker: str = "",
@@ -1452,7 +1454,7 @@ class KalshiClient:
 
             return KalshiMarket(
                 ticker=data.get("ticker", ""),
-                event_ticker=data.get("event_ticker", ""),
+                event_ticker=data.get("event_ticker", "") or event_ticker,
                 series_ticker=data.get("series_ticker", "") or event_series_ticker,
                 title=data.get("title", ""),
                 subtitle=data.get("subtitle", ""),

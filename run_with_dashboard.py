@@ -37,6 +37,7 @@ from polymarket_client import (
     create_polymarket_client,
 )
 from kalshi_client import KalshiClient, KalshiPrivateStream, KalshiVenueAdapter
+from kalshi_client.models import KalshiMarket
 from core.data_feed import DataFeed
 from core.combinatorial_arb import SamePlatformArbitrageDetector
 from core.arb_engine import ArbEngine, ArbConfig
@@ -1144,9 +1145,33 @@ class TradingBotWithDashboard:
         elif self._kalshi_markets:
             ordinary_kalshi = list(self._kalshi_markets)
         kalshi_by_ticker = {market.ticker: market for market in ordinary_kalshi}
+        (
+            targeted_kalshi,
+            targeted_milestones,
+            target_status,
+        ) = await self._mandatory_kalshi_event_targets(now=now)
+        # A complete targeted event response has richer parent context than
+        # the bounded ordinary /markets cohort, so it deliberately wins any
+        # duplicate.  Conversely, a mandatory target that was missing or
+        # failed must not join as a fresh lock from a truncated ordinary row.
+        blocked_target_events = {
+            event_ticker
+            for event_ticker, detail in target_status["events"].items()
+            if detail["state"] in {"missing", "failed"}
+        }
+        if blocked_target_events:
+            kalshi_by_ticker = {
+                ticker: market
+                for ticker, market in kalshi_by_ticker.items()
+                if market.event_ticker not in blocked_target_events
+            }
+        kalshi_by_ticker.update({market.ticker: market for market in targeted_kalshi})
         kalshi_milestones, milestone_status = await self._political_kalshi_milestones(
-            list(kalshi_by_ticker.values()), now=now
+            list(kalshi_by_ticker.values()),
+            now=now,
+            excluded_event_tickers=set(target_status["events"]),
         )
+        kalshi_milestones = [*targeted_milestones, *kalshi_milestones]
         refresh = await worker.refresh_catalog(
             polymarket_markets=poly_markets,
             kalshi_markets=list(kalshi_by_ticker.values()),
@@ -1209,6 +1234,7 @@ class TradingBotWithDashboard:
                     "source_status": {
                         "polymarket": poly_catalog_status,
                         "kalshi_ordinary": ordinary_status,
+                        "kalshi_mandatory_targets": target_status,
                         "kalshi_political_milestones": milestone_status,
                     },
                     # Transitional test doubles and external shadow workers may
@@ -1236,7 +1262,109 @@ class TradingBotWithDashboard:
             }
         )
 
-    async def _political_kalshi_milestones(self, markets, *, now: datetime):
+    def _mandatory_kalshi_event_tickers(self, *, now: datetime) -> tuple[str, ...]:
+        """Return reviewed pins plus durable retained Kalshi lock identities."""
+        configured = (
+            event_id.removeprefix("kalshi:")
+            for event_id in self.config.platform_opportunity.reviewed_pinned_event_ids
+            if event_id.startswith("kalshi:")
+        )
+        retained: tuple[str, ...] = ()
+        system = self.platform_opportunity_system
+        if system is not None:
+            retained = tuple(
+                str(lock["event_id"]).removeprefix("kalshi:")
+                for lock in system.store.active_political_event_locks(now=now)
+                if str(lock.get("event_id", "")).startswith("kalshi:")
+            )
+        return tuple(dict.fromkeys((*configured, *retained)))
+
+    async def _mandatory_kalshi_event_targets(self, *, now: datetime):
+        """Hydrate exact reviewed Kalshi events before the one catalog commit.
+
+        This deliberately uses a typed per-read result rather than the
+        client's mutable ordinary-catalog status, because target completeness
+        is an admission boundary for fresh reviewed locks.
+        """
+        targets = self._mandatory_kalshi_event_tickers(now=now)
+        status = {
+            "requested_event_tickers": len(targets),
+            "returned_event_tickers": 0,
+            "joined_event_tickers": 0,
+            "missing_event_tickers": 0,
+            "failed_event_tickers": 0,
+            "events": {
+                ticker: {"state": "requested", "markets": 0, "stop_reason": None}
+                for ticker in targets
+            },
+        }
+        if not targets:
+            status["complete"] = True
+            status["stop_reason"] = "not_requested"
+            return [], [], status
+        client = self._platform_kalshi_client
+        if client is None:
+            for detail in status["events"].values():
+                detail.update(
+                    state="failed", stop_reason="dedicated_source_unavailable"
+                )
+            status.update(
+                complete=False,
+                stop_reason="dedicated_source_unavailable",
+                failed_event_tickers=len(targets),
+            )
+            return [], [], status
+        try:
+            read = await client.list_event_catalog(
+                status=None,
+                tickers=targets,
+                with_nested_markets=True,
+                with_milestones=True,
+                max_pages=self.config.platform_opportunity.political_milestone_max_pages_per_event,
+            )
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"[:200]
+            for detail in status["events"].values():
+                detail.update(state="failed", stop_reason=reason)
+            status.update(
+                complete=False,
+                stop_reason="fetch_failed",
+                failed_event_tickers=len(targets),
+            )
+            return [], [], status
+        if not read.complete:
+            for detail in status["events"].values():
+                detail.update(state="failed", stop_reason=read.stop_reason)
+            status.update(
+                complete=False,
+                stop_reason=read.stop_reason,
+                failed_event_tickers=len(targets),
+            )
+            return [], [], status
+        events = {event.event_ticker: event for event in read.events}
+        returned = set(events) & set(targets)
+        status["returned_event_tickers"] = len(returned)
+        status["complete"] = True
+        status["stop_reason"] = read.stop_reason
+        markets: list[KalshiMarket] = []
+        for ticker in targets:
+            event = events.get(ticker)
+            if event is None:
+                status["events"][ticker].update(
+                    state="missing", stop_reason="not_returned"
+                )
+                status["missing_event_tickers"] += 1
+                continue
+            markets.extend(event.markets)
+            status["events"][ticker].update(
+                state="joined", markets=len(event.markets), stop_reason=read.stop_reason
+            )
+            status["joined_event_tickers"] += 1
+        return markets, list(read.milestones), status
+
+    async def _political_kalshi_milestones(
+        self, markets, *, now: datetime, excluded_event_tickers: set[str] = frozenset()
+    ):
         """Fetch exact, bounded milestone evidence for political event tickers.
 
         The generic milestone page is intentionally never used here: its sort
@@ -1255,22 +1383,16 @@ class TradingBotWithDashboard:
         if self._platform_kalshi_client is None:
             return [], {**empty_status, "status": "dedicated_source_unavailable"}
 
-        pins = tuple(
-            event_id.removeprefix("kalshi:")
-            for event_id in policy.reviewed_pinned_event_ids
-            if event_id.startswith("kalshi:")
-        )
         automatic = sorted(
             {
                 market.event_ticker
                 for market in markets
                 if market.event_ticker
                 and is_political_contract(normalize_kalshi(market))
+                and market.event_ticker not in excluded_event_tickers
             }
         )
-        event_tickers = tuple(dict.fromkeys((*pins, *automatic)))[
-            : policy.political_milestone_max_event_tickers
-        ]
+        event_tickers = tuple(automatic[: policy.political_milestone_max_event_tickers])
         lookahead = now + timedelta(days=policy.political_lookahead_days)
         semaphore = asyncio.Semaphore(policy.political_milestone_concurrency)
         errors: dict[str, str] = {}
