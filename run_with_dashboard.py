@@ -1168,13 +1168,10 @@ class TradingBotWithDashboard:
                         )
                 except Exception:
                     self._platform_book_read_failures += 1
-                    self.platform_opportunity_system.record_observation_failure(
+                    self._record_platform_observation_failure(
                         assignment.contract_id,
                         reason_code="book_read_failed",
                         failed_at=datetime.now(timezone.utc),
-                    )
-                    dashboard_state.platform_opportunity.update(
-                        self.platform_opportunity_system.dashboard_summary()
                     )
                     dashboard_state.platform_opportunity["book_read_failures"] = (
                         self._platform_book_read_failures
@@ -1190,13 +1187,10 @@ class TradingBotWithDashboard:
                     return assignment, book, schedule
                 except Exception:
                     self._platform_fee_failures += 1
-                    self.platform_opportunity_system.record_observation_failure(
+                    self._record_platform_observation_failure(
                         assignment.contract_id,
                         reason_code="fee_metadata_failed",
                         failed_at=datetime.now(timezone.utc),
-                    )
-                    dashboard_state.platform_opportunity.update(
-                        self.platform_opportunity_system.dashboard_summary()
                     )
                     dashboard_state.platform_opportunity["fee_metadata_failures"] = (
                         self._platform_fee_failures
@@ -1226,6 +1220,45 @@ class TradingBotWithDashboard:
                         observed_at=observed_at,
                         fee_schedule=schedule,
                     )
+
+    def _record_platform_observation_failure(
+        self,
+        contract_id: str,
+        *,
+        reason_code: str,
+        failed_at: datetime,
+    ) -> None:
+        """Keep public sampling alive if optional failure telemetry is unavailable."""
+        try:
+            self.platform_opportunity_system.record_observation_failure(
+                contract_id,
+                reason_code=reason_code,
+                failed_at=failed_at,
+            )
+            dashboard_state.platform_opportunity.update(
+                self.platform_opportunity_system.dashboard_summary()
+            )
+        except Exception as exc:
+            # A shadow-only telemetry outage must never leave the sampler task
+            # dead while its dashboard state still claims to be running.
+            try:
+                dashboard_state.platform_opportunity.update(
+                    {
+                        "status": "degraded",
+                        "last_error": (
+                            f"{type(exc).__name__}: platform observation telemetry "
+                            "unavailable"
+                        )[:300],
+                    }
+                )
+            except Exception:
+                logger.exception(
+                    "Unable to publish platform observation telemetry failure"
+                )
+            logger.exception(
+                "Platform observation failure telemetry unavailable | contract=%s",
+                contract_id,
+            )
 
     async def _platform_catalog_loop(self) -> None:
         """Refresh source-platform inventory independently of calendars/matching."""

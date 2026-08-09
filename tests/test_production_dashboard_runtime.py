@@ -88,6 +88,77 @@ async def test_platform_hot_sampler_persists_reason_coded_read_failures(
 
 
 @pytest.mark.asyncio
+async def test_platform_hot_sampler_survives_one_time_failure_telemetry_error(
+    tmp_path,
+):
+    """Failure telemetry must not silently kill the hot sampler task."""
+    bot = TradingBotWithDashboard(BotConfig())
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db")
+    )
+    submitted = []
+
+    def submit_book(contract_id, book, *, observed_at, fee_schedule):
+        submitted.append(contract_id)
+        bot._running = False
+        return True
+
+    bot.platform_opportunity_system = system
+    bot.platform_opportunity_worker = SimpleNamespace(submit_book=submit_book)
+    bot._platform_hot_assignments = (
+        MonitoringAssignment(
+            contract_id="kalshi:failed",
+            venue="kalshi",
+            native_id="failed",
+            catalyst_at=None,
+            reason="test",
+            priority_score=2.0,
+            cadence="hot",
+            interval_seconds=0.0,
+        ),
+        MonitoringAssignment(
+            contract_id="kalshi:later",
+            venue="kalshi",
+            native_id="later",
+            catalyst_at=None,
+            reason="test",
+            priority_score=1.0,
+            cadence="hot",
+            interval_seconds=0.0,
+        ),
+    )
+    bot._platform_fee_cache = {
+        assignment.contract_id: (object(), float("inf"))
+        for assignment in bot._platform_hot_assignments
+    }
+    bot.config.platform_opportunity.hot_poll_seconds = 0.0
+    bot._running = True
+
+    class Client:
+        async def get_orderbook_unified(self, native_id):
+            if native_id == "failed":
+                raise RuntimeError("book unavailable")
+            return SimpleNamespace(timestamp=datetime.now(timezone.utc))
+
+    calls = 0
+
+    def record_failure_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("database temporarily unavailable")
+
+    bot._platform_kalshi_client = Client()
+    system.record_observation_failure = record_failure_once
+
+    await bot._platform_hot_sampling_loop()
+
+    assert calls == 1
+    assert submitted == ["kalshi:later"]
+    assert dashboard_state.platform_opportunity["status"] == "degraded"
+    system.store.close()
+
+
+@pytest.mark.asyncio
 async def test_live_cross_platform_pair_uses_owned_production_runtime():
     config = BotConfig()
     config.mode.trading_mode = "live"
