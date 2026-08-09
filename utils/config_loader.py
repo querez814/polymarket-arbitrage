@@ -292,6 +292,9 @@ class PlatformOpportunityConfig:
     political_paper_max_open_positions: int = 4
     political_paper_entry_depth_fraction: float = 0.10
     political_paper_signal_ttl_seconds: float = 10.0
+    # A terminal causal signal may rearm only after this pre-registered short
+    # interval.  It is distinct from the legacy ten-minute research cooldown.
+    political_paper_signal_rearm_seconds: float = 10.0
     political_paper_min_hold_seconds: float = 2.0
     political_paper_max_book_request_latency_seconds: float = 2.0
     political_paper_max_fee_fetch_latency_seconds: float = 2.0
@@ -1091,6 +1094,7 @@ def validate_config(config: BotConfig) -> None:
         "political_max_event_duration_hours",
         "political_milestone_cache_seconds",
         "political_paper_signal_ttl_seconds",
+        "political_paper_signal_rearm_seconds",
         "political_paper_min_hold_seconds",
         "political_paper_max_book_request_latency_seconds",
         "political_paper_max_fee_fetch_latency_seconds",

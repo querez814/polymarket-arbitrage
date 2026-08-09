@@ -85,6 +85,7 @@ platform_opportunity:
   political_paper_max_open_positions: 4
   political_paper_entry_depth_fraction: 0.10
   political_paper_signal_ttl_seconds: 10
+  political_paper_signal_rearm_seconds: 10
   political_paper_min_hold_seconds: 2
   political_paper_max_book_request_latency_seconds: 2
   political_paper_max_fee_fetch_latency_seconds: 2

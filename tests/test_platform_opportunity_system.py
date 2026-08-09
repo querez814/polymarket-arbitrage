@@ -2941,6 +2941,94 @@ def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp
     assert expired.intents == ()
 
 
+def test_political_reaction_rearms_after_typed_short_interval_and_restart(tmp_path):
+    """Political causal signals do not inherit the legacy ten-minute cooldown."""
+    path = tmp_path / "opportunities.db"
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=1,
+        warm_before=timedelta(hours=4),
+        hot_before=timedelta(hours=1),
+    )
+    start = NOW + timedelta(hours=2)
+    end = start + timedelta(minutes=45)
+    market = _kalshi(
+        "KXTRUMPMENTION-26AUG10-A",
+        "Will Trump mention immigration?",
+        event_ticker="KXTRUMPMENTION-26AUG10",
+    )
+    milestone = KalshiMilestone(
+        milestone_id="mention-2026-08-10",
+        title="Trump remarks",
+        category="Politics",
+        milestone_type="political_speech",
+        start_time=start,
+        end_time=end,
+        related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        source_id="kalshi-milestones",
+    )
+
+    def system_for(store: PlatformOpportunityStore) -> PlatformOpportunitySystem:
+        system = PlatformOpportunitySystem(
+            store=store,
+            political_watch_policy=policy,
+            political_signal_rearm=timedelta(seconds=3),
+            lane_authorities=_lane_authorities(
+                "depth_imbalance_reaction_experimental_v1"
+            ),
+        )
+        system.refresh_catalog(
+            polymarket_markets=[],
+            kalshi_markets=[market],
+            kalshi_milestones=[milestone],
+            observed_at=NOW,
+        )
+        system.set_fee_schedule("kalshi:KXTRUMPMENTION-26AUG10-A", _zero_fee("kalshi"))
+        return system
+
+    contract_id = "kalshi:KXTRUMPMENTION-26AUG10-A"
+    system = system_for(PlatformOpportunityStore(path))
+    changed_rearm = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "changed-rearm.db"),
+        political_watch_policy=policy,
+        political_signal_rearm=timedelta(seconds=4),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
+    )
+    assert changed_rearm.cohort_id != system.cohort_id
+    hot = start - timedelta(minutes=30)
+    system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=NOW,
+    )
+    first = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.53, ask=0.55, bid_size=300, ask_size=50),
+        observed_at=hot,
+    )
+    assert [intent.direction for intent in first.intents] == ["yes"]
+    suppressed = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.55, ask=0.57, bid_size=300, ask_size=50),
+        observed_at=hot + timedelta(seconds=2),
+    )
+    assert suppressed.intents == ()
+
+    restarted = system_for(PlatformOpportunityStore(path))
+    restarted.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.55, ask=0.57, bid_size=300, ask_size=50),
+        observed_at=hot + timedelta(seconds=5, milliseconds=900),
+    )
+    rearmed = restarted.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.57, ask=0.59, bid_size=300, ask_size=50),
+        observed_at=hot + timedelta(seconds=6),
+    )
+    assert [intent.direction for intent in rearmed.intents] == ["yes"]
+
+
 def test_kalshi_ambiguous_distinct_primary_milestones_fail_closed(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db")

@@ -88,6 +88,7 @@ platform_opportunity:
     assert config.platform_opportunity.reviewed_pinned_event_ids == [
         "kalshi:KXTRUMPMENTION-26AUG10"
     ]
+    assert config.platform_opportunity.political_paper_signal_rearm_seconds == 10.0
 
 
 def test_political_v2_profile_is_isolated_real_data_shadow_collection():

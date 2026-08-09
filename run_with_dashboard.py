@@ -779,6 +779,9 @@ class TradingBotWithDashboard:
             political_signal_ttl=timedelta(
                 seconds=policy.political_paper_signal_ttl_seconds
             ),
+            political_signal_rearm=timedelta(
+                seconds=policy.political_paper_signal_rearm_seconds
+            ),
             experiment_id=policy.experiment_id,
             lane_authorities={
                 "depth_imbalance_reaction_experimental_v1": (
@@ -816,6 +819,9 @@ class TradingBotWithDashboard:
                     ),
                     "signal_ttl_seconds": str(
                         policy.political_paper_signal_ttl_seconds
+                    ),
+                    "signal_rearm_seconds": str(
+                        policy.political_paper_signal_rearm_seconds
                     ),
                     "minimum_hold_seconds": str(
                         policy.political_paper_min_hold_seconds

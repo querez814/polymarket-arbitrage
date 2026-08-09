@@ -708,6 +708,7 @@ class PlatformOpportunitySystem:
         slippage_per_contract: float = 0.002,
         max_shadow_notional: float = 100.0,
         political_signal_ttl: timedelta = timedelta(seconds=10),
+        political_signal_rearm: timedelta = timedelta(seconds=10),
         experiment_id: str = "platform-first-v1",
         lane_authorities: Mapping[str, LaneAuthority] | None = None,
     ):
@@ -725,6 +726,9 @@ class PlatformOpportunitySystem:
         if political_signal_ttl <= timedelta(0):
             raise ValueError("political signal TTL must be positive")
         self.political_signal_ttl = political_signal_ttl
+        if political_signal_rearm <= timedelta(0):
+            raise ValueError("political signal rearm must be positive")
+        self.political_signal_rearm = political_signal_rearm
         if not experiment_id.strip():
             raise ValueError("experiment_id must be non-empty")
         self.experiment_id = experiment_id.strip()
@@ -774,6 +778,7 @@ class PlatformOpportunitySystem:
                     "additional_fee_buffer": self.additional_fee_buffer_per_contract,
                     "max_shadow_notional": self.max_shadow_notional,
                     "political_signal_ttl_seconds": self.political_signal_ttl.total_seconds(),
+                    "political_signal_rearm_seconds": self.political_signal_rearm.total_seconds(),
                     "monitoring_policy": asdict(self.monitoring_policy),
                     "political_watch_policy": (
                         asdict(self.political_watch_policy)
@@ -2033,7 +2038,12 @@ class PlatformOpportunitySystem:
         # flow, or lead-lag evidence had qualified a YES reaction.
         direction = "yes" if composite > 0 else "no"
         last = self._last_intent_at.get((contract_id, direction))
-        if last is not None and observed_at - last < timedelta(minutes=10):
+        cooldown = (
+            self.political_signal_rearm
+            if self.political_watch_policy is not None
+            else timedelta(minutes=10)
+        )
+        if last is not None and observed_at - last < cooldown:
             return ObservationResult(relation_result.intents, tuple(marks))
         entry_levels = self._levels(book, direction, entry=True)
         if not entry_levels:
