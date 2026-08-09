@@ -272,9 +272,9 @@ class PlatformOpportunityConfig:
     slippage_per_contract: float = 0.002
     # Research lanes are fail-closed unless a profile explicitly declares
     # their limited forward-study authority.
-    directional_reaction_authority: Literal["disabled", "forward_only_unvalidated"] = (
-        "disabled"
-    )
+    depth_imbalance_reaction_experimental_v1_authority: Literal[
+        "disabled", "forward_only_unvalidated"
+    ] = "disabled"
     relative_value_authority: Literal["disabled", "forward_only_unvalidated"] = (
         "disabled"
     )
@@ -1065,7 +1065,10 @@ def validate_config(config: BotConfig) -> None:
         or not platform.experiment_id.strip()
     ):
         errors.append("platform_opportunity.experiment_id must be non-empty")
-    for name in ("directional_reaction_authority", "relative_value_authority"):
+    for name in (
+        "depth_imbalance_reaction_experimental_v1_authority",
+        "relative_value_authority",
+    ):
         if getattr(platform, name) not in {"disabled", "forward_only_unvalidated"}:
             errors.append(
                 f"platform_opportunity.{name} must be disabled or forward_only_unvalidated"

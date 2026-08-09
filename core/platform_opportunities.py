@@ -674,7 +674,8 @@ class _BookFeatures:
 
 LaneAuthority = Literal["disabled", "forward_only_unvalidated"]
 _LANE_AUTHORITIES = frozenset(("disabled", "forward_only_unvalidated"))
-_STRATEGY_LANES = ("directional_reaction", "relative_value")
+_DEPTH_IMBALANCE_REACTION_LANE = "depth_imbalance_reaction_experimental_v1"
+_STRATEGY_LANES = (_DEPTH_IMBALANCE_REACTION_LANE, "relative_value")
 
 
 class PlatformOpportunitySystem:
@@ -1928,7 +1929,7 @@ class PlatformOpportunitySystem:
         history = self._features[contract_id]
         prior = history[-1] if history else None
         history.append(features)
-        if self.lane_authorities["directional_reaction"] == "disabled":
+        if self.lane_authorities[_DEPTH_IMBALANCE_REACTION_LANE] == "disabled":
             return ObservationResult(relation_result.intents, tuple(marks))
         if prior is None:
             return ObservationResult(relation_result.intents, tuple(marks))
@@ -1977,7 +1978,7 @@ class PlatformOpportunitySystem:
             "intent:"
             + _fingerprint(
                 {
-                    "lane": "directional_reaction",
+                    "lane": _DEPTH_IMBALANCE_REACTION_LANE,
                     "contract": contract_id,
                     "created": observed_at.isoformat(),
                     "direction": direction,
@@ -1986,7 +1987,7 @@ class PlatformOpportunitySystem:
         )
         intent = ShadowIntent(
             intent_id=intent_id,
-            lane="directional_reaction",
+            lane=_DEPTH_IMBALANCE_REACTION_LANE,
             event_cluster_id=contract.event_id or contract.contract_id,
             market_family=(contract.category or contract.event_title or "unclassified"),
             contract_id=contract_id,

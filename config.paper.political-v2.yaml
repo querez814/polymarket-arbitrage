@@ -71,7 +71,7 @@ platform_opportunity:
   additional_fee_buffer_per_contract: 0
   # This is an unvalidated forward study. The residual structural rule is not
   # an arbitrage lane and remains disabled pending evidence.
-  directional_reaction_authority: forward_only_unvalidated
+  depth_imbalance_reaction_experimental_v1_authority: forward_only_unvalidated
   relative_value_authority: disabled
   slippage_per_contract: 0.01
   max_shadow_notional: 100

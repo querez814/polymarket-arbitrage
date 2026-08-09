@@ -149,7 +149,7 @@ class DashboardState:
             "execution_authority": "none",
             "main_paper_fills_pnl": "disabled",
             "strategy_lanes": {
-                "directional_reaction": {"authority": "disabled"},
+                "depth_imbalance_reaction_experimental_v1": {"authority": "disabled"},
                 "relative_value": {"authority": "disabled"},
             },
             "catalog": {"contracts": 0, "revisions": 0},
@@ -3297,16 +3297,16 @@ def get_embedded_html() -> str:
                 : 'Shadow system disabled by configuration';
             const intents = opportunity.intents || {};
             const acceptance = opportunity.acceptance || {};
-            const directionalAcceptance = acceptance.directional_reaction || {};
+            const depthImbalanceAcceptance = acceptance.depth_imbalance_reaction_experimental_v1 || {};
             lanes.innerHTML = [
                 ['Locked arbitrage', 'existing execution lane; unchanged'],
                 ['Relative value', `${(strategyLanes.relative_value || {}).authority || 'disabled'} · ${Number(intents.relative_value || 0)} shadow intents · proof pending`],
-                ['Directional reaction', `${(strategyLanes.directional_reaction || {}).authority || 'disabled'} · ${Number(intents.directional_reaction || 0)} shadow intents · unvalidated forward study`],
+                ['Depth/imbalance reaction experimental v1', `${(strategyLanes.depth_imbalance_reaction_experimental_v1 || {}).authority || 'disabled'} · ${Number(intents.depth_imbalance_reaction_experimental_v1 || 0)} shadow intents · unvalidated forward study`],
                 ['Political watchlist', locks.length
                     ? locks.map(lock => `${lock.event_title || lock.event_id} (${lock.state || 'unknown'}; ${Array.isArray(lock.sampled_contract_ids) ? lock.sampled_contract_ids.length : 0}/${Array.isArray(lock.contract_ids) ? lock.contract_ids.length : 0} sampled)`).join(' · ')
                     : 'No selected political events'],
                 ['Research marks', `shadow research only · ${researchPnl.label || 'shadow_research_marks'}, not receipts or positions · main paper fills/PnL ${(opportunity.main_paper_fills_pnl || 'disabled')} · actual-exit: ${Number(actualExit.scored_marks || 0)}/${Number(actualExit.marks || 0)} scored · capacity PnL ${Number(actualExit.capacity_pnl || 0).toFixed(3)}`],
-                ['Research threshold', `${directionalAcceptance.research_threshold_passed === true ? 'passed' : 'not passed'} · execution authority: ${directionalAcceptance.execution_authority || 'none'}`],
+                ['Research threshold', `${depthImbalanceAcceptance.research_threshold_passed === true ? 'passed' : 'not passed'} · execution authority: ${depthImbalanceAcceptance.execution_authority || 'none'}`],
                 ['Research worker', `${Number(worker.queued || 0)} queued · ${Number(worker.processed || 0)} processed · ${Number(worker.dropped || 0)} dropped · ${Number(worker.failures || 0)} failures`],
             ].map(row => `<div style="border-left: 2px solid var(--accent-green); padding-left: 0.65rem;">
                 <div style="font-size: 0.82rem; font-weight: 600;">${escapeHtml(row[0])}</div>

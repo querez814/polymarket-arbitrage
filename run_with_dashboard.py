@@ -700,8 +700,8 @@ class TradingBotWithDashboard:
             "execution_authority": "none",
             "main_paper_fills_pnl": "disabled",
             "strategy_lanes": {
-                "directional_reaction": {
-                    "authority": policy.directional_reaction_authority
+                "depth_imbalance_reaction_experimental_v1": {
+                    "authority": policy.depth_imbalance_reaction_experimental_v1_authority
                 },
                 "relative_value": {"authority": policy.relative_value_authority},
             },
@@ -765,7 +765,9 @@ class TradingBotWithDashboard:
             max_shadow_notional=policy.max_shadow_notional,
             experiment_id=policy.experiment_id,
             lane_authorities={
-                "directional_reaction": policy.directional_reaction_authority,
+                "depth_imbalance_reaction_experimental_v1": (
+                    policy.depth_imbalance_reaction_experimental_v1_authority
+                ),
                 "relative_value": policy.relative_value_authority,
             },
         )
@@ -1312,11 +1314,13 @@ class TradingBotWithDashboard:
                 worker = self.platform_opportunity_worker
                 if worker is not None:
                     directional, relative = await asyncio.gather(
-                        worker.acceptance_report("directional_reaction"),
+                        worker.acceptance_report(
+                            "depth_imbalance_reaction_experimental_v1"
+                        ),
                         worker.acceptance_report("relative_value"),
                     )
                     dashboard_state.platform_opportunity["acceptance"] = {
-                        "directional_reaction": asdict(directional),
+                        "depth_imbalance_reaction_experimental_v1": asdict(directional),
                         "relative_value": asdict(relative),
                     }
             except asyncio.CancelledError:

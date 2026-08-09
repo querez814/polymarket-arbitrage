@@ -261,7 +261,8 @@ def test_invalid_replay_cohort_cannot_count_or_score_later_observations(tmp_path
     """A failed evidence cohort stays fail-closed even on direct system calls."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db", replay_byte_cap=1)
     system = PlatformOpportunitySystem(
-        store=store, lane_authorities=_lane_authorities("directional_reaction")
+        store=store,
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -327,7 +328,7 @@ def test_invalid_replay_cohort_fails_closed_in_acceptance_report(tmp_path):
             received_at=NOW,
         )
 
-    report = system.acceptance_report("directional_reaction")
+    report = system.acceptance_report("depth_imbalance_reaction_experimental_v1")
 
     assert report.research_threshold_passed is False
     assert "replay_evidence_invalid" in report.reasons
@@ -2056,15 +2057,16 @@ def test_disabled_directional_lane_collects_features_without_creating_an_intent(
 
     assert result.intents == ()
     assert len(system._features["polymarket:p1"]) == 2
-    assert system.dashboard_summary()["strategy_lanes"]["directional_reaction"] == {
-        "authority": "disabled"
-    }
+    assert system.dashboard_summary()["strategy_lanes"][
+        "depth_imbalance_reaction_experimental_v1"
+    ] == {"authority": "disabled"}
 
 
 def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(
-        store=store, lane_authorities=_lane_authorities("directional_reaction")
+        store=store,
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -2090,11 +2092,16 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
 
     assert len(emitted.intents) == 1
     intent = emitted.intents[0]
-    assert intent.lane == "directional_reaction"
+    assert intent.lane == "depth_imbalance_reaction_experimental_v1"
     assert intent.direction == "yes"
     assert intent.entry_price == 0.53
     assert intent.model_version == "microstructure-baseline-v1"
-    assert store.mark_rows(lane="directional_reaction", horizon_seconds=30) == []
+    assert (
+        store.mark_rows(
+            lane="depth_imbalance_reaction_experimental_v1", horizon_seconds=30
+        )
+        == []
+    )
 
     scored = system.observe_book(
         "polymarket:p1",
@@ -2105,7 +2112,7 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
     marks = [mark for mark in scored.marks if mark.horizon_seconds == 30]
     assert {mark.capacity_fraction for mark in marks} == {0.05, 0.1, 0.2, 1.0}
     assert all(mark.net_return is not None and mark.net_return > 0 for mark in marks)
-    assert len(store.intent_rows(lane="directional_reaction")) == 1
+    assert len(store.intent_rows(lane="depth_imbalance_reaction_experimental_v1")) == 1
 
     exited = system.observe_book(
         "polymarket:p1",
@@ -2126,7 +2133,7 @@ def test_directional_intent_is_immutable_and_scored_only_from_later_books(tmp_pa
 def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
-        lane_authorities=_lane_authorities("directional_reaction"),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     close = NOW + timedelta(minutes=30)
     system.refresh_catalog(
@@ -2151,7 +2158,7 @@ def test_shadow_intent_fails_closed_without_authoritative_fee_metadata(tmp_path)
 def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
-        lane_authorities=_lane_authorities("directional_reaction"),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -2173,13 +2180,15 @@ def test_zero_momentum_imbalance_does_not_emit_directional_no_intent(tmp_path):
     )
 
     assert result.intents == ()
-    assert system.store.intent_rows(lane="directional_reaction") == []
+    assert (
+        system.store.intent_rows(lane="depth_imbalance_reaction_experimental_v1") == []
+    )
 
 
 def test_directional_intent_uses_signed_composite_not_momentum_alone(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
-        lane_authorities=_lane_authorities("directional_reaction"),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -2209,7 +2218,7 @@ def test_directional_intent_uses_signed_composite_not_momentum_alone(tmp_path):
 def test_zero_exit_capacity_records_insufficient_depth_marks_without_crashing(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
-        lane_authorities=_lane_authorities("directional_reaction"),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     close = NOW + timedelta(hours=2)
     system.refresh_catalog(
@@ -2311,13 +2320,22 @@ def test_acceptance_is_per_lane_and_fails_closed_before_preregistered_sample(tmp
         ),
     )
 
-    report = system.acceptance_report("directional_reaction")
+    report = system.acceptance_report("depth_imbalance_reaction_experimental_v1")
 
-    assert report.lane == "directional_reaction"
+    assert report.lane == "depth_imbalance_reaction_experimental_v1"
     assert "fewer_than_50_event_clusters" in report.reasons
     assert "fewer_than_200_intents" in report.reasons
     assert report.research_threshold_passed is False
     assert report.execution_authority == "none"
+
+
+def test_legacy_directional_reaction_configuration_cannot_join_v2_lane(tmp_path):
+    """Old records remain queryable, but old lane config cannot emit into v2."""
+    with pytest.raises(ValueError, match="unknown strategy lanes"):
+        PlatformOpportunitySystem(
+            store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+            lane_authorities={"directional_reaction": "forward_only_unvalidated"},
+        )
 
 
 def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
@@ -2326,7 +2344,8 @@ def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
     close = restart_now + timedelta(hours=2)
     first_store = PlatformOpportunityStore(path)
     first = PlatformOpportunitySystem(
-        store=first_store, lane_authorities=_lane_authorities("directional_reaction")
+        store=first_store,
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     first.refresh_catalog(
         polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
@@ -2349,7 +2368,8 @@ def test_restart_restores_open_intent_marks_and_cooldown(tmp_path):
 
     second_store = PlatformOpportunityStore(path)
     second = PlatformOpportunitySystem(
-        store=second_store, lane_authorities=_lane_authorities("directional_reaction")
+        store=second_store,
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     second.refresh_catalog(
         polymarket_markets=[_poly("p1", "Will CPI be above 3%?", end_date=close)],
@@ -2377,7 +2397,10 @@ def test_acceptance_never_mixes_model_or_cost_cohorts(tmp_path):
     )
 
     assert original.cohort_id != changed.cohort_id
-    assert changed.acceptance_report("directional_reaction").intents == 0
+    assert (
+        changed.acceptance_report("depth_imbalance_reaction_experimental_v1").intents
+        == 0
+    )
 
 
 def test_cohort_identity_changes_for_monitoring_political_and_replay_policy(tmp_path):
@@ -2427,12 +2450,12 @@ def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
     first = PlatformOpportunitySystem(
         store=store,
         experiment_id="first",
-        lane_authorities=_lane_authorities("directional_reaction"),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     second = PlatformOpportunitySystem(
         store=store,
         experiment_id="second",
-        lane_authorities=_lane_authorities("directional_reaction"),
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
     )
     assert first.cohort_id != second.cohort_id
 
@@ -2470,8 +2493,10 @@ def test_dashboard_summary_and_research_pnl_do_not_mix_cohorts(tmp_path):
 
     first_dashboard = first.dashboard_summary()
     second_dashboard = second.dashboard_summary()
-    assert first_dashboard["intents"] == {"directional_reaction": 1}
-    assert second_dashboard["intents"] == {"directional_reaction": 1}
+    assert first_dashboard["intents"] == {"depth_imbalance_reaction_experimental_v1": 1}
+    assert second_dashboard["intents"] == {
+        "depth_imbalance_reaction_experimental_v1": 1
+    }
     assert first_dashboard["marks"] == 4
     assert second_dashboard["marks"] == 0
     assert first_dashboard["research_pnl"]["horizons"]["30"]["marks"] == 1

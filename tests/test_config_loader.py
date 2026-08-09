@@ -80,7 +80,10 @@ platform_opportunity:
     assert config.platform_opportunity.queue_capacity == 2000
     assert config.platform_opportunity.political_max_events == 2
     assert config.platform_opportunity.political_hot_before_minutes == 30
-    assert config.platform_opportunity.directional_reaction_authority == "disabled"
+    assert (
+        config.platform_opportunity.depth_imbalance_reaction_experimental_v1_authority
+        == "disabled"
+    )
     assert config.platform_opportunity.relative_value_authority == "disabled"
     assert config.platform_opportunity.reviewed_pinned_event_ids == [
         "kalshi:KXTRUMPMENTION-26AUG10"
@@ -121,7 +124,7 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     ]
     assert config.platform_opportunity.political_max_event_duration_hours == 30
     assert (
-        config.platform_opportunity.directional_reaction_authority
+        config.platform_opportunity.depth_imbalance_reaction_experimental_v1_authority
         == "forward_only_unvalidated"
     )
     assert config.platform_opportunity.relative_value_authority == "disabled"
