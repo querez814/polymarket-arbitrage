@@ -847,7 +847,14 @@ class KalshiClient:
             title = data.get("title")
             start_date = data.get("start_date")
             related = data.get("related_event_tickers")
-            if not all(isinstance(value, str) and value.strip() for value in (milestone_id, title, start_date)):
+            if (
+                not isinstance(milestone_id, str)
+                or not milestone_id.strip()
+                or not isinstance(title, str)
+                or not title.strip()
+                or not isinstance(start_date, str)
+                or not start_date.strip()
+            ):
                 return None
             if (
                 not isinstance(related, list)
