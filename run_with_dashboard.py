@@ -1320,6 +1320,20 @@ class TradingBotWithDashboard:
             "errors": errors,
         }
 
+    def _platform_fee_cache_ttl_seconds(self) -> float:
+        """Keep cached metadata fresher than political-paper admission allows.
+
+        The authoritative fee payload is replay evidence for the political
+        experimental ledger.  Reusing it until the exact age boundary leaves
+        no scheduling slack between cache admission and the later replay
+        receipt, so reserve ten percent of the configured freshness window.
+        This cache is read-only; expiring it only causes a metadata refresh.
+        """
+        maximum_age = float(
+            self.config.platform_opportunity.political_paper_max_fee_schedule_age_seconds
+        )
+        return max(0.1, maximum_age * 0.9)
+
     async def _platform_hot_sampling_loop(self) -> None:
         """Poll bounded hot contracts on isolated public read pools."""
         next_due: dict[str, float] = {}
@@ -1368,7 +1382,7 @@ class TradingBotWithDashboard:
                 fee_received_at = datetime.now(timezone.utc)
                 self._platform_fee_cache[assignment.contract_id] = (
                     schedule,
-                    time.monotonic() + 300.0,
+                    time.monotonic() + self._platform_fee_cache_ttl_seconds(),
                     fee_request_started_at,
                     fee_received_at,
                 )

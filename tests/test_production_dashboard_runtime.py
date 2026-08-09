@@ -58,6 +58,16 @@ def test_catalog_coverage_status_separates_bounded_and_failed_sources():
     )
 
 
+def test_platform_fee_cache_expires_before_political_fee_evidence_does():
+    """A cached schedule can never outlive its admissible paper evidence age."""
+    bot = TradingBotWithDashboard(BotConfig())
+
+    assert bot._platform_fee_cache_ttl_seconds() == pytest.approx(54.0)
+
+    bot.config.platform_opportunity.political_paper_max_fee_schedule_age_seconds = 2
+    assert bot._platform_fee_cache_ttl_seconds() == pytest.approx(1.8)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "expected_reason", "dashboard_key"),
