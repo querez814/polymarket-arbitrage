@@ -142,6 +142,96 @@ async def test_list_event_markets_preserves_event_context_for_matching(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_typed_event_catalog_pages_exact_targets_and_deduplicates(monkeypatch):
+    client = KalshiClient(dry_run=True)
+    calls = []
+
+    async def fake_get(endpoint, params=None):
+        assert endpoint == "/events"
+        calls.append(params)
+        if params.get("cursor") is None:
+            return {
+                "events": [
+                    {
+                        "event_ticker": "KXTRUMPSAY-26AUG10",
+                        "series_ticker": "KXTRUMPSAY",
+                        "title": "Trump says a word",
+                        "category": "Politics",
+                        "markets": [
+                            {"ticker": "KXTRUMPSAY-26AUG10-T1", "title": "one"}
+                        ],
+                        "milestones": [
+                            {
+                                "id": "trump-speech",
+                                "title": "Speech",
+                                "start_date": "2026-08-10T12:00:00Z",
+                                "related_event_tickers": ["KXTRUMPSAY-26AUG10"],
+                            }
+                        ],
+                    }
+                ],
+                "cursor": "next",
+            }
+        return {
+            "events": [
+                {
+                    "event_ticker": "KXSCRSENS-26",
+                    "series_ticker": "KXSCRSENS",
+                    "title": "Senate race",
+                    "category": "Elections",
+                    "markets": [{"ticker": "KXSCRSENS-26-A", "title": "two"}],
+                }
+            ],
+            "milestones": [
+                {
+                    "id": "trump-speech",
+                    "title": "Speech",
+                    "start_date": "2026-08-10T12:00:00Z",
+                    "related_event_tickers": ["KXTRUMPSAY-26AUG10"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_get", fake_get)
+    result = await client.list_event_catalog(
+        status=None,
+        tickers=["KXTRUMPSAY-26AUG10", "KXSCRSENS-26"],
+        with_nested_markets=True,
+        with_milestones=True,
+        limit=2,
+    )
+
+    assert result.complete is True
+    assert result.stop_reason == "source_exhausted"
+    assert result.page_count == 2
+    assert [event.event_ticker for event in result.events] == [
+        "KXTRUMPSAY-26AUG10",
+        "KXSCRSENS-26",
+    ]
+    assert [market.event_title for market in result.events[0].markets] == [
+        "Trump says a word"
+    ]
+    assert [item.milestone_id for item in result.milestones] == ["trump-speech"]
+    assert calls[0]["tickers"] == "KXTRUMPSAY-26AUG10,KXSCRSENS-26"
+    assert "status" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_typed_event_catalog_rejects_missing_requested_nested_markets(
+    monkeypatch,
+):
+    client = KalshiClient(dry_run=True)
+    monkeypatch.setattr(
+        client,
+        "_get",
+        AsyncMock(return_value={"events": [{"event_ticker": "KX-1"}]}),
+    )
+
+    with pytest.raises(ValueError, match="nested event markets"):
+        await client.list_events_page(with_nested_markets=True)
+
+
+@pytest.mark.asyncio
 async def test_get_fee_schedule_prefers_complete_event_override():
     client = KalshiClient(dry_run=True)
     client._get = AsyncMock(

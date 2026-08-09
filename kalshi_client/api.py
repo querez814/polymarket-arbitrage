@@ -28,6 +28,8 @@ from kalshi_client.models import (
     KalshiMarket,
     KalshiOrderBook,
     KalshiEvent,
+    KalshiEventCatalogPage,
+    KalshiEventCatalogRead,
     KalshiFeeSchedule,
     KalshiMilestone,
     KalshiSeries,
@@ -633,6 +635,221 @@ class KalshiClient:
     # =========================================================================
     # EVENTS ENDPOINTS
     # =========================================================================
+
+    async def list_events_page(
+        self,
+        *,
+        status: Optional[str] = "open",
+        tickers: Optional[tuple[str, ...] | list[str]] = None,
+        with_nested_markets: bool = False,
+        with_milestones: bool = False,
+        min_updated_ts: Optional[int] = None,
+        limit: int = 200,
+        cursor: Optional[str] = None,
+    ) -> KalshiEventCatalogPage:
+        """Read and validate one typed public events page.
+
+        ``with_nested_markets`` is intentionally fail-closed: an event missing
+        its requested list cannot be treated as an empty event by a reviewed
+        target hydration path.
+        """
+        if not 1 <= limit <= 200:
+            raise ValueError("event page limit must be between 1 and 200")
+        params: dict[str, Any] = {"limit": limit}
+        if status is not None:
+            params["status"] = status
+        if tickers is not None:
+            cleaned_tickers = tuple(
+                ticker.strip()
+                for ticker in tickers
+                if isinstance(ticker, str) and ticker.strip()
+            )
+            if not cleaned_tickers:
+                raise ValueError("event tickers must contain at least one ticker")
+            params["tickers"] = ",".join(cleaned_tickers)
+        if with_nested_markets:
+            params["with_nested_markets"] = True
+        if with_milestones:
+            params["with_milestones"] = True
+        if min_updated_ts is not None:
+            if isinstance(min_updated_ts, bool) or not isinstance(min_updated_ts, int):
+                raise ValueError("min_updated_ts must be an integer")
+            params["min_updated_ts"] = min_updated_ts
+        if cursor:
+            params["cursor"] = cursor
+
+        data = await self._get("/events", params=params)
+        if not isinstance(data, Mapping):
+            raise ValueError("Kalshi events response must be an object")
+        raw_events = data.get("events")
+        if not isinstance(raw_events, list):
+            raise ValueError("Kalshi events response is missing an events list")
+
+        events: list[KalshiEvent] = []
+        milestones: list[KalshiMilestone] = []
+        for raw_event in raw_events:
+            if not isinstance(raw_event, Mapping):
+                raise ValueError("Kalshi event payload must be an object")
+            event_ticker = raw_event.get("event_ticker", raw_event.get("ticker"))
+            if not isinstance(event_ticker, str) or not event_ticker.strip():
+                raise ValueError("Kalshi event payload is missing event_ticker")
+            event_title = raw_event.get("title")
+            event_category = raw_event.get("category")
+            event_series_ticker = raw_event.get("series_ticker")
+            parsed_markets: list[KalshiMarket] = []
+            if with_nested_markets:
+                raw_markets = raw_event.get("markets")
+                if not isinstance(raw_markets, list):
+                    raise ValueError("Kalshi nested event markets must be a list")
+                for raw_market in raw_markets:
+                    if not isinstance(raw_market, Mapping):
+                        raise ValueError(
+                            "Kalshi nested market payload must be an object"
+                        )
+                    market = self._parse_market(
+                        raw_market,
+                        event_title=event_title if isinstance(event_title, str) else "",
+                        event_category=(
+                            event_category if isinstance(event_category, str) else ""
+                        ),
+                        event_series_ticker=(
+                            event_series_ticker
+                            if isinstance(event_series_ticker, str)
+                            else ""
+                        ),
+                    )
+                    if market is None or not market.ticker:
+                        raise ValueError("Kalshi nested market payload is invalid")
+                    parsed_markets.append(market)
+                    self._markets_cache[market.ticker] = market
+            raw_milestones = raw_event.get("milestones", [])
+            if with_milestones and not isinstance(raw_milestones, list):
+                raise ValueError("Kalshi event milestones must be a list")
+            if isinstance(raw_milestones, list):
+                for raw_milestone in raw_milestones:
+                    if not isinstance(raw_milestone, Mapping):
+                        raise ValueError("Kalshi milestone payload must be an object")
+                    milestone = self._parse_milestone(raw_milestone)
+                    if milestone is None:
+                        raise ValueError("Kalshi milestone payload is invalid")
+                    milestones.append(milestone)
+            events.append(
+                KalshiEvent(
+                    event_ticker=event_ticker.strip(),
+                    series_ticker=(
+                        event_series_ticker.strip()
+                        if isinstance(event_series_ticker, str)
+                        else ""
+                    ),
+                    title=event_title.strip() if isinstance(event_title, str) else "",
+                    category=(
+                        event_category.strip()
+                        if isinstance(event_category, str)
+                        else ""
+                    ),
+                    markets=parsed_markets,
+                )
+            )
+        # Some versions of the endpoint return the requested milestones at the
+        # response level rather than beneath each event.
+        response_milestones = data.get("milestones", [])
+        if with_milestones and not isinstance(response_milestones, list):
+            raise ValueError("Kalshi response milestones must be a list")
+        if isinstance(response_milestones, list):
+            for raw_milestone in response_milestones:
+                if not isinstance(raw_milestone, Mapping):
+                    raise ValueError("Kalshi milestone payload must be an object")
+                milestone = self._parse_milestone(raw_milestone)
+                if milestone is None:
+                    raise ValueError("Kalshi milestone payload is invalid")
+                milestones.append(milestone)
+        next_cursor = data.get("cursor")
+        if next_cursor is not None and (
+            not isinstance(next_cursor, str) or not next_cursor.strip()
+        ):
+            raise ValueError("Kalshi event cursor must be non-empty text")
+        return KalshiEventCatalogPage(
+            events=tuple(events),
+            milestones=tuple(milestones),
+            cursor=next_cursor.strip() if isinstance(next_cursor, str) else None,
+            decoded_bytes=len(
+                json.dumps(data, default=str, sort_keys=True).encode("utf-8")
+            ),
+            complete=next_cursor is None,
+            stop_reason=(
+                "source_exhausted" if next_cursor is None else "cursor_remaining"
+            ),
+        )
+
+    async def list_event_catalog(
+        self,
+        *,
+        status: Optional[str] = "open",
+        tickers: Optional[tuple[str, ...] | list[str]] = None,
+        with_nested_markets: bool = False,
+        with_milestones: bool = False,
+        min_updated_ts: Optional[int] = None,
+        limit: int = 200,
+        max_pages: int = 100,
+    ) -> KalshiEventCatalogRead:
+        """Follow event cursors, deduplicating source identities fail-closed."""
+        if max_pages <= 0:
+            raise ValueError("event catalog max_pages must be positive")
+        events: dict[str, KalshiEvent] = {}
+        milestones: dict[str, KalshiMilestone] = {}
+        seen_cursors: set[str] = set()
+        cursor: Optional[str] = None
+        decoded_bytes = 0
+        for page_number in range(1, max_pages + 1):
+            page = await self.list_events_page(
+                status=status,
+                tickers=tickers,
+                with_nested_markets=with_nested_markets,
+                with_milestones=with_milestones,
+                min_updated_ts=min_updated_ts,
+                limit=limit,
+                cursor=cursor,
+            )
+            decoded_bytes += page.decoded_bytes
+            for event in page.events:
+                existing = events.get(event.event_ticker)
+                if existing is None:
+                    events[event.event_ticker] = event
+                elif existing != event:
+                    raise ValueError(
+                        "conflicting Kalshi event payload for event_ticker"
+                    )
+            for milestone in page.milestones:
+                existing_milestone = milestones.get(milestone.milestone_id)
+                if existing_milestone is None:
+                    milestones[milestone.milestone_id] = milestone
+                elif existing_milestone != milestone:
+                    raise ValueError(
+                        "conflicting Kalshi milestone payload for milestone_id"
+                    )
+            if page.complete:
+                return KalshiEventCatalogRead(
+                    events=tuple(events.values()),
+                    milestones=tuple(milestones.values()),
+                    cursor=None,
+                    decoded_bytes=decoded_bytes,
+                    complete=True,
+                    stop_reason="source_exhausted",
+                    page_count=page_number,
+                )
+            if page.cursor is None or page.cursor in seen_cursors:
+                raise RuntimeError("Kalshi event pagination repeated a cursor")
+            seen_cursors.add(page.cursor)
+            cursor = page.cursor
+        return KalshiEventCatalogRead(
+            events=tuple(events.values()),
+            milestones=tuple(milestones.values()),
+            cursor=cursor,
+            decoded_bytes=decoded_bytes,
+            complete=False,
+            stop_reason="page_budget",
+            page_count=max_pages,
+        )
 
     async def list_event_markets(
         self,

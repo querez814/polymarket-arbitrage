@@ -168,6 +168,37 @@ class KalshiEvent:
         return len(self.markets)
 
 
+@dataclass(frozen=True)
+class KalshiEventCatalogPage:
+    """One validated, read-only Kalshi events response.
+
+    The result deliberately owns its coverage metadata.  Catalog callers can
+    therefore run concurrently without consulting a mutable client-level
+    status field from a different request.
+    """
+
+    events: tuple[KalshiEvent, ...]
+    milestones: tuple["KalshiMilestone", ...]
+    cursor: Optional[str]
+    decoded_bytes: int
+    complete: bool
+    stop_reason: str
+    page_count: int = 1
+
+
+@dataclass(frozen=True)
+class KalshiEventCatalogRead:
+    """A bounded, cursor-safe collection of validated Kalshi event pages."""
+
+    events: tuple[KalshiEvent, ...]
+    milestones: tuple["KalshiMilestone", ...]
+    cursor: Optional[str]
+    decoded_bytes: int
+    complete: bool
+    stop_reason: str
+    page_count: int
+
+
 @dataclass
 class KalshiSeries:
     """Kalshi series (recurring events)."""
