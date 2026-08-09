@@ -1717,6 +1717,90 @@ def test_political_lock_monitoring_uses_public_lifecycle_states_and_expires(tmp_
     assert cadences(end + policy.cooldown_after + timedelta(microseconds=1)) == []
 
 
+def test_political_reaction_signals_are_limited_to_hot_and_event_live_phases(tmp_path):
+    """Warm books establish a baseline; cooldown/expired books cannot enter."""
+    policy = PoliticalWatchPolicy(
+        max_events=1,
+        max_contracts_per_event=1,
+        warm_before=timedelta(hours=4),
+        hot_before=timedelta(hours=1),
+        cooldown_after=timedelta(hours=2),
+    )
+    system = PlatformOpportunitySystem(
+        store=PlatformOpportunityStore(tmp_path / "opportunities.db"),
+        political_watch_policy=policy,
+        lane_authorities=_lane_authorities("depth_imbalance_reaction_experimental_v1"),
+    )
+    start = NOW + timedelta(hours=2)
+    end = start + timedelta(minutes=45)
+    market = _kalshi(
+        "KXTRUMPMENTION-26AUG10-A",
+        "Will Trump mention immigration?",
+        event_ticker="KXTRUMPMENTION-26AUG10",
+    )
+    milestone = KalshiMilestone(
+        milestone_id="mention-2026-08-10",
+        title="Trump remarks",
+        category="Politics",
+        milestone_type="political_speech",
+        start_time=start,
+        end_time=end,
+        related_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        primary_event_tickers=("KXTRUMPMENTION-26AUG10",),
+        source_id="kalshi-milestones",
+    )
+    system.refresh_catalog(
+        polymarket_markets=[],
+        kalshi_markets=[market],
+        kalshi_milestones=[milestone],
+        observed_at=NOW,
+    )
+    contract_id = "kalshi:KXTRUMPMENTION-26AUG10-A"
+    system.set_fee_schedule(contract_id, _zero_fee("kalshi"))
+
+    # Warm samples become the baseline but are not allowed to create signals.
+    system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.49, ask=0.51, bid_size=100, ask_size=100),
+        observed_at=NOW,
+    )
+    assert (
+        system.observe_book(
+            contract_id,
+            _book(market.ticker, bid=0.51, ask=0.53, bid_size=300, ask_size=50),
+            observed_at=NOW + timedelta(seconds=5),
+        ).intents
+        == ()
+    )
+
+    hot = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.53, ask=0.55, bid_size=300, ask_size=50),
+        observed_at=start - timedelta(minutes=30),
+    )
+    assert [intent.direction for intent in hot.intents] == ["yes"]
+
+    live = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.49, ask=0.51, bid_size=50, ask_size=300),
+        observed_at=start + timedelta(minutes=1),
+    )
+    assert [intent.direction for intent in live.intents] == ["no"]
+
+    cooldown = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.53, ask=0.55, bid_size=300, ask_size=50),
+        observed_at=end + timedelta(minutes=1),
+    )
+    expired = system.observe_book(
+        contract_id,
+        _book(market.ticker, bid=0.49, ask=0.51, bid_size=50, ask_size=300),
+        observed_at=end + policy.cooldown_after + timedelta(seconds=1),
+    )
+    assert cooldown.intents == ()
+    assert expired.intents == ()
+
+
 def test_kalshi_ambiguous_distinct_primary_milestones_fail_closed(tmp_path):
     system = PlatformOpportunitySystem(
         store=PlatformOpportunityStore(tmp_path / "opportunities.db")

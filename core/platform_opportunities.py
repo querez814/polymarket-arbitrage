@@ -1929,6 +1929,16 @@ class PlatformOpportunitySystem:
         history = self._features[contract_id]
         prior = history[-1] if history else None
         history.append(features)
+        # Political-v2's warm/cooldown samples are evidence and valuation
+        # inputs, never entries.  Keep the warm history so the first hot book
+        # can react to a real baseline, but permit new reaction hypotheses only
+        # inside the reviewed event's pre-event hot window or live window.
+        # Non-political callers retain the generic research behavior below.
+        if self.political_watch_policy is not None and (
+            self._observation_lock_phase(contract_id, observed_at)
+            not in {"hot", "event_live"}
+        ):
+            return ObservationResult(relation_result.intents, tuple(marks))
         if self.lane_authorities[_DEPTH_IMBALANCE_REACTION_LANE] == "disabled":
             return ObservationResult(relation_result.intents, tuple(marks))
         if prior is None:
