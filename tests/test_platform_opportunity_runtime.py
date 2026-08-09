@@ -183,6 +183,45 @@ async def test_worker_persists_local_book_request_and_receipt_times(tmp_path):
     }
 
 
+@pytest.mark.asyncio
+async def test_worker_persists_replay_event_before_scoring_an_observation(tmp_path):
+    """A successful observation has a durable causal replay event first."""
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    worker = PlatformOpportunityWorker(system)
+    request_started_at = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    received_at = request_started_at.replace(second=1)
+    schedule = VenueFeeSchedule(
+        "polymarket", "none", 0, 1, 0, received_at, "test"
+    )
+
+    await worker.start()
+    assert worker.submit_book(
+        "polymarket:replayable",
+        OrderBook(market_id="replayable"),
+        observed_at=received_at,
+        request_started_at=request_started_at,
+        received_at=received_at,
+        fee_schedule=schedule,
+    )
+    await worker.stop()
+
+    [event] = system.store.replay_observation_events(cohort_id=system.cohort_id)
+    assert event == {
+        "sequence": 1,
+        "contract_id": "polymarket:replayable",
+        "kind": "change",
+        "lock_phase": "unclassified",
+        "state_hash": event["state_hash"],
+        "fee_hash": event["fee_hash"],
+        "request_started_at": "2026-08-09T12:00:00+00:00",
+        "received_at": "2026-08-09T12:00:01+00:00",
+        "venue_timestamp": None,
+        "timestamp_provenance": "local_request_receipt",
+    }
+    assert system.store.replay_book_state(event["state_hash"])["yes"]["bids"] == []
+    assert system.store.replay_fee_schedule(event["fee_hash"])["venue"] == "polymarket"
+
+
 def test_dashboard_exposes_durable_observation_time_bounds_and_provenance(tmp_path):
     """Local request/receipt timing remains visible after many observations."""
     system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))

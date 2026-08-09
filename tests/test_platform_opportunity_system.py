@@ -140,6 +140,59 @@ def test_replay_evidence_deduplicates_canonical_book_and_fee_payloads(tmp_path):
     assert store.replay_evidence_counts()["captured_bytes"] > 0
 
 
+def test_replay_observation_events_are_ordered_changes_with_bounded_heartbeats(tmp_path):
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.61, 4]], "asks": [[0.62, 3]]},
+        "no": {"bids": [[0.37, 3]], "asks": [[0.39, 4]]},
+    }
+    fee = {"schema_version": 1, "venue": "kalshi", "fee_type": "none"}
+    common = {
+        "cohort_id": "cohort:test",
+        "contract_id": "kalshi:KXTEST",
+        "fee_schedule": fee,
+        "lock_phase": "hot",
+        "request_started_at": NOW,
+    }
+
+    store.record_replay_observation(
+        normalized_book=book, observed_at=NOW, received_at=NOW, **common
+    )
+    store.record_replay_observation(
+        normalized_book=book,
+        observed_at=NOW + timedelta(seconds=10),
+        received_at=NOW + timedelta(seconds=10),
+        **common,
+    )
+    store.record_replay_observation(
+        normalized_book=book,
+        observed_at=NOW + timedelta(seconds=31),
+        received_at=NOW + timedelta(seconds=31),
+        **common,
+    )
+    changed_book = {**book, "yes": {"bids": [[0.60, 4]], "asks": [[0.62, 3]]}}
+    store.record_replay_observation(
+        normalized_book=changed_book,
+        observed_at=NOW + timedelta(seconds=32),
+        received_at=NOW + timedelta(seconds=32),
+        **common,
+    )
+
+    events = store.replay_observation_events(cohort_id="cohort:test")
+    assert [
+        (event["sequence"], event["kind"], event["state_hash"])
+        for event in events
+    ] == [
+        (1, "change", events[0]["state_hash"]),
+        (2, "heartbeat", events[0]["state_hash"]),
+        (3, "change", events[2]["state_hash"]),
+    ]
+    assert store.observation_telemetry(cohort_id="cohort:test")["kalshi:KXTEST"][
+        "observation_count"
+    ] == 4
+
+
 def test_catalog_is_platform_first_revisioned_and_hot_lane_is_bounded(tmp_path):
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     system = PlatformOpportunitySystem(

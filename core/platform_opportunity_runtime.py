@@ -139,6 +139,19 @@ class PlatformOpportunityWorker:
                     self.system.set_fee_schedule(
                         envelope.contract_id, envelope.fee_schedule
                     )
+                    persist_replay = getattr(
+                        self.system, "persist_replay_observation", None
+                    )
+                    if persist_replay is not None:
+                        await self._run_sync(
+                            persist_replay,
+                            envelope.contract_id,
+                            envelope.book,
+                            observed_at=envelope.observed_at,
+                            request_started_at=envelope.request_started_at,
+                            received_at=envelope.received_at,
+                            fee_schedule=envelope.fee_schedule,
+                        )
                     await self._run_sync(
                         self.system.observe_book,
                         envelope.contract_id,
@@ -146,7 +159,7 @@ class PlatformOpportunityWorker:
                         observed_at=envelope.observed_at,
                     )
                     record = getattr(self.system, "record_successful_observation", None)
-                    if record is not None:
+                    if record is not None and persist_replay is None:
                         await self._run_sync(
                             record,
                             envelope.contract_id,

@@ -756,6 +756,77 @@ class PlatformOpportunitySystem:
             raise ValueError("fee schedule venue does not match contract")
         self._fee_schedules[contract_id] = schedule
 
+    @staticmethod
+    def _normalized_replay_book(book: OrderBook) -> dict:
+        """Project the unified model to its replayable, bounded depth only."""
+        def levels(token: TokenType, side: str) -> list[list[float]]:
+            source = getattr(book, token.value).bids if side == "bids" else getattr(
+                book, token.value
+            ).asks
+            ordered = sorted(
+                (
+                    (float(level.price), float(level.size))
+                    for level in source.levels
+                    if math.isfinite(float(level.price))
+                    and math.isfinite(float(level.size))
+                    and float(level.price) > 0
+                    and float(level.size) > 0
+                ),
+                key=lambda item: item[0],
+                reverse=side == "bids",
+            )[:50]
+            return [[price, size] for price, size in ordered]
+
+        return {
+            "schema_version": 1,
+            "yes": {"bids": levels(TokenType.YES, "bids"), "asks": levels(TokenType.YES, "asks")},
+            "no": {"bids": levels(TokenType.NO, "bids"), "asks": levels(TokenType.NO, "asks")},
+        }
+
+    def _observation_lock_phase(self, contract_id: str, observed_at: datetime) -> str:
+        """Return the persisted political phase without re-planning the catalog."""
+        policy = self.political_watch_policy
+        if policy is None:
+            return "unclassified"
+        for lock in self._political_locks.values():
+            if contract_id not in lock.contract_ids:
+                continue
+            if observed_at < lock.event_start_at - policy.hot_before:
+                return "warm"
+            if observed_at < lock.event_start_at:
+                return "hot"
+            if observed_at < lock.event_end_at:
+                return "event_live"
+            if observed_at <= lock.locked_until:
+                return "cooldown"
+            return "expired"
+        return "unclassified"
+
+    def persist_replay_observation(
+        self,
+        contract_id: str,
+        book: OrderBook,
+        *,
+        observed_at: datetime,
+        request_started_at: datetime | None,
+        received_at: datetime | None,
+        fee_schedule: VenueFeeSchedule,
+    ) -> dict:
+        """Durably link canonical book/fee evidence before any scoring occurs."""
+        observed = _aware(observed_at) or observed_at
+        request_started = _aware(request_started_at)
+        received = _aware(received_at)
+        return self.store.record_replay_observation(
+            cohort_id=self.cohort_id,
+            contract_id=contract_id,
+            normalized_book=self._normalized_replay_book(book),
+            fee_schedule={"schema_version": 1, **asdict(fee_schedule)},
+            lock_phase=self._observation_lock_phase(contract_id, observed),
+            observed_at=observed,
+            request_started_at=request_started,
+            received_at=received,
+        )
+
     def record_successful_observation(
         self,
         contract_id: str,

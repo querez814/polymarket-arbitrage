@@ -157,6 +157,22 @@ class PlatformOpportunityStore:
                     compressed_payload BLOB NOT NULL,
                     captured_bytes INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS platform_replay_observation_events (
+                    cohort_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    contract_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('change', 'heartbeat')),
+                    lock_phase TEXT NOT NULL,
+                    state_hash TEXT NOT NULL REFERENCES normalized_book_states(state_hash),
+                    fee_hash TEXT NOT NULL REFERENCES normalized_fee_schedules(fee_hash),
+                    request_started_at TEXT,
+                    received_at TEXT NOT NULL,
+                    venue_timestamp TEXT,
+                    timestamp_provenance TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, sequence)
+                );
+                CREATE INDEX IF NOT EXISTS idx_platform_replay_events_contract
+                    ON platform_replay_observation_events(cohort_id, contract_id, sequence);
                 """)
             # Existing research ledgers remain readable while timing evidence is
             # introduced. SQLite has no ADD COLUMN IF NOT EXISTS support.
@@ -303,6 +319,134 @@ class PlatformOpportunityStore:
             "captured_bytes": int(books[1]) + int(fees[1]),
         }
 
+    def record_replay_observation(
+        self,
+        *,
+        cohort_id: str,
+        contract_id: str,
+        normalized_book: dict[str, Any],
+        fee_schedule: dict[str, Any],
+        lock_phase: str,
+        observed_at: datetime,
+        request_started_at: datetime | None,
+        received_at: datetime | None,
+    ) -> dict[str, Any]:
+        """Atomically retain canonical evidence before a book is scored.
+
+        Adapter timestamps are deliberately not copied into ``venue_timestamp``:
+        public adapters currently provide no verified venue-origin timestamp.
+        Unchanged state is still durable by hash, while its event is suppressed
+        until the phase-specific heartbeat interval has elapsed.
+        """
+        if not cohort_id or not contract_id or not lock_phase:
+            raise ValueError("replay observation identity and phase are required")
+        state_hash, compressed_book = self._canonical_replay_payload(
+            normalized_book, kind="book"
+        )
+        fee_hash, compressed_fee = self._canonical_replay_payload(
+            fee_schedule, kind="fee schedule"
+        )
+        receipt = received_at or observed_at
+        receipt_iso = _utc_iso(receipt)
+        request_iso = _utc_iso(request_started_at) if request_started_at else None
+        heartbeat_seconds = 30 if lock_phase in {"hot", "event_live"} else 300
+        with self._lock, self._connection:
+            connection = self._connection
+            connection.execute(
+                "INSERT OR IGNORE INTO normalized_book_states "
+                "(state_hash, schema_version, compressed_payload, captured_bytes) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    state_hash,
+                    int(normalized_book["schema_version"]),
+                    compressed_book,
+                    len(compressed_book),
+                ),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO normalized_fee_schedules "
+                "(fee_hash, schema_version, compressed_payload, captured_bytes) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    fee_hash,
+                    int(fee_schedule["schema_version"]),
+                    compressed_fee,
+                    len(compressed_fee),
+                ),
+            )
+            prior = connection.execute(
+                "SELECT state_hash, received_at FROM platform_replay_observation_events "
+                "WHERE cohort_id = ? AND contract_id = ? ORDER BY sequence DESC LIMIT 1",
+                (cohort_id, contract_id),
+            ).fetchone()
+            emit = prior is None or str(prior["state_hash"]) != state_hash
+            if not emit:
+                prior_at = datetime.fromisoformat(str(prior["received_at"]))
+                emit = (receipt - prior_at).total_seconds() >= heartbeat_seconds
+            event: dict[str, Any] | None = None
+            if emit:
+                sequence = int(
+                    connection.execute(
+                        "SELECT COALESCE(MAX(sequence), 0) + 1 "
+                        "FROM platform_replay_observation_events WHERE cohort_id = ?",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                kind = "change" if prior is None or str(prior["state_hash"]) != state_hash else "heartbeat"
+                connection.execute(
+                    "INSERT INTO platform_replay_observation_events "
+                    "(cohort_id, sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
+                    "request_started_at, received_at, venue_timestamp, timestamp_provenance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
+                    (
+                        cohort_id,
+                        sequence,
+                        contract_id,
+                        kind,
+                        lock_phase,
+                        state_hash,
+                        fee_hash,
+                        request_iso,
+                        receipt_iso,
+                        "local_request_receipt" if request_iso else "local_observed_at",
+                    ),
+                )
+                event = {
+                    "sequence": sequence,
+                    "contract_id": contract_id,
+                    "kind": kind,
+                    "lock_phase": lock_phase,
+                    "state_hash": state_hash,
+                    "fee_hash": fee_hash,
+                    "request_started_at": request_iso,
+                    "received_at": receipt_iso,
+                    "venue_timestamp": None,
+                    "timestamp_provenance": (
+                        "local_request_receipt" if request_iso else "local_observed_at"
+                    ),
+                }
+            self._record_successful_observation_row(
+                connection,
+                cohort_id=cohort_id,
+                contract_id=contract_id,
+                observed_at=observed_at,
+                request_started_at=request_started_at,
+                received_at=received_at,
+            )
+        return {"state_hash": state_hash, "fee_hash": fee_hash, "event": event}
+
+    def replay_observation_events(self, *, cohort_id: str) -> list[dict[str, Any]]:
+        """Return append-only replay events in their durable cohort sequence."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT sequence, contract_id, kind, lock_phase, state_hash, fee_hash, "
+                "request_started_at, received_at, venue_timestamp, timestamp_provenance "
+                "FROM platform_replay_observation_events WHERE cohort_id = ? "
+                "ORDER BY sequence",
+                (cohort_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_contracts(
         self,
         contracts: Iterable[Any],
@@ -394,26 +538,45 @@ class PlatformOpportunityStore:
         adapter's book timestamp.
         """
         with self._lock, self._connection:
-            self._connection.execute(
-                "INSERT INTO platform_observations "
-                "(cohort_id, contract_id, observation_count, first_observed_at, "
-                "last_observed_at, "
-                "last_request_started_at, last_received_at) "
-                "VALUES (?, ?, 1, ?, ?, ?, ?) "
-                "ON CONFLICT(cohort_id, contract_id) DO UPDATE SET "
-                "observation_count=platform_observations.observation_count + 1, "
-                "last_observed_at=excluded.last_observed_at, "
-                "last_request_started_at=excluded.last_request_started_at, "
-                "last_received_at=excluded.last_received_at",
-                (
-                    cohort_id,
-                    contract_id,
-                    _utc_iso(observed_at),
-                    _utc_iso(observed_at),
-                    _utc_iso(request_started_at) if request_started_at else None,
-                    _utc_iso(received_at) if received_at else None,
-                ),
+            self._record_successful_observation_row(
+                self._connection,
+                cohort_id=cohort_id,
+                contract_id=contract_id,
+                observed_at=observed_at,
+                request_started_at=request_started_at,
+                received_at=received_at,
             )
+
+    @staticmethod
+    def _record_successful_observation_row(
+        connection: sqlite3.Connection,
+        *,
+        cohort_id: str,
+        contract_id: str,
+        observed_at: datetime,
+        request_started_at: datetime | None,
+        received_at: datetime | None,
+    ) -> None:
+        """Write success telemetry using the caller's already-open transaction."""
+        connection.execute(
+            "INSERT INTO platform_observations "
+            "(cohort_id, contract_id, observation_count, first_observed_at, "
+            "last_observed_at, last_request_started_at, last_received_at) "
+            "VALUES (?, ?, 1, ?, ?, ?, ?) "
+            "ON CONFLICT(cohort_id, contract_id) DO UPDATE SET "
+            "observation_count=platform_observations.observation_count + 1, "
+            "last_observed_at=excluded.last_observed_at, "
+            "last_request_started_at=excluded.last_request_started_at, "
+            "last_received_at=excluded.last_received_at",
+            (
+                cohort_id,
+                contract_id,
+                _utc_iso(observed_at),
+                _utc_iso(observed_at),
+                _utc_iso(request_started_at) if request_started_at else None,
+                _utc_iso(received_at) if received_at else None,
+            ),
+        )
 
     def observation_telemetry(self, *, cohort_id: str) -> dict[str, dict[str, Any]]:
         """Return durable observation facts, deliberately scoped to one cohort."""
