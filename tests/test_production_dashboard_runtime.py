@@ -157,6 +157,7 @@ def test_counterfactual_dashboard_refresh_projects_sealed_evidence_without_store
         "requested_quantity": 10,
         "executable_quantity": 10,
         "capital_used_micros": 4270000,
+        "capital_rejected_micros": 0,
         "unused_eligible_quantity": 0,
         "saturation_reason": None,
     }

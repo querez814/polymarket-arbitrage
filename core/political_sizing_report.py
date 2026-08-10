@@ -130,6 +130,7 @@ class PoliticalSizingAllocation:
     requested_quantity: int
     executable_quantity: int
     capital_used_micros: int
+    capital_rejected_micros: int
     unused_eligible_quantity: int
     saturation_reason: str | None
 
@@ -394,6 +395,7 @@ def evaluate_political_sizing_scenario(
                     0,
                     requested,
                     "contract_overlap",
+                    displayed_depth_fraction,
                 )
             )
             continue
@@ -409,6 +411,7 @@ def evaluate_political_sizing_scenario(
                     0,
                     requested,
                     "occurrence_overlap",
+                    displayed_depth_fraction,
                 )
             )
             continue
@@ -429,6 +432,7 @@ def evaluate_political_sizing_scenario(
                     0,
                     requested,
                     "risk_group_max_open_positions",
+                    displayed_depth_fraction,
                 )
             )
             continue
@@ -445,6 +449,7 @@ def evaluate_political_sizing_scenario(
                     0,
                     requested,
                     "max_open_positions",
+                    displayed_depth_fraction,
                 )
             )
             continue
@@ -533,6 +538,7 @@ def evaluate_political_sizing_scenario(
                         if executable == requested
                         else "capital_or_position_or_risk_group_cap"
                     ),
+                    displayed_depth_fraction,
                 )
             )
         else:
@@ -550,25 +556,14 @@ def evaluate_political_sizing_scenario(
                         and risk_group["reserved_micros"] >= risk_group_reserve_cap
                         else "capital_or_position_or_risk_group_cap"
                     ),
+                    displayed_depth_fraction,
                 )
             )
     unused_eligible_quantity = sum(
         allocation.unused_eligible_quantity for allocation in allocations
     )
     capital_rejected_micros = sum(
-        max(
-            0,
-            _requested_entry_debit(
-                evidence=next(
-                    item
-                    for item in opportunities
-                    if item.signal_id == allocation.signal_id
-                ),
-                displayed_depth_fraction=displayed_depth_fraction,
-            )
-            - allocation.capital_used_micros,
-        )
-        for allocation in allocations
+        allocation.capital_rejected_micros for allocation in allocations
     )
     utilization_cap = (
         starting_cash_micros
@@ -686,6 +681,7 @@ def _allocation(
     capital_used: int,
     unused: int,
     reason: str | None,
+    displayed_depth_fraction: Decimal,
 ) -> PoliticalSizingAllocation:
     return PoliticalSizingAllocation(
         scenario_id=scenario_id,
@@ -700,6 +696,14 @@ def _allocation(
         requested_quantity=requested,
         executable_quantity=executable,
         capital_used_micros=capital_used,
+        capital_rejected_micros=max(
+            0,
+            _requested_entry_debit(
+                evidence=evidence,
+                displayed_depth_fraction=displayed_depth_fraction,
+            )
+            - capital_used,
+        ),
         unused_eligible_quantity=unused,
         saturation_reason=reason,
     )
@@ -722,6 +726,12 @@ def _scenario_dashboard_payload(
             if report.capital_utilization_ratio is None
             else str(report.capital_utilization_ratio)
         ),
+        "event_summaries": _allocation_summaries(
+            report.allocations, group_key="event_id"
+        ),
+        "risk_group_summaries": _allocation_summaries(
+            report.allocations, group_key="risk_group_id"
+        ),
         "realized_pnl_micros": report.realized_pnl_micros,
         "open_unrealized_pnl_micros": report.open_unrealized_pnl_micros,
         "open_valuation_complete": report.open_valuation_complete,
@@ -739,6 +749,7 @@ def _scenario_dashboard_payload(
                 "requested_quantity": allocation.requested_quantity,
                 "executable_quantity": allocation.executable_quantity,
                 "capital_used_micros": allocation.capital_used_micros,
+                "capital_rejected_micros": allocation.capital_rejected_micros,
                 "unused_eligible_quantity": allocation.unused_eligible_quantity,
                 "saturation_reason": allocation.saturation_reason,
             }
@@ -761,3 +772,40 @@ def _scenario_dashboard_payload(
             for exit_ in report.exits
         ],
     }
+
+
+def _allocation_summaries(
+    allocations: Sequence[PoliticalSizingAllocation], *, group_key: str
+) -> list[dict[str, Any]]:
+    """Summarize one scenario's sealed allocations by event or risk group."""
+    summaries: dict[str, dict[str, Any]] = {}
+    for allocation in allocations:
+        key = str(getattr(allocation, group_key))
+        summary = summaries.setdefault(
+            key,
+            {
+                group_key: key,
+                "allocation_count": 0,
+                "requested_quantity": 0,
+                "executable_quantity": 0,
+                "capital_used_micros": 0,
+                "capital_rejected_micros": 0,
+                "unused_eligible_quantity": 0,
+                "saturation_reasons": set(),
+            },
+        )
+        summary["allocation_count"] += 1
+        summary["requested_quantity"] += allocation.requested_quantity
+        summary["executable_quantity"] += allocation.executable_quantity
+        summary["capital_used_micros"] += allocation.capital_used_micros
+        summary["capital_rejected_micros"] += allocation.capital_rejected_micros
+        summary["unused_eligible_quantity"] += allocation.unused_eligible_quantity
+        if allocation.saturation_reason:
+            summary["saturation_reasons"].add(allocation.saturation_reason)
+    return [
+        {
+            **summary,
+            "saturation_reasons": sorted(summary["saturation_reasons"]),
+        }
+        for _, summary in sorted(summaries.items())
+    ]

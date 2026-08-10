@@ -37,6 +37,7 @@ from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
     PoliticalSizingExitEvidence,
     PoliticalSizingOpportunity,
+    PoliticalSizingReportBundle,
     evaluate_required_political_sizing_scenarios,
     evaluate_political_sizing_scenario,
 )
@@ -189,6 +190,30 @@ def test_required_sizing_fanout_keeps_control_and_counterfactuals_separate():
     assert len(payload["counterfactuals"]) == 6
     assert "aggregate_pnl_micros" not in payload
     assert payload["control"]["realized_pnl_micros"] == 950_000
+    assert payload["control"]["event_summaries"] == [
+        {
+            "event_id": "event-a",
+            "allocation_count": 1,
+            "requested_quantity": 10,
+            "executable_quantity": 10,
+            "capital_used_micros": 4_270_000,
+            "capital_rejected_micros": 0,
+            "unused_eligible_quantity": 0,
+            "saturation_reasons": [],
+        }
+    ]
+    assert payload["control"]["risk_group_summaries"] == [
+        {
+            "risk_group_id": "milestone-a",
+            "allocation_count": 1,
+            "requested_quantity": 10,
+            "executable_quantity": 10,
+            "capital_used_micros": 4_270_000,
+            "capital_rejected_micros": 0,
+            "unused_eligible_quantity": 0,
+            "saturation_reasons": [],
+        }
+    ]
     assert payload["counterfactuals"][0]["allocations"][0] == {
         "signal_id": "signal:fanout",
         "entry_replay_sequence": 1,
@@ -201,6 +226,7 @@ def test_required_sizing_fanout_keeps_control_and_counterfactuals_separate():
         "requested_quantity": 10,
         "executable_quantity": 10,
         "capital_used_micros": 4_270_000,
+        "capital_rejected_micros": 0,
         "unused_eligible_quantity": 0,
         "saturation_reason": None,
     }
@@ -301,6 +327,24 @@ def test_read_only_sizing_enforces_typed_correlated_risk_group_caps():
 
     assert [item.executable_quantity for item in report.allocations] == [10, 10, 0]
     assert report.allocations[-1].saturation_reason == "risk_group_max_open_positions"
+    payload = PoliticalSizingReportBundle(
+        evidence_cohort_id="evidence:risk-group",
+        read_only_not_realized=True,
+        control=report,
+        counterfactuals=(),
+    ).dashboard_payload()
+    assert payload["control"]["risk_group_summaries"] == [
+        {
+            "risk_group_id": "trump-aug-10",
+            "allocation_count": 3,
+            "requested_quantity": 30,
+            "executable_quantity": 20,
+            "capital_used_micros": 8_540_000,
+            "capital_rejected_micros": 4_270_000,
+            "unused_eligible_quantity": 10,
+            "saturation_reasons": ["risk_group_max_open_positions"],
+        }
+    ]
 
 
 def test_read_only_sizing_enforces_correlated_risk_group_reserve_cap():
