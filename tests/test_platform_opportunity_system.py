@@ -240,6 +240,114 @@ def test_read_only_sizing_enforces_occurrence_overlap_without_changing_evidence(
         "signal:second",
     ]
     assert report.allocations[1].saturation_reason == "occurrence_overlap"
+
+
+def test_read_only_sizing_enforces_typed_correlated_risk_group_caps():
+    """Two Trump occurrences cannot consume all slots in one scenario group."""
+    first = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:risk-group",
+        signal_id="signal:first",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:first",
+        event_id="trump-says",
+        milestone_id="milestone-says",
+        contract_id="contract-says",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+        risk_group_id="trump-aug-10",
+    )
+    second = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:risk-group",
+        signal_id="signal:second",
+        entry_replay_sequence=2,
+        entry_replay_hash="hash:second",
+        event_id="trump-mentions",
+        milestone_id="milestone-mentions",
+        contract_id="contract-mentions",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+        risk_group_id="trump-aug-10",
+    )
+    third = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:risk-group",
+        signal_id="signal:third",
+        entry_replay_sequence=3,
+        entry_replay_hash="hash:third",
+        event_id="trump-approval",
+        milestone_id="milestone-approval",
+        contract_id="contract-approval",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+        risk_group_id="trump-aug-10",
+    )
+
+    report = evaluate_political_sizing_scenario(
+        scenario=required_political_sizing_scenarios()[0],
+        opportunities=(first, second, third),
+        starting_cash_micros=1_000_000_000,
+    )
+
+    assert [item.executable_quantity for item in report.allocations] == [10, 10, 0]
+    assert report.allocations[-1].saturation_reason == "risk_group_max_open_positions"
+
+
+def test_read_only_sizing_enforces_correlated_risk_group_reserve_cap():
+    """A group reserve cap limits size even when portfolio capacity remains."""
+    first = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:risk-reserve",
+        signal_id="signal:first",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:first",
+        event_id="trump-says",
+        milestone_id="milestone-says",
+        contract_id="contract-says",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+        risk_group_id="trump-aug-10",
+    )
+    second = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:risk-reserve",
+        signal_id="signal:second",
+        entry_replay_sequence=2,
+        entry_replay_hash="hash:second",
+        event_id="trump-mentions",
+        milestone_id="milestone-mentions",
+        contract_id="contract-mentions",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+        risk_group_id="trump-aug-10",
+    )
+    scenario = required_political_sizing_scenarios()[0]
+    scenario = type(scenario)(
+        name="test_risk_reserve",
+        position_cap=Decimal("25"),
+        total_reserved_cap=Decimal("100"),
+        max_open_positions=4,
+        risk_label="counterfactual",
+        risk_group_reserved_cap=Decimal("5"),
+        max_open_positions_per_risk_group=4,
+    )
+
+    report = evaluate_political_sizing_scenario(
+        scenario=scenario,
+        opportunities=(first, second),
+        starting_cash_micros=1_000_000_000,
+    )
+
+    assert [item.executable_quantity for item in report.allocations] == [10, 1]
+    assert report.allocations[-1].saturation_reason == (
+        "capital_or_position_or_risk_group_cap"
+    )
     assert second.entry_replay_hash == "hash:second"
 
 

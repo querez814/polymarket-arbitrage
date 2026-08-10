@@ -46,6 +46,7 @@ class PoliticalSizingOpportunity:
     side: str
     fee_schedule: Mapping[str, Any]
     levels: tuple[PoliticalSizingDepthLevel, ...]
+    risk_group_id: str | None = None
 
     def __post_init__(self) -> None:
         if not all(
@@ -68,6 +69,15 @@ class PoliticalSizingOpportunity:
             raise ValueError("political sizing side must be yes or no")
         if not self.levels:
             raise ValueError("political sizing opportunity requires persisted levels")
+        if self.risk_group_id is not None and not self.risk_group_id.strip():
+            raise ValueError(
+                "political sizing risk group must be non-empty when present"
+            )
+
+    @property
+    def effective_risk_group_id(self) -> str:
+        """Use reviewed occurrence identity unless explicit correlated evidence exists."""
+        return self.risk_group_id or self.milestone_id
 
 
 @dataclass(frozen=True)
@@ -229,6 +239,7 @@ def evaluate_political_sizing_scenario(
     reserved_micros = 0
     open_contracts: set[str] = set()
     open_occurrences: set[tuple[str, str]] = set()
+    open_risk_groups: dict[str, dict[str, int]] = {}
     open_positions: dict[str, dict[str, int | str]] = {}
     allocations: list[PoliticalSizingAllocation] = []
     exits: list[PoliticalSizingExit] = []
@@ -318,6 +329,15 @@ def evaluate_political_sizing_scenario(
                         (str(position["milestone_id"]), str(position["base_lane"]))
                     )
                     del open_positions[evidence.contract_id]
+                    risk_group = str(position["risk_group_id"])
+                    group = open_risk_groups[risk_group]
+                    group["open_positions"] -= 1
+                    group["reserved_micros"] -= released
+                    if group["open_positions"] == 0:
+                        del open_risk_groups[risk_group]
+                else:
+                    risk_group = str(position["risk_group_id"])
+                    open_risk_groups[risk_group]["reserved_micros"] -= released
                 exits.append(
                     PoliticalSizingExit(
                         contract_id=evidence.contract_id,
@@ -373,6 +393,7 @@ def evaluate_political_sizing_scenario(
             )
             continue
         occurrence = (evidence.milestone_id, evidence.base_lane)
+        risk_group_id = evidence.effective_risk_group_id
         if occurrence in open_occurrences:
             allocations.append(
                 _allocation(
@@ -383,6 +404,26 @@ def evaluate_political_sizing_scenario(
                     0,
                     requested,
                     "occurrence_overlap",
+                )
+            )
+            continue
+        risk_group = open_risk_groups.get(
+            risk_group_id, {"open_positions": 0, "reserved_micros": 0}
+        )
+        if (
+            scenario.max_open_positions_per_risk_group is not None
+            and risk_group["open_positions"]
+            >= scenario.max_open_positions_per_risk_group
+        ):
+            allocations.append(
+                _allocation(
+                    scenario_id,
+                    evidence,
+                    requested,
+                    0,
+                    0,
+                    requested,
+                    "risk_group_max_open_positions",
                 )
             )
             continue
@@ -412,12 +453,22 @@ def evaluate_political_sizing_scenario(
             if scenario.total_reserved_cap is None
             else int(scenario.total_reserved_cap * Decimal("1000000"))
         )
+        risk_group_reserve_cap = (
+            None
+            if scenario.risk_group_reserved_cap is None
+            else int(scenario.risk_group_reserved_cap * Decimal("1000000"))
+        )
         remaining = min(
             starting_cash_micros - reserved_micros,
             position_cap if position_cap is not None else starting_cash_micros,
             (
                 reserve_cap - reserved_micros
                 if reserve_cap is not None
+                else starting_cash_micros
+            ),
+            (
+                risk_group_reserve_cap - risk_group["reserved_micros"]
+                if risk_group_reserve_cap is not None
                 else starting_cash_micros
             ),
         )
@@ -458,6 +509,11 @@ def evaluate_political_sizing_scenario(
                 "basis_micros": debit,
                 "milestone_id": evidence.milestone_id,
                 "base_lane": evidence.base_lane,
+                "risk_group_id": risk_group_id,
+            }
+            open_risk_groups[risk_group_id] = {
+                "open_positions": risk_group["open_positions"] + 1,
+                "reserved_micros": risk_group["reserved_micros"] + debit,
             }
             allocations.append(
                 _allocation(
@@ -467,7 +523,11 @@ def evaluate_political_sizing_scenario(
                     executable,
                     debit,
                     requested - executable,
-                    None if executable == requested else "capital_or_position_cap",
+                    (
+                        None
+                        if executable == requested
+                        else "capital_or_position_or_risk_group_cap"
+                    ),
                 )
             )
         else:
@@ -479,7 +539,12 @@ def evaluate_political_sizing_scenario(
                     0,
                     0,
                     requested,
-                    "capital_or_position_cap",
+                    (
+                        "risk_group_reserve_cap"
+                        if risk_group_reserve_cap is not None
+                        and risk_group["reserved_micros"] >= risk_group_reserve_cap
+                        else "capital_or_position_or_risk_group_cap"
+                    ),
                 )
             )
     unused_eligible_quantity = sum(
