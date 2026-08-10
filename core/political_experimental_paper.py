@@ -592,6 +592,49 @@ class PoliticalExperimentalPaperLedger:
             raise ValueError("immutable political paper entry policy is invalid")
         return total_reserved, position_reserved, max_open_positions, depth_fraction
 
+    def _risk_group_limit(
+        self, *, event_id: str
+    ) -> tuple[str, tuple[str, ...], int, int] | None:
+        """Resolve one reviewed-event group from the immutable control policy.
+
+        Group configuration is deliberately interpreted at the ledger boundary
+        before the short allocator transaction.  Invalid or overlapping bound
+        policy fails closed instead of silently relaxing correlated exposure.
+        """
+        policy = self.store.political_experimental_paper_policy(
+            cohort_id=self.cohort_id
+        )["policy"]
+        raw_groups = policy.get("reviewed_risk_groups", [])
+        if not isinstance(raw_groups, list):
+            raise ValueError("immutable political paper risk groups are invalid")
+        matches: list[tuple[str, tuple[str, ...], int, int]] = []
+        for raw_group in raw_groups:
+            if not isinstance(raw_group, dict):
+                raise ValueError("immutable political paper risk groups are invalid")
+            group_id = raw_group.get("risk_group_id")
+            event_ids = raw_group.get("reviewed_event_ids")
+            reserve_cap = raw_group.get("max_total_reserved_micros")
+            max_positions = raw_group.get("max_open_positions")
+            if (
+                not isinstance(group_id, str)
+                or not group_id
+                or not isinstance(event_ids, list)
+                or not event_ids
+                or any(not isinstance(item, str) or not item for item in event_ids)
+                or not isinstance(reserve_cap, int)
+                or isinstance(reserve_cap, bool)
+                or reserve_cap <= 0
+                or not isinstance(max_positions, int)
+                or isinstance(max_positions, bool)
+                or max_positions <= 0
+            ):
+                raise ValueError("immutable political paper risk groups are invalid")
+            if event_id in event_ids:
+                matches.append((group_id, tuple(event_ids), reserve_cap, max_positions))
+        if len(matches) > 1:
+            raise ValueError("reviewed event belongs to multiple paper risk groups")
+        return matches[0] if matches else None
+
     def _exit_limits(self) -> tuple[Decimal, Decimal]:
         """Load immutable hold and displayed-depth limits for paper exits.
 
@@ -839,6 +882,7 @@ class PoliticalExperimentalPaperLedger:
             levels=level_economics, direction="entry"
         )
         debit_micros = -balance_change_micros
+        risk_group = self._risk_group_limit(event_id=str(signal["event_id"]))
         return self.store._resolve_political_experimental_pending_signal(
             cohort_id=self.cohort_id,
             signal_id=signal_id,
@@ -849,6 +893,12 @@ class PoliticalExperimentalPaperLedger:
             max_total_reserved_micros=max_total_reserved_micros,
             max_position_reserved_micros=max_position_reserved_micros,
             max_open_positions=max_open_positions,
+            risk_group_id=None if risk_group is None else risk_group[0],
+            risk_group_event_ids=() if risk_group is None else risk_group[1],
+            risk_group_max_reserved_micros=(
+                None if risk_group is None else risk_group[2]
+            ),
+            risk_group_max_open_positions=None if risk_group is None else risk_group[3],
             economics={
                 "levels": levels,
                 "unconsumed_levels": unconsumed_levels,

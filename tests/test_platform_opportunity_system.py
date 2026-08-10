@@ -1482,6 +1482,7 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
             "realized_pnl_micros": 950_000,
         },
         "open_positions": [],
+        "risk_group_exposure": [],
         "valuation_complete": True,
         "counts": {
             "signals": 1,
@@ -2648,6 +2649,94 @@ def test_political_paper_scopes_base_lane_overlap_to_the_exact_occurrence(tmp_pa
         )["outcome"]
         == "filled"
     )
+
+
+def test_political_paper_enforces_bound_reviewed_risk_group_caps(tmp_path):
+    """Correlated reviewed events cannot consume the whole control envelope."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:risk")
+    ledger.initialize(
+        starting_cash_micros=1_000_000_000,
+        initialized_at=NOW,
+        policy={
+            "max_total_reserved_micros": 100_000_000,
+            "max_position_reserved_micros": 25_000_000,
+            "max_open_positions": 4,
+            "entry_depth_fraction": "0.10",
+            "reviewed_risk_groups": [
+                {
+                    "risk_group_id": "trump-aug-10",
+                    "reviewed_event_ids": ["event:trump-say", "event:trump-mention"],
+                    "max_total_reserved_micros": 50_000_000,
+                    "max_open_positions": 1,
+                }
+            ],
+        },
+    )
+    book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.50, 100]], "asks": [[0.40, 100]]},
+        "no": {"bids": [[0.59, 100]], "asks": [[0.60, 100]]},
+    }
+
+    def fill(event_id: str, contract_id: str, sequence_offset: int) -> dict:
+        source_at = NOW + timedelta(seconds=sequence_offset)
+        source = store.record_replay_observation(
+            cohort_id="cohort:risk",
+            contract_id=contract_id,
+            normalized_book=book,
+            fee_schedule=_authoritative_kalshi_fee(),
+            lock_phase="hot",
+            observed_at=source_at,
+            request_started_at=source_at,
+            received_at=source_at + timedelta(milliseconds=100),
+        )
+        signal_id = f"signal:{contract_id}"
+        assert ledger.record_pending_signal(
+            signal_id=signal_id,
+            replay_sequence=source["event"]["sequence"],
+            event_id=event_id,
+            milestone_id=f"milestone:{contract_id}",
+            contract_id=contract_id,
+            side="yes",
+            base_lane="hot_pre_event",
+            phase="hot",
+            signal_request_started_at=source_at,
+            signal_received_at=source_at + timedelta(milliseconds=100),
+            expires_at=source_at + timedelta(seconds=10),
+            model_version="depth-imbalance-reaction-experimental-v1",
+            config_hash="config-hash",
+            state_hash=source["state_hash"],
+            fee_hash=source["fee_hash"],
+            features={},
+        )
+        later = store.record_replay_observation(
+            cohort_id="cohort:risk",
+            contract_id=contract_id,
+            normalized_book=book,
+            fee_schedule=_authoritative_kalshi_fee(),
+            lock_phase="hot",
+            observed_at=source_at + timedelta(seconds=1),
+            request_started_at=source_at + timedelta(milliseconds=101),
+            received_at=source_at + timedelta(seconds=1),
+        )
+        return ledger._resolve_pending_signal(
+            signal_id=signal_id, replay_sequence=later["event"]["sequence"]
+        )
+
+    assert fill("event:trump-say", "kalshi:KXSAY", 0)["outcome"] == "filled"
+    blocked = fill("event:trump-mention", "kalshi:KXMENTION", 2)
+    assert blocked["outcome"] == "no_fill"
+    assert blocked["reason"] == "risk_group_max_open_positions"
+    position = store.political_experimental_positions(cohort_id="cohort:risk")[0]
+    assert position["risk_group_id"] == "trump-aug-10"
+    assert ledger.snapshot()["risk_group_exposure"] == [
+        {
+            "risk_group_id": "trump-aug-10",
+            "open_positions": 1,
+            "reserved_micros": position["cost_basis_micros"],
+        }
+    ]
 
 
 def test_political_paper_records_a_missing_pending_signal_as_a_durable_no_fill(

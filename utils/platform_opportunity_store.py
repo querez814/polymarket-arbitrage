@@ -337,6 +337,7 @@ class PlatformOpportunityStore:
                     replay_sequence INTEGER NOT NULL CHECK(replay_sequence > 0),
                     event_id TEXT NOT NULL,
                     milestone_id TEXT NOT NULL,
+                    risk_group_id TEXT,
                     contract_id TEXT NOT NULL,
                     side TEXT NOT NULL CHECK(side IN ('yes', 'no')),
                     base_lane TEXT NOT NULL,
@@ -541,6 +542,14 @@ class PlatformOpportunityStore:
                 self._connection.execute(
                     "ALTER TABLE political_experimental_positions "
                     "ADD COLUMN liquidation_trigger TEXT"
+                )
+            if "risk_group_id" not in position_columns:
+                # Risk-group membership is sealed at the authoritative entry
+                # transition.  Do not derive it later from mutable YAML when
+                # reporting or enforcing correlated exposure after restart.
+                self._connection.execute(
+                    "ALTER TABLE political_experimental_positions "
+                    "ADD COLUMN risk_group_id TEXT"
                 )
             account_columns = {
                 str(row["name"])
@@ -1339,7 +1348,7 @@ class PlatformOpportunityStore:
         """Return the remaining open positions; closed state remains in events."""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT position_id, signal_id, event_id, milestone_id, contract_id, base_lane, side, "
+                "SELECT position_id, signal_id, event_id, milestone_id, risk_group_id, contract_id, base_lane, side, "
                 "quantity, cost_basis_micros, opened_at, liquidation_trigger "
                 "FROM political_experimental_positions "
                 "WHERE cohort_id = ? ORDER BY opened_at, position_id",
@@ -1375,7 +1384,7 @@ class PlatformOpportunityStore:
                     )
                 account = {key: int(account_row[key]) for key in account_row.keys()}
                 positions = connection.execute(
-                    "SELECT position_id, signal_id, event_id, milestone_id, contract_id, base_lane, "
+                    "SELECT position_id, signal_id, event_id, milestone_id, risk_group_id, contract_id, base_lane, "
                     "side, quantity, cost_basis_micros, opened_at, liquidation_trigger, "
                     "NOT EXISTS ("
                     "SELECT 1 FROM political_experimental_exit_attempts AS latest "
@@ -1400,6 +1409,14 @@ class PlatformOpportunityStore:
                     }
                     for row in positions
                 ]
+                risk_group_rows = connection.execute(
+                    "SELECT risk_group_id, COUNT(*) AS open_positions, "
+                    "COALESCE(SUM(cost_basis_micros), 0) AS reserved_micros "
+                    "FROM political_experimental_positions "
+                    "WHERE cohort_id = ? AND risk_group_id IS NOT NULL "
+                    "GROUP BY risk_group_id ORDER BY risk_group_id",
+                    (cohort_id,),
+                ).fetchall()
                 signal_counts = connection.execute(
                     "SELECT COUNT(*) AS signals, "
                     "SUM(CASE WHEN f.signal_id IS NULL THEN 1 ELSE 0 END) AS pending, "
@@ -1444,6 +1461,14 @@ class PlatformOpportunityStore:
         return {
             "account": account,
             "open_positions": open_positions,
+            "risk_group_exposure": [
+                {
+                    "risk_group_id": str(row["risk_group_id"]),
+                    "open_positions": int(row["open_positions"]),
+                    "reserved_micros": int(row["reserved_micros"]),
+                }
+                for row in risk_group_rows
+            ],
             "valuation_complete": all(
                 bool(position["valuation_complete"]) for position in open_positions
             ),
@@ -1766,6 +1791,10 @@ class PlatformOpportunityStore:
         max_position_reserved_micros: int,
         max_open_positions: int,
         economics: dict[str, Any],
+        risk_group_id: str | None = None,
+        risk_group_event_ids: tuple[str, ...] = (),
+        risk_group_max_reserved_micros: int | None = None,
+        risk_group_max_open_positions: int | None = None,
     ) -> dict[str, Any]:
         """Consume one signal only from a strictly later causal replay event.
 
@@ -1789,6 +1818,23 @@ class PlatformOpportunityStore:
             <= 0
         ):
             raise ValueError("political paper limits must be positive")
+        if risk_group_id is None:
+            if (
+                risk_group_event_ids
+                or risk_group_max_reserved_micros is not None
+                or risk_group_max_open_positions is not None
+            ):
+                raise ValueError("political paper risk-group limits are invalid")
+        elif (
+            not risk_group_id
+            or not risk_group_event_ids
+            or any(not event_id for event_id in risk_group_event_ids)
+            or risk_group_max_reserved_micros is None
+            or risk_group_max_reserved_micros <= 0
+            or risk_group_max_open_positions is None
+            or risk_group_max_open_positions <= 0
+        ):
+            raise ValueError("political paper risk-group limits are invalid")
         attempted_iso = _utc_iso(attempted_at)
         with self._lock:
             connection = self._connection
@@ -1959,6 +2005,19 @@ class PlatformOpportunityStore:
                     "WHERE cohort_id = ? AND milestone_id = ? AND base_lane = ?",
                     (cohort_id, signal["milestone_id"], signal["base_lane"]),
                 ).fetchone()
+                risk_group_reserved = 0
+                risk_group_open_count = 0
+                if risk_group_id is not None:
+                    placeholders = ", ".join("?" for _ in risk_group_event_ids)
+                    risk_group_row = connection.execute(
+                        "SELECT COUNT(*) AS open_count, "
+                        "COALESCE(SUM(cost_basis_micros), 0) AS reserved_micros "
+                        "FROM political_experimental_positions "
+                        f"WHERE cohort_id = ? AND event_id IN ({placeholders})",
+                        (cohort_id, *risk_group_event_ids),
+                    ).fetchone()
+                    risk_group_open_count = int(risk_group_row["open_count"])
+                    risk_group_reserved = int(risk_group_row["reserved_micros"])
                 if debit_micros > max_position_reserved_micros:
                     reason = "per_position_reserved_cap"
                 elif (
@@ -1974,6 +2033,14 @@ class PlatformOpportunityStore:
                     reason = "contract_overlap"
                 elif lane_position is not None:
                     reason = "base_lane_overlap"
+                elif risk_group_id is not None and (
+                    risk_group_open_count >= risk_group_max_open_positions
+                ):
+                    reason = "risk_group_max_open_positions"
+                elif risk_group_id is not None and (
+                    risk_group_reserved + debit_micros > risk_group_max_reserved_micros
+                ):
+                    reason = "risk_group_total_reserved_cap"
                 if reason is not None:
                     connection.execute(
                         "INSERT INTO political_experimental_fill_attempts "
@@ -1998,13 +2065,14 @@ class PlatformOpportunityStore:
                 reserved = int(account["reserved_micros"]) + debit_micros
                 position_id = f"position:{signal_id}"
                 connection.execute(
-                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, event_id, milestone_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO political_experimental_positions (position_id, cohort_id, signal_id, event_id, milestone_id, risk_group_id, contract_id, base_lane, side, quantity, cost_basis_micros, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         position_id,
                         cohort_id,
                         signal_id,
                         signal["event_id"],
                         signal["milestone_id"],
+                        risk_group_id,
                         signal["contract_id"],
                         signal["base_lane"],
                         signal["side"],
