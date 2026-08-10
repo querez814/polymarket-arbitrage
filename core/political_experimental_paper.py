@@ -63,6 +63,14 @@ def _price(value: str | Decimal) -> Decimal:
     return price
 
 
+def _is_contract_bound_price_error(exc: BaseException) -> bool:
+    """Return True for ordinary out-of-bounds paper quotes, not unexpected bugs."""
+    message = str(exc)
+    return "outside contract bounds" in message or (
+        "strictly between zero and one" in message
+    )
+
+
 def _format_decimal(value: Decimal) -> str:
     rendered = format(value, "f").rstrip("0").rstrip(".")
     return rendered or "0"
@@ -463,11 +471,19 @@ class PoliticalExperimentalPaperLedger:
         token = book.get(str(position["side"]))
         bids = token.get("bids", []) if isinstance(token, dict) else []
         if bids:
-            top_exit = self.exit_economics(
-                quantity=1,
-                displayed_bid=str(bids[0][0]),
-                fee_schedule=fee_schedule,
-            )
+            try:
+                top_exit = self.exit_economics(
+                    quantity=1,
+                    displayed_bid=str(bids[0][0]),
+                    fee_schedule=fee_schedule,
+                )
+            except ValueError as exc:
+                # A one-cent bid cannot absorb one-cent adversity.  That is an
+                # ordinary unusable top-of-book for paper exits, not a worker
+                # failure: treat it as the frozen hard-stop condition.
+                if not _is_contract_bound_price_error(exc):
+                    raise
+                return "hard_stop_net_return_minus_0.05"
             basis_per_contract = Decimal(str(position["cost_basis_micros"])) / (
                 Decimal(str(position["quantity"])) * _MICROS_PER_DOLLAR
             )
@@ -988,6 +1004,7 @@ class PoliticalExperimentalPaperLedger:
             )
         remaining = int(position["quantity"])
         level_economics: list[tuple[str, PoliticalPaperTradeEconomics]] = []
+        adverse_slippage_blocked = False
         for price, displayed_size in bids:
             quantity = min(
                 remaining,
@@ -995,11 +1012,21 @@ class PoliticalExperimentalPaperLedger:
             )
             if quantity <= 0:
                 continue
-            economics = self.exit_economics(
-                quantity=quantity,
-                displayed_bid=str(price),
-                fee_schedule=fee_schedule,
-            )
+            try:
+                economics = self.exit_economics(
+                    quantity=quantity,
+                    displayed_bid=str(price),
+                    fee_schedule=fee_schedule,
+                )
+            except ValueError as exc:
+                # Bid at one cent (or otherwise unable to absorb one-cent
+                # adversity) is a normal thin-book condition.  Stop the IOC
+                # walk without inventing a boundary fill; keep any already
+                # quoted better levels as a partial exit.
+                if not _is_contract_bound_price_error(exc):
+                    raise
+                adverse_slippage_blocked = True
+                break
             level_economics.append((str(price), economics))
             remaining -= quantity
             if remaining == 0:
@@ -1010,7 +1037,11 @@ class PoliticalExperimentalPaperLedger:
                 position_id=position_id,
                 replay_sequence=replay_sequence,
                 attempted_at=received_at,
-                reason="fractional_or_zero_executable_depth",
+                reason=(
+                    "adverse_slippage_outside_bounds"
+                    if adverse_slippage_blocked
+                    else "fractional_or_zero_executable_depth"
+                ),
                 trigger=trigger,
             )
         quantity = sum(item.quantity for _, item in level_economics)

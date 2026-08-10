@@ -2306,6 +2306,137 @@ def test_forced_exit_inside_minimum_hold_is_durable_and_retries_later(tmp_path):
     )
 
 
+
+def test_thin_book_one_cent_bid_exit_is_durable_partial_or_no_exit_not_dead_letter(tmp_path):
+    """Overnight shape: depth-fraction walk reaches a 1c bid and must not crash.
+
+    Real KXTRUMPSAY books often quote usable 2c–5c levels above a large 1c
+    resting size.  One-cent adversity on that 1c level is outside (0, 1), which
+    previously raised ValueError into processing_failed dead-letters with zero
+    exit attempts.  Policy is fail-closed: keep IOC fills above the bound and
+    record a named no_exit when nothing is quotable — never invent a 0c fill.
+    """
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:1c-exit")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    entry_book = {
+        "schema_version": 1,
+        "yes": {"bids": [[0.05, 5000]], "asks": [[0.06, 5000]]},
+        "no": {"bids": [[0.93, 100]], "asks": [[0.94, 100]]},
+    }
+    # Overnight-shaped exit book: thin upper levels force the 10% depth walk
+    # into the 1c bid once remaining size exceeds usable 2c–5c depth.
+    exit_book = {
+        "schema_version": 1,
+        "yes": {
+            "bids": [
+                [0.04, 65.73],
+                [0.03, 284.37],
+                [0.02, 308.0],
+                [0.01, 4177.6],
+            ],
+            "asks": [[0.06, 18.58], [0.07, 233.91]],
+        },
+        "no": {"bids": [[0.93, 100]], "asks": [[0.96, 100]]},
+    }
+    source = store.record_replay_observation(
+        cohort_id="cohort:1c-exit",
+        contract_id="kalshi:KX1CEXIT",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW,
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+    )
+    assert ledger.record_pending_signal(
+        signal_id="signal:1c-exit",
+        replay_sequence=source["event"]["sequence"],
+        event_id="event-1c-exit",
+        milestone_id="milestone-1c-exit",
+        contract_id="kalshi:KX1CEXIT",
+        side="yes",
+        base_lane="hot_pre_event",
+        phase="hot",
+        signal_request_started_at=NOW,
+        signal_received_at=NOW + timedelta(milliseconds=100),
+        expires_at=NOW + timedelta(seconds=30),
+        model_version="depth-imbalance-reaction-experimental-v1",
+        config_hash="config-hash",
+        state_hash=source["state_hash"],
+        fee_hash=source["fee_hash"],
+        features={"imbalance": 0.4},
+    )
+    fill = store.record_replay_observation(
+        cohort_id="cohort:1c-exit",
+        contract_id="kalshi:KX1CEXIT",
+        normalized_book=entry_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=1),
+        request_started_at=NOW + timedelta(milliseconds=101),
+        received_at=NOW + timedelta(seconds=1),
+    )
+    filled = ledger.process_observation(replay_sequence=fill["event"]["sequence"])[0]
+    assert filled["outcome"] == "filled"
+    opened_qty = int(ledger.snapshot()["open_positions"][0]["quantity"])
+    assert opened_qty >= 200  # need a walk that reaches the 1c level
+
+    # Direct unit shape: 1c adversity on a 1c bid still refuses to invent a fill.
+    with pytest.raises(ValueError, match="adverse-slippage price is outside contract bounds"):
+        ledger.exit_economics(
+            quantity=1,
+            displayed_bid="0.01",
+            fee_schedule=_authoritative_kalshi_fee(),
+        )
+
+    hostile = store.record_replay_observation(
+        cohort_id="cohort:1c-exit",
+        contract_id="kalshi:KX1CEXIT",
+        normalized_book=exit_book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=4),
+        request_started_at=NOW + timedelta(seconds=3),
+        received_at=NOW + timedelta(seconds=4),
+    )
+    [exit_result] = ledger.process_observation(
+        replay_sequence=hostile["event"]["sequence"]
+    )
+    assert exit_result["outcome"] in {"partial", "no_exit"}
+    if exit_result["outcome"] == "no_exit":
+        assert exit_result["reason"] == "adverse_slippage_outside_bounds"
+    else:
+        # Usable 2c–5c depth may IOC-partial; remainder stays open and latched.
+        assert exit_result["outcome"] == "partial"
+        [remaining] = ledger.snapshot()["open_positions"]
+        assert int(remaining["quantity"]) < opened_qty
+        assert remaining["liquidation_trigger"] == "hard_stop_net_return_minus_0.05"
+    # One-cent-only book: nothing quotable after adversity → durable no_exit.
+    penny_only = store.record_replay_observation(
+        cohort_id="cohort:1c-exit",
+        contract_id="kalshi:KX1CEXIT",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.01, 50000]], "asks": [[0.06, 10]]},
+            "no": {"bids": [[0.93, 100]], "asks": [[0.99, 100]]},
+        },
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=7),
+        request_started_at=NOW + timedelta(seconds=6),
+        received_at=NOW + timedelta(seconds=7),
+    )
+    if ledger.snapshot()["counts"]["open"] == 0:
+        return
+    [penny_exit] = ledger.process_observation(
+        replay_sequence=penny_only["event"]["sequence"]
+    )
+    assert penny_exit["outcome"] == "no_exit"
+    assert penny_exit["reason"] == "adverse_slippage_outside_bounds"
+    assert ledger.snapshot()["counts"]["open"] == 1
+
+
 def test_forced_exit_with_stale_evidence_is_durable_no_exit_and_stays_latched(tmp_path):
     """A failed forced valuation cannot hide an open position or clear its trigger."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
