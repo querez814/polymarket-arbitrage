@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 import asyncio
 
@@ -31,7 +32,11 @@ from core.production_runtime import ProductionArbitrageRuntime
 from core.execution_journal import ExecutionJournal
 from core.operations import PersistentOperatorControls
 from dashboard.server import dashboard_state
-from utils.config_loader import BotConfig, PoliticalPaperRiskGroupConfig
+from utils.config_loader import (
+    BotConfig,
+    PoliticalPaperRiskGroupConfig,
+    load_config,
+)
 from utils.platform_opportunity_store import PlatformOpportunityStore
 from utils.task_supervision import RestartingTaskSupervisor
 from polymarket_client.models import (
@@ -1517,22 +1522,16 @@ async def test_mandatory_targets_override_ordinary_rows_and_missing_target_canno
 async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_safe(
     tmp_path, monkeypatch
 ):
-    """Exercise the real catalog boundary without network, runtime startup, or orders."""
+    """The shipped political-v2 YAML drives a no-network, no-order funnel."""
     start = datetime(2026, 8, 10, 22, 30, tzinfo=timezone.utc)
     end = datetime(2026, 8, 10, 23, 15, tzinfo=timezone.utc)
-    config = BotConfig()
-    config.mode.cross_platform_enabled = False
-    config.mode.cross_platform_execution_enabled = False
-    config.mode.semantic_matching_enabled = False
-    config.platform_opportunity.reviewed_pinned_event_ids = [
-        "kalshi:KXTRUMPMENTION-26AUG10"
-    ]
+    config = load_config(
+        str(Path(__file__).parents[1] / "config.paper.political-v2.yaml")
+    )
     config.platform_opportunity.catalog_path = str(tmp_path / "catalog.db")
-    config.platform_opportunity.political_max_events = 1
-    config.platform_opportunity.political_max_contracts_per_event = 6
-    config.platform_opportunity.political_warm_before_hours = 24
-    config.platform_opportunity.political_hot_before_minutes = 60
-    config.platform_opportunity.political_cooldown_after_hours = 2
+    config.monitoring.paper_trade_db_path = str(tmp_path / "paper.db")
+    config.production.execution_journal_path = str(tmp_path / "journal.sqlite3")
+    config.production.operator_state_path = str(tmp_path / "operator.sqlite3")
     watch_policy = PoliticalWatchPolicy(
         max_events=config.platform_opportunity.political_max_events,
         max_contracts_per_event=(
@@ -1702,7 +1701,11 @@ async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_
     assert client.target_calls == [
         {
             "status": None,
-            "tickers": ("KXTRUMPMENTION-26AUG10",),
+            "tickers": (
+                "KXTRUMPMENTION-26AUG10",
+                "KXTRUMPSAY-26AUG10",
+                "KXSCRSENS-26",
+            ),
             "with_nested_markets": True,
             "with_milestones": True,
             "max_pages": 2,
