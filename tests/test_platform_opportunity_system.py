@@ -463,6 +463,72 @@ def test_read_only_sizing_applies_sealed_exit_evidence_without_store_mutation(tm
     )
 
 
+
+def test_read_only_sizing_one_cent_exit_level_is_saturation_not_crash():
+    """CF panes must survive the overnight 1c adverse-slippage book shape."""
+    entry = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:1c-exit",
+        signal_id="signal:1c-exit",
+        entry_replay_sequence=1,
+        entry_replay_hash="hash:entry-1c",
+        event_id="event-1c",
+        milestone_id="milestone-1c",
+        contract_id="contract-1c",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.06", Decimal("5000")),),
+    )
+    exit_evidence = PoliticalSizingExitEvidence(
+        evidence_cohort_id="evidence:1c-exit",
+        contract_id="contract-1c",
+        exit_replay_sequence=3,
+        exit_replay_hash="hash:exit-1c",
+        trigger="hard_stop_net_return_minus_0.05",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(
+            PoliticalSizingDepthLevel("0.04", Decimal("65.73")),
+            PoliticalSizingDepthLevel("0.03", Decimal("284.37")),
+            PoliticalSizingDepthLevel("0.02", Decimal("308.0")),
+            PoliticalSizingDepthLevel("0.01", Decimal("4177.6")),
+        ),
+    )
+
+    report = evaluate_political_sizing_scenario(
+        scenario=required_political_sizing_scenarios()[0],
+        opportunities=(entry,),
+        exit_evidence=(exit_evidence,),
+        starting_cash_micros=1_000_000_000,
+        displayed_depth_fraction=Decimal("0.10"),
+    )
+
+    assert report.exits, "exit attempt must be recorded"
+    exit_row = report.exits[0]
+    assert exit_row.executable_quantity > 0
+    assert exit_row.saturation_reason in {None, "insufficient_exit_depth"}
+    # Direct 1c-only book: durable saturation, not an exception.
+    penny = PoliticalSizingExitEvidence(
+        evidence_cohort_id="evidence:1c-exit",
+        contract_id="contract-1c",
+        exit_replay_sequence=4,
+        exit_replay_hash="hash:exit-penny",
+        trigger="hard_stop_net_return_minus_0.05",
+        fee_schedule=_authoritative_kalshi_fee(),
+        levels=(PoliticalSizingDepthLevel("0.01", Decimal("50000")),),
+    )
+    # Re-open via a fresh scenario evaluation that still has the position
+    # only if the first exit was partial; otherwise use entry+penny alone.
+    report_penny = evaluate_political_sizing_scenario(
+        scenario=required_political_sizing_scenarios()[0],
+        opportunities=(entry,),
+        exit_evidence=(penny,),
+        starting_cash_micros=1_000_000_000,
+        displayed_depth_fraction=Decimal("0.10"),
+    )
+    assert report_penny.exits[0].executable_quantity == 0
+    assert report_penny.exits[0].saturation_reason == "adverse_slippage_outside_bounds"
+
+
 def test_read_only_sizing_reports_cap_rejection_and_unused_eligible_depth():
     """A cap-limited scenario distinguishes unallocated depth from used capital."""
     opportunity = PoliticalSizingOpportunity(

@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, Mapping, Sequence, TypedDict
 
-from core.political_experimental_paper import PoliticalExperimentalPaperLedger
+from core.political_experimental_paper import (
+    PoliticalExperimentalPaperLedger,
+    _is_contract_bound_price_error,
+)
 from core.political_sizing_scenarios import (
     PoliticalSizingScenario,
     required_political_sizing_scenarios,
@@ -354,6 +357,7 @@ def evaluate_political_sizing_scenario(
                 continue
             remaining_quantity = int(position["quantity"])
             level_economics = []
+            adverse_slippage_blocked = False
             for level in evidence.levels:
                 eligible = min(
                     int(level.displayed_size * displayed_depth_fraction),
@@ -361,11 +365,19 @@ def evaluate_political_sizing_scenario(
                 )
                 if eligible <= 0:
                     continue
-                economics = PoliticalExperimentalPaperLedger.exit_economics(
-                    quantity=eligible,
-                    displayed_bid=level.displayed_ask,
-                    fee_schedule=dict(evidence.fee_schedule),
-                )
+                try:
+                    economics = PoliticalExperimentalPaperLedger.exit_economics(
+                        quantity=eligible,
+                        displayed_bid=level.displayed_ask,
+                        fee_schedule=dict(evidence.fee_schedule),
+                    )
+                except ValueError as exc:
+                    # Mirror the paper ledger: one-cent adversity on a one-cent
+                    # bid is an ordinary unusable level, not a CF worker crash.
+                    if not _is_contract_bound_price_error(exc):
+                        raise
+                    adverse_slippage_blocked = True
+                    break
                 level_economics.append((level.displayed_ask, economics))
                 remaining_quantity -= eligible
                 if remaining_quantity == 0:
@@ -440,7 +452,11 @@ def evaluate_political_sizing_scenario(
                         released_basis_micros=0,
                         realized_pnl_micros=None,
                         remaining_quantity=remaining_quantity,
-                        saturation_reason="insufficient_exit_depth",
+                        saturation_reason=(
+                            "adverse_slippage_outside_bounds"
+                            if adverse_slippage_blocked
+                            else "insufficient_exit_depth"
+                        ),
                     )
                 )
             continue
