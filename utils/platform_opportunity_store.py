@@ -277,6 +277,19 @@ class PlatformOpportunityStore:
                     FOREIGN KEY(cohort_id, sequence)
                         REFERENCES platform_replay_observation_events(cohort_id, sequence)
                 );
+                -- A processing exception is terminal evidence too.  Without
+                -- a durable dead-letter receipt, an earlier failed sequence
+                -- would remain permanently unfinished and block every later
+                -- global allocator hand-off after a restart.
+                CREATE TABLE IF NOT EXISTS platform_replay_processing_dead_letters (
+                    cohort_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    failed_at TEXT NOT NULL,
+                    PRIMARY KEY(cohort_id, sequence),
+                    FOREIGN KEY(cohort_id, sequence)
+                        REFERENCES platform_replay_observation_events(cohort_id, sequence)
+                );
 
                 -- A scorer may successfully derive a reaction and then lose
                 -- its in-memory callback before the political ledger can
@@ -2661,14 +2674,18 @@ class PlatformOpportunityStore:
         return dict(row)
 
     def unprocessed_replay_observation_sequences(self, *, cohort_id: str) -> list[int]:
-        """Return durable tokens with no completed decision receipt, in order."""
+        """Return tokens without a successful or terminal-failure receipt."""
         with self._lock:
             rows = self._connection.execute(
                 "SELECT event.sequence FROM platform_replay_observation_events AS event "
                 "LEFT JOIN platform_replay_processing_receipts AS receipt "
                 "ON receipt.cohort_id = event.cohort_id "
                 "AND receipt.sequence = event.sequence "
+                "LEFT JOIN platform_replay_processing_dead_letters AS dead_letter "
+                "ON dead_letter.cohort_id = event.cohort_id "
+                "AND dead_letter.sequence = event.sequence "
                 "WHERE event.cohort_id = ? AND receipt.sequence IS NULL "
+                "AND dead_letter.sequence IS NULL "
                 "ORDER BY event.sequence",
                 (cohort_id,),
             ).fetchall()
@@ -2693,9 +2710,13 @@ class PlatformOpportunityStore:
                 "LEFT JOIN platform_replay_processing_receipts AS receipt "
                 "ON receipt.cohort_id = event.cohort_id "
                 "AND receipt.sequence = event.sequence "
+                "LEFT JOIN platform_replay_processing_dead_letters AS dead_letter "
+                "ON dead_letter.cohort_id = event.cohort_id "
+                "AND dead_letter.sequence = event.sequence "
                 "WHERE event.cohort_id = ? "
                 "AND event.reviewed_milestone_id = ? "
                 "AND receipt.sequence IS NULL "
+                "AND dead_letter.sequence IS NULL "
                 "ORDER BY event.sequence",
                 (cohort_id, milestone_id),
             ).fetchall()
@@ -2820,6 +2841,60 @@ class PlatformOpportunityStore:
             except Exception:
                 connection.rollback()
                 raise
+
+    def record_replay_processing_dead_letter(
+        self,
+        *,
+        cohort_id: str,
+        sequence: int,
+        reason_code: str,
+        failed_at: datetime,
+    ) -> bool:
+        """Durably terminally consume a replay token that cannot be processed.
+
+        A dead letter is deliberately distinct from a successful processing
+        receipt, but has identical queue-drain semantics.  It prevents a
+        retry/restart from rebuilding a potentially non-deterministic score
+        after the failure was recorded.
+        """
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence <= 0:
+            raise ValueError("replay sequence must be a positive integer")
+        if not isinstance(reason_code, str) or not reason_code.strip():
+            raise ValueError("dead-letter reason_code must be non-empty")
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                event = connection.execute(
+                    "SELECT 1 FROM platform_replay_observation_events "
+                    "WHERE cohort_id = ? AND sequence = ?",
+                    (cohort_id, sequence),
+                ).fetchone()
+                if event is None:
+                    raise ValueError("replay observation token does not exist")
+                inserted = connection.execute(
+                    "INSERT OR IGNORE INTO platform_replay_processing_dead_letters "
+                    "(cohort_id, sequence, reason_code, failed_at) VALUES (?, ?, ?, ?)",
+                    (cohort_id, sequence, reason_code.strip(), _utc_iso(failed_at)),
+                ).rowcount
+                connection.commit()
+                return bool(inserted)
+            except Exception:
+                connection.rollback()
+                raise
+
+    def replay_processing_dead_letter(
+        self, *, cohort_id: str, sequence: int
+    ) -> dict[str, Any] | None:
+        """Return a terminal failure receipt, if this token was dead-lettered."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT cohort_id, sequence, reason_code, failed_at "
+                "FROM platform_replay_processing_dead_letters "
+                "WHERE cohort_id = ? AND sequence = ?",
+                (cohort_id, sequence),
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def upsert_contracts(
         self,

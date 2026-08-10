@@ -409,6 +409,150 @@ async def test_worker_records_durable_processing_gap_for_persisted_token(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_worker_dead_letters_failure_then_advances_independent_lane_and_restart(
+    tmp_path,
+):
+    """A failed earlier token cannot strand a later lane or reappear on restart."""
+    path = tmp_path / "opportunities.db"
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    failed = Event()
+    original_observe = system.observe_replay_token
+
+    def route(token):
+        return SimpleNamespace(lane_key=f"occurrence:{token.sequence}")
+
+    def observe(token):
+        if token.sequence == 1:
+            failed.set()
+            raise RuntimeError("deliberate earlier failure")
+        return original_observe(token)
+
+    system.political_replay_route = route
+    system.observe_replay_token = observe
+    delivered = []
+    worker = PlatformOpportunityWorker(
+        system,
+        max_event_lanes=2,
+        on_observation=lambda token, _result: delivered.append(
+            (
+                token.sequence,
+                system.store.replay_processing_dead_letter(
+                    cohort_id=token.cohort_id, sequence=1
+                ),
+            )
+        ),
+    )
+    await worker.start()
+    try:
+        assert worker.submit_book(
+            "polymarket:earlier",
+            OrderBook(market_id="earlier"),
+            observed_at=observed_at,
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(failed.wait), timeout=1)
+        assert worker.submit_book(
+            "polymarket:independent-later",
+            OrderBook(market_id="independent-later"),
+            observed_at=observed_at,
+            fee_schedule=schedule,
+        )
+    finally:
+        await worker.stop()
+
+    assert delivered == [
+        (
+            2,
+            {
+                "cohort_id": system.cohort_id,
+                "sequence": 1,
+                "reason_code": "processing_failed",
+                "failed_at": "2026-08-09T00:00:00+00:00",
+            },
+        )
+    ]
+    assert (
+        system.store.unprocessed_replay_observation_sequences(
+            cohort_id=system.cohort_id
+        )
+        == []
+    )
+    system.store.close()
+
+    resumed = PlatformOpportunitySystem(store=PlatformOpportunityStore(path))
+    restarted_delivery = []
+    restarted = PlatformOpportunityWorker(
+        resumed,
+        on_observation=lambda token, _result: restarted_delivery.append(token.sequence),
+    )
+    await restarted.start()
+    await restarted.stop()
+    assert restarted_delivery == []
+    resumed.store.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_same_contract_later_token_waits_for_terminal_dead_letter(
+    tmp_path,
+):
+    """A later observation cannot bypass an earlier failure on its occurrence lane."""
+    observed_at = datetime(2026, 8, 9, tzinfo=timezone.utc)
+    schedule = VenueFeeSchedule("polymarket", "none", 0, 1, 0, observed_at, "test")
+    system = PlatformOpportunitySystem(store=PlatformOpportunityStore(tmp_path / "db"))
+    failed = Event()
+    original_observe = system.observe_replay_token
+
+    def observe(token):
+        if token.sequence == 1:
+            failed.set()
+            raise RuntimeError("deliberate earlier failure")
+        return original_observe(token)
+
+    system.political_replay_route = lambda _token: SimpleNamespace(
+        lane_key="occurrence:one-contract"
+    )
+    system.observe_replay_token = observe
+    delivered = []
+    worker = PlatformOpportunityWorker(
+        system,
+        on_observation=lambda token, _result: delivered.append(
+            system.store.replay_processing_dead_letter(
+                cohort_id=token.cohort_id, sequence=1
+            )
+        ),
+    )
+    await worker.start()
+    try:
+        assert worker.submit_book(
+            "polymarket:same-contract",
+            OrderBook(market_id="same-contract"),
+            observed_at=observed_at,
+            fee_schedule=schedule,
+        )
+        await asyncio.wait_for(asyncio.to_thread(failed.wait), timeout=1)
+        assert worker.submit_book(
+            "polymarket:same-contract",
+            OrderBook(market_id="same-contract"),
+            observed_at=observed_at,
+            fee_schedule=schedule,
+        )
+    finally:
+        await worker.stop()
+
+    assert delivered == [
+        {
+            "cohort_id": system.cohort_id,
+            "sequence": 1,
+            "reason_code": "processing_failed",
+            "failed_at": "2026-08-09T00:00:00+00:00",
+        }
+    ]
+    system.store.close()
+
+
+@pytest.mark.asyncio
 async def test_worker_persists_exact_kalshi_milestone_window_in_political_lock(
     tmp_path,
 ):

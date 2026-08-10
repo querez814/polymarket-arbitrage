@@ -250,6 +250,9 @@ class PlatformOpportunityWorker:
                     sequence=token.sequence,
                 )
                 failed_at = datetime.fromisoformat(str(event["received_at"]))
+                await self._complete_failed_observation_in_global_order(
+                    token, failed_at=failed_at
+                )
                 await self._run_sync(
                     self.system.record_observation_failure,
                     str(event["contract_id"]),
@@ -362,6 +365,30 @@ class PlatformOpportunityWorker:
                     sequence=token.sequence,
                     completed_at=datetime.now(timezone.utc),
                 )
+            self._next_global_completion_sequence += 1
+            self._global_completion_condition.notify_all()
+
+    async def _complete_failed_observation_in_global_order(
+        self, token: ReplayObservationToken, *, failed_at: datetime
+    ) -> None:
+        """Dead-letter a failed token before releasing later global work."""
+        store = getattr(self.system, "store", None)
+        if store is None:
+            raise RuntimeError(
+                "cannot terminally consume replay failure without a store"
+            )
+        async with self._global_completion_condition:
+            if self._next_global_completion_sequence is None:
+                self._next_global_completion_sequence = token.sequence
+            while token.sequence != self._next_global_completion_sequence:
+                await self._global_completion_condition.wait()
+            await self._run_sync(
+                store.record_replay_processing_dead_letter,
+                cohort_id=token.cohort_id,
+                sequence=token.sequence,
+                reason_code="processing_failed",
+                failed_at=failed_at,
+            )
             self._next_global_completion_sequence += 1
             self._global_completion_condition.notify_all()
 
