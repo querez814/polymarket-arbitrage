@@ -3,6 +3,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 import asyncio
+import sqlite3
 
 import httpx
 import pytest
@@ -1781,6 +1782,10 @@ async def test_political_v2_real_component_preflight_is_shadow_only_and_restart_
         assert runtime.status().ready is False
     controls.close()
     resumed.store.close()
+    # The no-network funnel still exercises durable catalog, replay, lock, and
+    # restart state.  Verify that hostile lifecycle remains SQLite-consistent.
+    with sqlite3.connect(config.platform_opportunity.catalog_path) as connection:
+        assert connection.execute("PRAGMA quick_check").fetchall() == [("ok",)]
     assert config.mode.cross_platform_enabled is False
     assert config.mode.semantic_matching_enabled is False
     assert poly.mutations == []
