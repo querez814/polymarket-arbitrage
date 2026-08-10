@@ -3,6 +3,7 @@ import zlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -1259,6 +1260,73 @@ def test_political_pending_signal_rejects_unproven_provenance_and_id_collision(
         ledger.record_pending_signal(
             **{**signal, "features": {"mid": 0.53, "imbalance": 0.4}}
         )
+
+
+def test_political_pending_signal_binds_sealed_identity_envelope(tmp_path):
+    """Political pending rows cannot replace sealed route, model, or policy identity."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:sealed")
+    ledger.initialize(starting_cash_micros=1_000_000_000, initialized_at=NOW)
+    replay = store.record_replay_observation(
+        cohort_id="cohort:sealed",
+        contract_id="kalshi:KXSEALED",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.51, 10]], "asks": [[0.52, 10]]},
+            "no": {"bids": [[0.48, 10]], "asks": [[0.49, 10]]},
+        },
+        fee_schedule={"schema_version": 1, "venue": "kalshi", "fee_type": "none"},
+        lock_phase="hot",
+        observed_at=NOW + timedelta(milliseconds=100),
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+        reviewed_lock={
+            "event_id": "event:sealed",
+            "milestone_id": "milestone:sealed",
+            "event_start_at": NOW.isoformat(),
+            "event_end_at": (NOW + timedelta(hours=1)).isoformat(),
+            "selected_at": NOW.isoformat(),
+        },
+    )
+    model_version = "sealed-model-v1"
+    store.record_political_scored_decision(
+        cohort_id="cohort:sealed",
+        replay_sequence=replay["event"]["sequence"],
+        model_version=model_version,
+        model_config_hash="sealed-score-config",
+        signal=SimpleNamespace(intent_id="signal:sealed"),
+        created_at=NOW + timedelta(milliseconds=100),
+    )
+    signal = {
+        "signal_id": "signal:sealed",
+        "replay_sequence": replay["event"]["sequence"],
+        "event_id": "event:sealed",
+        "milestone_id": "milestone:sealed",
+        "contract_id": "kalshi:KXSEALED",
+        "side": "yes",
+        "base_lane": "hot_pre_event",
+        "phase": "hot",
+        "signal_request_started_at": NOW,
+        "signal_received_at": NOW + timedelta(milliseconds=100),
+        "expires_at": NOW + timedelta(seconds=10),
+        "model_version": model_version,
+        "config_hash": "sealed-score-config",
+        "state_hash": replay["state_hash"],
+        "fee_hash": replay["fee_hash"],
+        "features": {"imbalance": 0.4},
+    }
+
+    for field, forged in (
+        ("event_id", "event:forged"),
+        ("milestone_id", "milestone:forged"),
+        ("model_version", "forged-model-v1"),
+        ("config_hash", "forged-config-hash"),
+    ):
+        with pytest.raises(ValueError, match="sealed provenance"):
+            ledger.record_pending_signal(**{**signal, field: forged})
+
+    assert ledger.record_pending_signal(**signal) is True
+    assert ledger.record_pending_signal(**signal) is False
 
 
 def test_political_paper_ttl_sweeper_durably_consumes_expired_signal_on_restart(

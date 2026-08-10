@@ -919,9 +919,6 @@ class TradingBotWithDashboard:
                     context = self.platform_opportunity_system.political_replay_context(
                         token
                     )
-                    policy = self.platform_opportunity_store.political_experimental_paper_policy(
-                        cohort_id=token.cohort_id
-                    )
                     signal = decision["signal"]
                     if signal["contract_id"] == context["contract_id"]:
                         ledger.record_pending_signal(
@@ -943,7 +940,7 @@ class TradingBotWithDashboard:
                                 str(signal["expires_at"])
                             ),
                             model_version="depth_imbalance_reaction_experimental_v1",
-                            config_hash=str(policy["policy_hash"]),
+                            config_hash=str(decision["model_config_hash"]),
                             state_hash=context["state_hash"],
                             fee_hash=context["fee_hash"],
                             features=dict(signal["feature_snapshot"]),

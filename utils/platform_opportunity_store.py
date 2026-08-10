@@ -1145,7 +1145,8 @@ class PlatformOpportunityStore:
             # counter value and allocate the same replay token.
             connection.execute("BEGIN IMMEDIATE")
             account = connection.execute(
-                "SELECT 1 FROM political_experimental_paper_accounts WHERE cohort_id = ?",
+                "SELECT policy_hash FROM political_experimental_paper_accounts "
+                "WHERE cohort_id = ?",
                 (cohort_id,),
             ).fetchone()
             if account is None:
@@ -1164,7 +1165,8 @@ class PlatformOpportunityStore:
                 )
             replay_event = connection.execute(
                 "SELECT contract_id, lock_phase, state_hash, fee_hash, "
-                "request_started_at, received_at "
+                "request_started_at, received_at, reviewed_lock_event_id, "
+                "reviewed_milestone_id "
                 "FROM platform_replay_observation_events "
                 "WHERE cohort_id = ? AND sequence = ?",
                 (cohort_id, replay_sequence),
@@ -1188,6 +1190,41 @@ class PlatformOpportunityStore:
             ):
                 raise ValueError(
                     "pending signal provenance does not match replay event"
+                )
+            sealed_route = (
+                replay_event["reviewed_lock_event_id"],
+                replay_event["reviewed_milestone_id"],
+            )
+            if any(value is not None for value in sealed_route):
+                if not all(sealed_route) or sealed_route != (
+                    event_id,
+                    milestone_id,
+                ):
+                    raise ValueError(
+                        "pending signal sealed provenance does not match replay route"
+                    )
+            sealed_decision = connection.execute(
+                "SELECT model_version, model_config_hash, signal_id, outcome, state_hash, "
+                "fee_hash, event_id, milestone_id FROM political_scored_decisions "
+                "WHERE cohort_id = ? AND replay_sequence = ?",
+                (cohort_id, replay_sequence),
+            ).fetchone()
+            if any(value is not None for value in sealed_route) and sealed_decision is None:
+                raise ValueError("pending signal requires a sealed scored decision")
+            if sealed_decision is not None and any(
+                (
+                    str(sealed_decision["model_version"]) != model_version,
+                    str(sealed_decision["model_config_hash"]) != config_hash,
+                    str(sealed_decision["signal_id"]) != signal_id,
+                    str(sealed_decision["outcome"]) != "signal",
+                    str(sealed_decision["state_hash"]) != state_hash,
+                    str(sealed_decision["fee_hash"]) != fee_hash,
+                    str(sealed_decision["event_id"]) != event_id,
+                    str(sealed_decision["milestone_id"]) != milestone_id,
+                )
+            ):
+                raise ValueError(
+                    "pending signal sealed provenance does not match scored decision"
                 )
             values = (
                 signal_id,
