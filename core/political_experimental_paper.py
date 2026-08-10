@@ -624,6 +624,10 @@ class PoliticalExperimentalPaperLedger:
         if not isinstance(raw_groups, list):
             raise ValueError("immutable political paper risk groups are invalid")
         matches: list[tuple[str, tuple[str, ...], int, int]] = []
+
+        def canonical_kalshi_event_id(value: str) -> str:
+            return value.removeprefix("kalshi:")
+
         for raw_group in raw_groups:
             if not isinstance(raw_group, dict):
                 raise ValueError("immutable political paper risk groups are invalid")
@@ -645,8 +649,29 @@ class PoliticalExperimentalPaperLedger:
                 or max_positions <= 0
             ):
                 raise ValueError("immutable political paper risk groups are invalid")
-            if event_id in event_ids:
-                matches.append((group_id, tuple(event_ids), reserve_cap, max_positions))
+            if canonical_kalshi_event_id(event_id) in {
+                canonical_kalshi_event_id(item) for item in event_ids
+            }:
+                # Keep the immutable policy values untouched, but include their
+                # canonical raw Kalshi forms in the allocator's correlated-
+                # exposure query. Live sealed events use raw KX... identifiers
+                # while reviewed configuration retains kalshi: provenance.
+                allocation_event_ids = tuple(
+                    dict.fromkeys(
+                        [
+                            *event_ids,
+                            *(canonical_kalshi_event_id(item) for item in event_ids),
+                        ]
+                    )
+                )
+                matches.append(
+                    (
+                        group_id,
+                        allocation_event_ids,
+                        reserve_cap,
+                        max_positions,
+                    )
+                )
         if len(matches) > 1:
             raise ValueError("reviewed event belongs to multiple paper risk groups")
         return matches[0] if matches else None

@@ -463,7 +463,6 @@ def test_read_only_sizing_applies_sealed_exit_evidence_without_store_mutation(tm
     )
 
 
-
 def test_read_only_sizing_one_cent_exit_level_is_saturation_not_crash():
     """CF panes must survive the overnight 1c adverse-slippage book shape."""
     entry = PoliticalSizingOpportunity(
@@ -2372,8 +2371,9 @@ def test_forced_exit_inside_minimum_hold_is_durable_and_retries_later(tmp_path):
     )
 
 
-
-def test_thin_book_one_cent_bid_exit_is_durable_partial_or_no_exit_not_dead_letter(tmp_path):
+def test_thin_book_one_cent_bid_exit_is_durable_partial_or_no_exit_not_dead_letter(
+    tmp_path,
+):
     """Overnight shape: depth-fraction walk reaches a 1c bid and must not crash.
 
     Real KXTRUMPSAY books often quote usable 2c–5c levels above a large 1c
@@ -2449,7 +2449,9 @@ def test_thin_book_one_cent_bid_exit_is_durable_partial_or_no_exit_not_dead_lett
     assert opened_qty >= 200  # need a walk that reaches the 1c level
 
     # Direct unit shape: 1c adversity on a 1c bid still refuses to invent a fill.
-    with pytest.raises(ValueError, match="adverse-slippage price is outside contract bounds"):
+    with pytest.raises(
+        ValueError, match="adverse-slippage price is outside contract bounds"
+    ):
         ledger.exit_economics(
             quantity=1,
             displayed_bid="0.01",
@@ -3062,7 +3064,7 @@ def test_political_paper_scopes_base_lane_overlap_to_the_exact_occurrence(tmp_pa
 
 
 def test_political_paper_enforces_bound_reviewed_risk_group_caps(tmp_path):
-    """Correlated reviewed events cannot consume the whole control envelope."""
+    """Raw live IDs bind to prefixed reviewed groups without catching others."""
     store = PlatformOpportunityStore(tmp_path / "opportunities.db")
     ledger = PoliticalExperimentalPaperLedger(store=store, cohort_id="cohort:risk")
     ledger.initialize(
@@ -3076,7 +3078,10 @@ def test_political_paper_enforces_bound_reviewed_risk_group_caps(tmp_path):
             "reviewed_risk_groups": [
                 {
                     "risk_group_id": "trump-aug-10",
-                    "reviewed_event_ids": ["event:trump-say", "event:trump-mention"],
+                    "reviewed_event_ids": [
+                        "kalshi:KXTRUMPSAY-26AUG10",
+                        "kalshi:KXTRUMPMENTION-26AUG10",
+                    ],
                     "max_total_reserved_micros": 50_000_000,
                     "max_open_positions": 1,
                 }
@@ -3134,17 +3139,32 @@ def test_political_paper_enforces_bound_reviewed_risk_group_caps(tmp_path):
             signal_id=signal_id, replay_sequence=later["event"]["sequence"]
         )
 
-    assert fill("event:trump-say", "kalshi:KXSAY", 0)["outcome"] == "filled"
-    blocked = fill("event:trump-mention", "kalshi:KXMENTION", 2)
+    assert fill("KXTRUMPSAY-26AUG10", "kalshi:KXSAY", 0)["outcome"] == "filled"
+    unrelated = fill("KXUNRELATED-26", "kalshi:KXOTHER", 2)
+    assert unrelated["outcome"] == "filled"
+    blocked = fill(
+        "KXTRUMPMENTION-26AUG10",
+        "kalshi:KXMENTION",
+        4,
+    )
     assert blocked["outcome"] == "no_fill"
     assert blocked["reason"] == "risk_group_max_open_positions"
-    position = store.political_experimental_positions(cohort_id="cohort:risk")[0]
-    assert position["risk_group_id"] == "trump-aug-10"
+    positions = store.political_experimental_positions(cohort_id="cohort:risk")
+    grouped_position = next(
+        position for position in positions if position["contract_id"] == "kalshi:KXSAY"
+    )
+    unrelated_position = next(
+        position
+        for position in positions
+        if position["contract_id"] == "kalshi:KXOTHER"
+    )
+    assert grouped_position["risk_group_id"] == "trump-aug-10"
+    assert unrelated_position["risk_group_id"] is None
     assert ledger.snapshot()["risk_group_exposure"] == [
         {
             "risk_group_id": "trump-aug-10",
             "open_positions": 1,
-            "reserved_micros": position["cost_basis_micros"],
+            "reserved_micros": grouped_position["cost_basis_micros"],
         }
     ]
 

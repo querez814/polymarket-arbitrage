@@ -161,6 +161,90 @@ def test_dashboard_exposes_platform_first_shadow_system():
     assert "execution authority:" in page
 
 
+def test_dashboard_separates_binding_paper_pnl_and_read_only_evidence():
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app
+
+    state = DashboardState()
+    state.cross_platform["paper_performance"] = {
+        "trade_count": 2,
+        "committed_capital": 40.0,
+        "projected_locked_pnl": 7.5,
+        "realized_settlement_pnl": 1.25,
+    }
+    state.platform_opportunity["political_experimental_paper"] = {
+        "enabled": True,
+        "label": "experimental paper simulation",
+        "execution_authority": "none",
+        "snapshot": {
+            "account": {
+                "starting_cash_micros": 1_000_000_000,
+                "cash_micros": 977_520_000,
+                "reserved_micros": 0,
+                "realized_pnl_micros": -22_480_000,
+            },
+            "open_positions": [],
+            "counts": {
+                "signals": 1,
+                "pending": 0,
+                "filled": 1,
+                "no_fill": 0,
+                "open": 0,
+                "closed": 1,
+                "partial_exits": 2,
+            },
+        },
+    }
+    state.platform_opportunity["research_pnl"]["actual_exit"]["capacity_pnl"] = 999
+    state.platform_opportunity["counterfactual_sizing"] = {
+        "read_only_not_realized": True,
+        "status": "evaluated",
+        "counterfactuals": [
+            {
+                "scenario_name": "cf_p150_t600",
+                "capital_used_micros": 150_000_000,
+                "realized_pnl_micros": 50_000_000,
+            }
+        ],
+    }
+
+    payload = state.to_dict()["binding_paper_pnl"]
+
+    assert payload["net_realized_pnl"] == pytest.approx(-21.23)
+    assert payload["projected_at_settlement_pnl"] == pytest.approx(-14.98)
+    assert payload["locked_arbitrage"] == {
+        "realized_settlement_pnl": 1.25,
+        "projected_locked_pnl": 7.5,
+    }
+    assert payload["political_reaction"]["realized_pnl"] == pytest.approx(-22.48)
+    assert payload["excluded"] == [
+        "shadow_research_marks",
+        "counterfactual_sizing",
+    ]
+
+    page = TestClient(app).get("/").text
+    for label in (
+        "Net Binding Paper PnL",
+        "Locked Arbitrage Paper",
+        "Political Reaction Paper",
+        "PAPER ONLY · NO LIVE AUTHORITY",
+        "Starting cash",
+        "Partial exits",
+        "Durable closed/fill row details are not included in the API payload",
+        "READ_ONLY_NOT_REALIZED",
+        "Requested $150 / $600",
+        "Requested $200 / $800",
+    ):
+        assert label in page
+    assert "updateBindingPaperPnl()" in page
+    assert "updatePoliticalPaper()" in page
+    assert "updateCounterfactualSizing()" in page
+    assert "projected_locked_pnl" in page
+    assert "realized_settlement_pnl" in page
+    assert "shadow_research_marks and counterfactual_sizing are excluded" in page
+
+
 @pytest.mark.asyncio
 async def test_dashboard_integration_updates_paper_mode_fields():
     integration = DashboardIntegration(

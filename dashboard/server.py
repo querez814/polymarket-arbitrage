@@ -99,6 +99,40 @@ def _reason(body: Mapping[str, Any]) -> str:
     return value.strip()
 
 
+def _binding_paper_pnl_summary(
+    *,
+    platform_opportunity: Mapping[str, Any],
+    cross_platform: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Combine only binding paper ledgers without relabeling projected PnL."""
+    locked = cross_platform.get("paper_performance")
+    locked = locked if isinstance(locked, Mapping) else {}
+    political = platform_opportunity.get("political_experimental_paper")
+    political = political if isinstance(political, Mapping) else {}
+    snapshot = political.get("snapshot")
+    snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+    account = snapshot.get("account")
+    account = account if isinstance(account, Mapping) else {}
+
+    locked_realized = float(locked.get("realized_settlement_pnl") or 0.0)
+    locked_projected = float(locked.get("projected_locked_pnl") or 0.0)
+    political_realized = int(account.get("realized_pnl_micros") or 0) / 1_000_000
+    return {
+        "label": "net_binding_paper_pnl",
+        "paper_only": True,
+        "locked_arbitrage": {
+            "realized_settlement_pnl": locked_realized,
+            "projected_locked_pnl": locked_projected,
+        },
+        "political_reaction": {
+            "realized_pnl": political_realized,
+        },
+        "net_realized_pnl": locked_realized + political_realized,
+        "projected_at_settlement_pnl": locked_projected + political_realized,
+        "excluded": ["shadow_research_marks", "counterfactual_sizing"],
+    }
+
+
 class DashboardState:
     """Holds the current state for the dashboard."""
 
@@ -232,6 +266,10 @@ class DashboardState:
             "news_catalysts": self.news_catalysts,
             "event_week": self.event_week,
             "platform_opportunity": self.platform_opportunity,
+            "binding_paper_pnl": _binding_paper_pnl_summary(
+                platform_opportunity=self.platform_opportunity,
+                cross_platform=self.cross_platform,
+            ),
             "cross_platform": self.cross_platform,  # Cross-platform arbitrage stats
             "is_running": self.is_running,
             "mode": self.mode,
@@ -978,6 +1016,66 @@ def get_embedded_html() -> str:
         /* Paper Trade History */
         .paper-history-card {
             grid-column: span 4;
+        }
+
+        .binding-paper-card {
+            grid-column: span 4;
+            border-color: rgba(0, 255, 136, 0.45);
+        }
+
+        .binding-paper-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.65rem;
+        }
+
+        .binding-paper-stat {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 0.75rem;
+        }
+
+        .binding-paper-label {
+            color: var(--text-secondary);
+            font-size: 0.66rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .binding-paper-value {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-top: 0.3rem;
+        }
+
+        .political-paper-card {
+            grid-column: span 4;
+            border-color: rgba(170, 102, 255, 0.45);
+        }
+
+        .political-paper-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.72rem;
+            margin-top: 0.75rem;
+        }
+
+        .political-paper-table th,
+        .political-paper-table td {
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.45rem;
+            text-align: left;
+        }
+
+        .paper-only-badge {
+            background: rgba(170, 102, 255, 0.2);
+            color: #c084fc;
+            border: 1px solid rgba(170, 102, 255, 0.45);
+            border-radius: 999px;
+            padding: 0.2rem 0.55rem;
+            font-size: 0.68rem;
+            font-weight: 700;
         }
 
         .paper-history-toolbar {
@@ -2174,6 +2272,44 @@ def get_embedded_html() -> str:
             </div>
         </section>
 
+        <section class="card binding-paper-card" id="bindingPaperPnlCard">
+            <div class="card-header">
+                <span class="card-title">Net Binding Paper PnL</span>
+                <span class="paper-only-badge">PAPER ONLY · NO LIVE AUTHORITY</span>
+            </div>
+            <div class="card-body">
+                <div class="binding-paper-grid" id="bindingPaperPnlSummary"></div>
+                <div style="font-size: 0.7rem; color: var(--text-secondary); margin-top: 0.7rem;">
+                    Binding ledgers only. shadow_research_marks and counterfactual_sizing are excluded.
+                    Projected locked-arbitrage settlement is never counted as realized PnL.
+                </div>
+            </div>
+        </section>
+
+        <section class="card political-paper-card" id="politicalPaperCard">
+            <div class="card-header">
+                <span class="card-title">Political Reaction Paper</span>
+                <span class="paper-only-badge" id="politicalPaperAuthority">PAPER ONLY · AUTHORITY NONE</span>
+            </div>
+            <div class="card-body">
+                <div class="binding-paper-grid" id="politicalPaperAccount"></div>
+                <div class="binding-paper-grid" id="politicalPaperCounts" style="margin-top: 0.7rem;"></div>
+                <div id="politicalPaperPositions"></div>
+                <div id="politicalPaperRecent"></div>
+            </div>
+        </section>
+
+        <section class="card political-paper-card" id="counterfactualSizingCard">
+            <div class="card-header">
+                <span class="card-title">Counterfactual Sizing</span>
+                <span class="paper-only-badge">READ_ONLY_NOT_REALIZED</span>
+            </div>
+            <div class="card-body">
+                <div id="counterfactualSizingSummary" style="font-size: 0.76rem; color: var(--text-secondary);"></div>
+                <div class="binding-paper-grid" id="counterfactualSizingScenarios" style="margin-top: 0.7rem;"></div>
+            </div>
+        </section>
+
         <section class="card" id="eventWeekCard">
             <div class="card-header">
                 <span class="card-title">📅 Scheduled Event Week</span>
@@ -2395,6 +2531,11 @@ def get_embedded_html() -> str:
 
             // Platform catalog and isolated shadow strategy lanes
             updatePlatformOpportunity();
+
+            // Binding paper ledgers and isolated read-only sizing
+            updateBindingPaperPnl();
+            updatePoliticalPaper();
+            updateCounterfactualSizing();
 
             // Authoritative scheduled-event monitoring lane
             updateEventWeek();
@@ -2958,7 +3099,7 @@ def get_embedded_html() -> str:
                 .join(' · ') || 'No candidates';
             const strongest = nearMisses[0];
             evidencePanel.innerHTML = `<div style="border: 1px solid var(--border-color); border-radius: 8px; padding: 0.85rem; background: var(--bg-secondary);">
-                <div style="font-weight: 700; margin-bottom: 0.55rem;">Paper evidence</div>
+                <div style="font-weight: 700; margin-bottom: 0.55rem;">Locked Arbitrage Paper</div>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.65rem; font-size: 0.76rem;">
                     <div><span style="color: var(--text-muted);">Directions stored</span><br><strong>${Number(cp.evaluation_ledger_count || 0).toLocaleString()}</strong></div>
                     <div><span style="color: var(--text-muted);">Fresh snapshots</span><br><strong>${Number(funnel.paired_snapshot_fresh || 0).toLocaleString()}</strong></div>
@@ -3314,6 +3455,132 @@ def get_embedded_html() -> str:
             </div>`).join('');
         }
 
+        function bindingPaperStat(label, value) {
+            return `<div class="binding-paper-stat">
+                <div class="binding-paper-label">${escapeHtml(label)}</div>
+                <div class="binding-paper-value">${escapeHtml(value)}</div>
+            </div>`;
+        }
+
+        function updateBindingPaperPnl() {
+            const summary = state.binding_paper_pnl || {};
+            const locked = summary.locked_arbitrage || {};
+            const political = summary.political_reaction || {};
+            document.getElementById('bindingPaperPnlSummary').innerHTML = [
+                ['Net realized', formatCurrency(Number(summary.net_realized_pnl || 0))],
+                ['Projected at settlement', formatCurrency(Number(summary.projected_at_settlement_pnl || 0))],
+                ['Locked arb realized', formatCurrency(Number(locked.realized_settlement_pnl || 0))],
+                ['Locked arb projected', formatCurrency(Number(locked.projected_locked_pnl || 0))],
+                ['Political realized', formatCurrency(Number(political.realized_pnl || 0))],
+            ].map(([label, value]) => bindingPaperStat(label, value)).join('');
+        }
+
+        function updatePoliticalPaper() {
+            const opportunity = state.platform_opportunity || {};
+            const pane = opportunity.political_experimental_paper || {};
+            const snapshot = pane.snapshot || {};
+            const account = snapshot.account || {};
+            const counts = snapshot.counts || {};
+            const authority = pane.execution_authority || opportunity.execution_authority || 'none';
+            document.getElementById('politicalPaperAuthority').textContent =
+                `PAPER ONLY · AUTHORITY ${String(authority).toUpperCase()}`;
+            document.getElementById('politicalPaperAccount').innerHTML = [
+                ['Starting cash', formatMicros(account.starting_cash_micros)],
+                ['Cash', formatMicros(account.cash_micros)],
+                ['Reserved', formatMicros(account.reserved_micros)],
+                ['Realized PnL', formatMicros(account.realized_pnl_micros)],
+            ].map(([label, value]) => bindingPaperStat(label, value)).join('');
+            const countLabels = [
+                ['Signals', 'signals'],
+                ['Pending', 'pending'],
+                ['Filled', 'filled'],
+                ['No-fill', 'no_fill'],
+                ['Open', 'open'],
+                ['Closed', 'closed'],
+                ['Partial exits', 'partial_exits'],
+            ];
+            document.getElementById('politicalPaperCounts').innerHTML = countLabels
+                .map(([label, key]) => bindingPaperStat(label, String(Number(counts[key] || 0))))
+                .join('');
+
+            const positions = Array.isArray(snapshot.open_positions)
+                ? snapshot.open_positions : [];
+            const positionPanel = document.getElementById('politicalPaperPositions');
+            if (!positions.length) {
+                positionPanel.innerHTML = '<div style="font-size: 0.74rem; color: var(--text-secondary); margin-top: 0.75rem;">No open political paper positions.</div>';
+            } else {
+                positionPanel.innerHTML = `<table class="political-paper-table">
+                    <thead><tr><th>Event</th><th>Contract</th><th>Side</th><th>Quantity</th><th>Cost basis</th><th>Opened</th></tr></thead>
+                    <tbody>${positions.map(position => `<tr>
+                        <td>${escapeHtml(position.event_id || position.milestone_id || '—')}</td>
+                        <td>${escapeHtml(position.contract_id || '—')}</td>
+                        <td>${escapeHtml(String(position.side || '—').toUpperCase())}</td>
+                        <td>${Number(position.quantity || 0).toLocaleString()}</td>
+                        <td>${formatMicros(position.cost_basis_micros)}</td>
+                        <td>${escapeHtml(formatDateTime(position.opened_at) || '—')}</td>
+                    </tr>`).join('')}</tbody>
+                </table>`;
+            }
+
+            const durableRows = [
+                ...(Array.isArray(snapshot.recent_fills) ? snapshot.recent_fills.map(row => ({...row, detail_type: 'fill'})) : []),
+                ...(Array.isArray(snapshot.recent_exits) ? snapshot.recent_exits.map(row => ({...row, detail_type: 'exit'})) : []),
+                ...(Array.isArray(snapshot.closed_positions) ? snapshot.closed_positions.map(row => ({...row, detail_type: 'closed'})) : []),
+                ...(Array.isArray(snapshot.exit_rows) ? snapshot.exit_rows.map(row => ({...row, detail_type: 'exit'})) : []),
+            ].slice(-12).reverse();
+            const recentPanel = document.getElementById('politicalPaperRecent');
+            if (!durableRows.length) {
+                recentPanel.innerHTML = `<div style="font-size: 0.7rem; color: var(--text-secondary); margin-top: 0.75rem;">
+                    Durable closed/fill row details are not included in the API payload.
+                    Aggregate closed (${Number(counts.closed || 0)}) and partial-exit (${Number(counts.partial_exits || 0)}) counts are shown above.
+                </div>`;
+            } else {
+                recentPanel.innerHTML = `<div style="font-size: 0.76rem; font-weight: 700; margin-top: 0.85rem;">Recent durable fills/exits</div>
+                    <table class="political-paper-table"><thead><tr><th>Type</th><th>Event</th><th>Contract</th><th>Side</th><th>Quantity</th><th>PnL</th><th>Time</th></tr></thead>
+                    <tbody>${durableRows.map(row => `<tr>
+                        <td>${escapeHtml(row.detail_type)}</td>
+                        <td>${escapeHtml(row.event_id || row.milestone_id || '—')}</td>
+                        <td>${escapeHtml(row.contract_id || '—')}</td>
+                        <td>${escapeHtml(String(row.side || '—').toUpperCase())}</td>
+                        <td>${Number(row.quantity || 0).toLocaleString()}</td>
+                        <td>${row.realized_pnl_micros == null ? '—' : formatMicros(row.realized_pnl_micros)}</td>
+                        <td>${escapeHtml(formatDateTime(row.closed_at || row.filled_at || row.event_at || row.opened_at) || '—')}</td>
+                    </tr>`).join('')}</tbody></table>`;
+            }
+        }
+
+        function updateCounterfactualSizing() {
+            const pane = (state.platform_opportunity || {}).counterfactual_sizing || {};
+            const summary = document.getElementById('counterfactualSizingSummary');
+            const scenariosPanel = document.getElementById('counterfactualSizingScenarios');
+            summary.textContent = pane.read_only_not_realized === true
+                ? `read_only_not_realized · ${String(pane.status || 'unavailable').replaceAll('_', ' ')} · excluded from binding paper PnL`
+                : 'Counterfactual sizing is unavailable and is excluded from binding paper PnL.';
+            const requested = new Map([
+                ['cf_p150_t600', 'Requested $150 / $600'],
+                ['cf_p200_t800', 'Requested $200 / $800'],
+            ]);
+            const scenarios = (Array.isArray(pane.counterfactuals) ? pane.counterfactuals : [])
+                .filter(scenario => requested.has(scenario.scenario_name));
+            if (!scenarios.length) {
+                scenariosPanel.innerHTML = '<div style="font-size: 0.72rem; color: var(--text-secondary);">No sealed $150/$600 or $200/$800 scenario evidence is present.</div>';
+                return;
+            }
+            scenariosPanel.innerHTML = scenarios.map(scenario => {
+                const details = [];
+                if (scenario.capital_used_micros != null) {
+                    details.push(`capital ${formatMicros(scenario.capital_used_micros)}`);
+                }
+                if (scenario.realized_pnl_micros != null) {
+                    details.push(`scenario PnL ${formatMicros(scenario.realized_pnl_micros)} (not realized)`);
+                }
+                return bindingPaperStat(
+                    requested.get(scenario.scenario_name),
+                    details.join(' · ') || 'sealed result unavailable',
+                );
+            }).join('');
+        }
+
         function updateNewsCatalysts() {
             const news = state.news_catalysts || {};
             const status = document.getElementById('newsCatalystStatus');
@@ -3490,6 +3757,13 @@ def get_embedded_html() -> str:
         function formatCurrency(value) {
             const sign = value >= 0 ? '' : '-';
             return `${sign}$${Math.abs(value).toFixed(2)}`;
+        }
+
+        function formatMicros(value) {
+            if (value === undefined || value === null || !Number.isFinite(Number(value))) {
+                return '—';
+            }
+            return formatCurrency(Number(value) / 1000000);
         }
         
         function formatTime(timestamp) {
