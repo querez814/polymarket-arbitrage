@@ -1209,7 +1209,10 @@ class PlatformOpportunityStore:
                 "WHERE cohort_id = ? AND replay_sequence = ?",
                 (cohort_id, replay_sequence),
             ).fetchone()
-            if any(value is not None for value in sealed_route) and sealed_decision is None:
+            if (
+                any(value is not None for value in sealed_route)
+                and sealed_decision is None
+            ):
                 raise ValueError("pending signal requires a sealed scored decision")
             if sealed_decision is not None and any(
                 (

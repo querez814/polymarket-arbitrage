@@ -1809,6 +1809,14 @@ def test_political_paper_process_observation_prioritizes_reviewed_event_boundary
         received_at=NOW + timedelta(milliseconds=100),
         reviewed_lock=reviewed_lock,
     )
+    store.record_political_scored_decision(
+        cohort_id="cohort:boundary",
+        replay_sequence=first["event"]["sequence"],
+        model_version="depth-imbalance-reaction-experimental-v1",
+        model_config_hash="config-hash",
+        signal=SimpleNamespace(intent_id="signal:boundary"),
+        created_at=NOW + timedelta(milliseconds=100),
+    )
     assert ledger.record_pending_signal(
         signal_id="signal:boundary",
         replay_sequence=first["event"]["sequence"],
