@@ -251,6 +251,23 @@ class EventWeekConfig:
 
 
 @dataclass
+class PoliticalPaperRiskGroupConfig:
+    """One explicit correlated-occurrence limit for political control paper.
+
+    Event identifiers are configured with their stable venue prefix (for
+    example ``kalshi:KXTRUMPSAY-26AUG10``).  They are deliberately separate
+    from generic sizing scenarios: these limits belong to the authoritative
+    release-control policy and are later resolved solely from reviewed lock
+    provenance.
+    """
+
+    risk_group_id: str
+    reviewed_event_ids: tuple[str, ...]
+    max_total_reserved_cap: float
+    max_open_positions: int
+
+
+@dataclass
 class PlatformOpportunityConfig:
     """Platform-first catalog plus shadow-only research lanes."""
 
@@ -304,6 +321,12 @@ class PlatformOpportunityConfig:
     political_paper_max_fee_schedule_age_seconds: float = 60.0
     political_paper_one_open_position_per_contract: bool = True
     political_paper_one_open_position_per_base_lane: bool = True
+    # Correlated reviewed events receive their own conservative control-paper
+    # reserve/position envelope.  Events outside a declared group fall back to
+    # their sealed milestone occurrence until a reviewed group is configured.
+    political_paper_risk_groups: list[PoliticalPaperRiskGroupConfig] = field(
+        default_factory=list
+    )
     min_event_clusters: int = 50
     min_intents: int = 200
     max_research_drawdown: float = 50.0
@@ -405,6 +428,27 @@ def load_config(config_path: str = "config.yaml") -> BotConfig:
     news_catalyst_data = raw_config.get("news_catalyst", {})
     event_week_data = raw_config.get("event_week", {})
     platform_opportunity_data = raw_config.get("platform_opportunity", {})
+    if isinstance(platform_opportunity_data, dict):
+        platform_opportunity_data = dict(platform_opportunity_data)
+        raw_risk_groups = platform_opportunity_data.get(
+            "political_paper_risk_groups", []
+        )
+        if isinstance(raw_risk_groups, list) and all(
+            isinstance(item, dict) for item in raw_risk_groups
+        ):
+            platform_opportunity_data["political_paper_risk_groups"] = [
+                PoliticalPaperRiskGroupConfig(
+                    risk_group_id=item.get("risk_group_id", ""),
+                    reviewed_event_ids=(
+                        tuple(item["reviewed_event_ids"])
+                        if isinstance(item.get("reviewed_event_ids"), list)
+                        else ()
+                    ),
+                    max_total_reserved_cap=item.get("max_total_reserved_cap", 0),
+                    max_open_positions=item.get("max_open_positions", 0),
+                )
+                for item in raw_risk_groups
+            ]
 
     # Handle environment variable overrides
     api_data = _apply_env_overrides(
@@ -1206,6 +1250,68 @@ def validate_config(config: BotConfig) -> None:
         platform.reviewed_pinned_event_ids
     ):
         errors.append("platform_opportunity.reviewed_pinned_event_ids must be unique")
+    risk_groups = platform.political_paper_risk_groups
+    if not isinstance(risk_groups, list) or any(
+        not isinstance(group, PoliticalPaperRiskGroupConfig) for group in risk_groups
+    ):
+        errors.append(
+            "platform_opportunity.political_paper_risk_groups must be a list of risk groups"
+        )
+    else:
+        group_ids: set[str] = set()
+        grouped_events: set[str] = set()
+        pinned_events = set(platform.reviewed_pinned_event_ids)
+        for group in risk_groups:
+            if (
+                not isinstance(group.risk_group_id, str)
+                or not group.risk_group_id.strip()
+            ):
+                errors.append(
+                    "platform_opportunity political paper risk group IDs must be non-empty"
+                )
+            elif group.risk_group_id in group_ids:
+                errors.append(
+                    "platform_opportunity political paper risk group IDs must be unique"
+                )
+            group_ids.add(group.risk_group_id)
+            if not group.reviewed_event_ids or any(
+                not isinstance(event_id, str) or not event_id.strip()
+                for event_id in group.reviewed_event_ids
+            ):
+                errors.append(
+                    "platform_opportunity political paper risk groups require reviewed event IDs"
+                )
+            elif len(set(group.reviewed_event_ids)) != len(group.reviewed_event_ids):
+                errors.append(
+                    "platform_opportunity political paper risk group event IDs must be unique"
+                )
+            elif not set(group.reviewed_event_ids) <= pinned_events:
+                errors.append(
+                    "platform_opportunity political paper risk groups may contain only reviewed pins"
+                )
+            overlap = grouped_events.intersection(group.reviewed_event_ids)
+            if overlap:
+                errors.append(
+                    "platform_opportunity reviewed events may belong to only one political paper risk group"
+                )
+            grouped_events.update(group.reviewed_event_ids)
+            if (
+                not isinstance(group.max_total_reserved_cap, (int, float))
+                or isinstance(group.max_total_reserved_cap, bool)
+                or not math.isfinite(float(group.max_total_reserved_cap))
+                or float(group.max_total_reserved_cap) <= 0
+            ):
+                errors.append(
+                    "platform_opportunity political paper risk group reserve caps must be finite and positive"
+                )
+            if (
+                not isinstance(group.max_open_positions, int)
+                or isinstance(group.max_open_positions, bool)
+                or group.max_open_positions <= 0
+            ):
+                errors.append(
+                    "platform_opportunity political paper risk group open-position caps must be positive integers"
+                )
     critical_database_paths = {
         "monitoring.paper_trade_db_path": config.monitoring.paper_trade_db_path,
         "production.execution_journal_path": config.production.execution_journal_path,

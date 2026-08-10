@@ -30,7 +30,7 @@ from core.production_runtime import ProductionArbitrageRuntime
 from core.execution_journal import ExecutionJournal
 from core.operations import PersistentOperatorControls
 from dashboard.server import dashboard_state
-from utils.config_loader import BotConfig
+from utils.config_loader import BotConfig, PoliticalPaperRiskGroupConfig
 from utils.platform_opportunity_store import PlatformOpportunityStore
 from utils.task_supervision import RestartingTaskSupervisor
 from polymarket_client.models import (
@@ -1049,6 +1049,14 @@ async def test_platform_runtime_initializes_isolated_political_paper_ledger(tmp_
     config.mode.kalshi_enabled = False
     config.platform_opportunity.enabled = True
     config.platform_opportunity.political_experimental_paper_enabled = True
+    config.platform_opportunity.political_paper_risk_groups = [
+        PoliticalPaperRiskGroupConfig(
+            risk_group_id="trump_aug_10",
+            reviewed_event_ids=("kalshi:KXTRUMPSAY-26AUG10",),
+            max_total_reserved_cap=50,
+            max_open_positions=2,
+        )
+    ]
     config.platform_opportunity.catalog_path = str(tmp_path / "opportunities.db")
     bot = TradingBotWithDashboard(config)
 
@@ -1071,6 +1079,14 @@ async def test_platform_runtime_initializes_isolated_political_paper_ledger(tmp_
     )
     assert bound_policy["policy"].get("execution_authority") == "none"
     assert bound_policy["policy"].get("max_open_positions") == 4
+    assert bound_policy["policy"].get("reviewed_risk_groups") == [
+        {
+            "risk_group_id": "trump_aug_10",
+            "reviewed_event_ids": ["kalshi:KXTRUMPSAY-26AUG10"],
+            "max_total_reserved_micros": 50_000_000,
+            "max_open_positions": 2,
+        }
+    ]
     assert bound_policy["policy"].get("exit_rule", {}).get("precedence") == [
         "event_boundary",
         "max_hold_10_minutes",

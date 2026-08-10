@@ -93,6 +93,16 @@ platform_opportunity:
   political_paper_max_fee_schedule_age_seconds: 60
   political_paper_one_open_position_per_contract: true
   political_paper_one_open_position_per_base_lane: true
+  # Trump Say and Trump Mention share the same reviewed occurrence window.
+  # Their control-paper exposure is intentionally capped below the global
+  # $100/four-position envelope; this remains paper-only authority.
+  political_paper_risk_groups:
+    - risk_group_id: trump_aug_10
+      reviewed_event_ids:
+        - kalshi:KXTRUMPMENTION-26AUG10
+        - kalshi:KXTRUMPSAY-26AUG10
+      max_total_reserved_cap: 50
+      max_open_positions: 2
   min_event_clusters: 50
   min_intents: 200
   max_research_drawdown: 50

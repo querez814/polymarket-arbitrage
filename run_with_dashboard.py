@@ -855,6 +855,17 @@ class TradingBotWithDashboard:
                     ),
                     "one_open_position_per_contract": policy.political_paper_one_open_position_per_contract,
                     "one_open_position_per_base_lane": policy.political_paper_one_open_position_per_base_lane,
+                    "reviewed_risk_groups": [
+                        {
+                            "risk_group_id": group.risk_group_id,
+                            "reviewed_event_ids": list(group.reviewed_event_ids),
+                            "max_total_reserved_micros": int(
+                                Decimal(str(group.max_total_reserved_cap)) * 1_000_000
+                            ),
+                            "max_open_positions": group.max_open_positions,
+                        }
+                        for group in policy.political_paper_risk_groups
+                    ],
                     "entry_slippage_per_contract": "0.01",
                     "exit_slippage_per_contract": "0.01",
                     "exit_rule": {

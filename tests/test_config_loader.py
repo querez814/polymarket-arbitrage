@@ -154,6 +154,38 @@ def test_political_v2_profile_is_isolated_real_data_shadow_collection():
     )
     assert config.platform_opportunity.political_paper_one_open_position_per_contract
     assert config.platform_opportunity.political_paper_one_open_position_per_base_lane
+    assert len(config.platform_opportunity.political_paper_risk_groups) == 1
+    group = config.platform_opportunity.political_paper_risk_groups[0]
+    assert group.risk_group_id == "trump_aug_10"
+    assert group.reviewed_event_ids == (
+        "kalshi:KXTRUMPMENTION-26AUG10",
+        "kalshi:KXTRUMPSAY-26AUG10",
+    )
+    assert group.max_total_reserved_cap == 50
+    assert group.max_open_positions == 2
+
+
+def test_political_paper_risk_groups_reject_unreviewed_or_ambiguous_events(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+platform_opportunity:
+  reviewed_pinned_event_ids: [kalshi:KXTRUMPSAY-26AUG10]
+  political_paper_risk_groups:
+    - risk_group_id: first
+      reviewed_event_ids: [kalshi:KXTRUMPSAY-26AUG10]
+      max_total_reserved_cap: 50
+      max_open_positions: 2
+    - risk_group_id: second
+      reviewed_event_ids: [kalshi:KXTRUMPSAY-26AUG10]
+      max_total_reserved_cap: 50
+      max_open_positions: 2
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="only one political paper risk group"):
+        load_config(str(config_path))
 
 
 def test_political_v2_profile_disables_legacy_discovery_and_semantic_runtime():
