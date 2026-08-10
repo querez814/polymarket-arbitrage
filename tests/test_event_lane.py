@@ -122,6 +122,20 @@ def test_store_records_lane_transitions_without_per_scan_duplicates(tmp_path):
         )
         now[0] = event_at - timedelta(minutes=3)
         store.record_event_lane_snapshot(scheduler.schedule([link]))
+        store.record_event_operational_failure(
+            event_id=link.event_id,
+            pair_id=link.pair_id,
+            lane_state="burst",
+            reason_code="paired_snapshot_timeout",
+            observed_at=now[0],
+        )
+        store.record_event_operational_failure(
+            event_id=link.event_id,
+            pair_id=link.pair_id,
+            lane_state="burst",
+            reason_code="economics_unavailable",
+            observed_at=now[0],
+        )
         transitions = store.recent_event_lane_transitions(limit=10)
         scorecard = store.event_week_scorecard()
     finally:
@@ -129,5 +143,15 @@ def test_store_records_lane_transitions_without_per_scan_duplicates(tmp_path):
 
     assert [row["lane_state"] for row in reversed(transitions)] == ["hot", "burst"]
     assert all(row["event_id"] == link.event_id for row in transitions)
-    assert scorecard["operational_failure_count"] == 1
-    assert scorecard["operational_failures"] == {"paired_snapshot_timeout": 1}
+    assert scorecard["operational_failure_count"] == 3
+    assert scorecard["operational_failures"] == {
+        "economics_unavailable": 1,
+        "paired_snapshot_timeout": 2,
+    }
+    assert scorecard["operational_failures_by_lane"] == {
+        "burst": {
+            "economics_unavailable": 1,
+            "paired_snapshot_timeout": 1,
+        },
+        "hot": {"paired_snapshot_timeout": 1},
+    }

@@ -2280,6 +2280,7 @@ class PaperTradeStore:
             "average_edge_lift": None,
             "operational_failure_count": 0,
             "operational_failures": {},
+            "operational_failures_by_lane": {},
             "by_lane": {},
         }
         if selected_run_id is None:
@@ -2313,11 +2314,28 @@ class PaperTradeStore:
             str(row["reason_code"]): int(row["observation_count"])
             for row in failure_rows
         }
+        failure_lane_rows = self._conn.execute(
+            """
+            SELECT lane_state, reason_code, SUM(observation_count) AS observation_count
+            FROM event_operational_failures
+            WHERE run_id = ?
+            GROUP BY lane_state, reason_code
+            ORDER BY lane_state, reason_code
+            """,
+            (selected_run_id,),
+        ).fetchall()
+        operational_failures_by_lane: dict[str, dict[str, int]] = {}
+        for row in failure_lane_rows:
+            lane_state = str(row["lane_state"])
+            operational_failures_by_lane.setdefault(lane_state, {})[
+                str(row["reason_code"])
+            ] = int(row["observation_count"])
         if total is None or int(total["evaluation_count"]) == 0:
             return {
                 **empty,
                 "operational_failure_count": sum(operational_failures.values()),
                 "operational_failures": operational_failures,
+                "operational_failures_by_lane": operational_failures_by_lane,
             }
         lanes = self._conn.execute(
             """
@@ -2372,6 +2390,7 @@ class PaperTradeStore:
             ),
             "operational_failure_count": sum(operational_failures.values()),
             "operational_failures": operational_failures,
+            "operational_failures_by_lane": operational_failures_by_lane,
             "by_lane": {
                 str(row["event_lane_state"]): {
                     "evaluation_count": int(row["evaluation_count"]),
