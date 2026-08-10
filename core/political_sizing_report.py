@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence, TypedDict
 
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.political_sizing_scenarios import (
@@ -206,6 +206,23 @@ class PoliticalSizingScenarioReport:
     lifecycle_evidence: tuple[PoliticalSizingLifecycleEvidence, ...] = ()
 
 
+class _OpenRiskGroup(TypedDict):
+    """Mutable, local-only reserve state for one correlated risk group."""
+
+    open_positions: int
+    reserved_micros: int
+
+
+class _OpenPosition(TypedDict):
+    """Mutable, local-only position state derived from one sealed entry."""
+
+    quantity: int
+    basis_micros: int
+    milestone_id: str
+    base_lane: str
+    risk_group_id: str
+
+
 @dataclass(frozen=True)
 class PoliticalSizingReportBundle:
     """One explicitly read-only fan-out of a shared sealed evidence cohort.
@@ -286,8 +303,8 @@ def evaluate_political_sizing_scenario(
     reserved_micros = 0
     open_contracts: set[str] = set()
     open_occurrences: set[tuple[str, str]] = set()
-    open_risk_groups: dict[str, dict[str, int]] = {}
-    open_positions: dict[str, dict[str, int | str]] = {}
+    open_risk_groups: dict[str, _OpenRiskGroup] = {}
+    open_positions: dict[str, _OpenPosition] = {}
     allocations: list[PoliticalSizingAllocation] = []
     exits: list[PoliticalSizingExit] = []
     realized_pnl_micros = 0
@@ -297,7 +314,13 @@ def evaluate_political_sizing_scenario(
     peak_realized_pnl_micros = 0
     maximum_drawdown_micros = 0
     completed_exit = False
-    timeline = sorted(
+    timeline: list[
+        tuple[
+            int,
+            Literal["entry", "exit"],
+            PoliticalSizingOpportunity | PoliticalSizingExitEvidence,
+        ]
+    ] = sorted(
         (
             *((item.entry_replay_sequence, "entry", item) for item in opportunities),
             *((item.exit_replay_sequence, "exit", item) for item in exit_evidence),
@@ -376,15 +399,15 @@ def evaluate_political_sizing_scenario(
                         (str(position["milestone_id"]), str(position["base_lane"]))
                     )
                     del open_positions[evidence.contract_id]
-                    risk_group = str(position["risk_group_id"])
-                    group = open_risk_groups[risk_group]
+                    closed_risk_group_id = str(position["risk_group_id"])
+                    group = open_risk_groups[closed_risk_group_id]
                     group["open_positions"] -= 1
                     group["reserved_micros"] -= released
                     if group["open_positions"] == 0:
-                        del open_risk_groups[risk_group]
+                        del open_risk_groups[closed_risk_group_id]
                 else:
-                    risk_group = str(position["risk_group_id"])
-                    open_risk_groups[risk_group]["reserved_micros"] -= released
+                    open_risk_group_id = str(position["risk_group_id"])
+                    open_risk_groups[open_risk_group_id]["reserved_micros"] -= released
                 exits.append(
                     PoliticalSizingExit(
                         contract_id=evidence.contract_id,
@@ -457,7 +480,7 @@ def evaluate_political_sizing_scenario(
             )
             continue
         risk_group = open_risk_groups.get(
-            risk_group_id, {"open_positions": 0, "reserved_micros": 0}
+            risk_group_id, _OpenRiskGroup(open_positions=0, reserved_micros=0)
         )
         if (
             scenario.max_open_positions_per_risk_group is not None
@@ -555,17 +578,17 @@ def evaluate_political_sizing_scenario(
             peak_capital_used_micros = max(peak_capital_used_micros, reserved_micros)
             open_contracts.add(evidence.contract_id)
             open_occurrences.add(occurrence)
-            open_positions[evidence.contract_id] = {
-                "quantity": executable,
-                "basis_micros": debit,
-                "milestone_id": evidence.milestone_id,
-                "base_lane": evidence.base_lane,
-                "risk_group_id": risk_group_id,
-            }
-            open_risk_groups[risk_group_id] = {
-                "open_positions": risk_group["open_positions"] + 1,
-                "reserved_micros": risk_group["reserved_micros"] + debit,
-            }
+            open_positions[evidence.contract_id] = _OpenPosition(
+                quantity=executable,
+                basis_micros=debit,
+                milestone_id=evidence.milestone_id,
+                base_lane=evidence.base_lane,
+                risk_group_id=risk_group_id,
+            )
+            open_risk_groups[risk_group_id] = _OpenRiskGroup(
+                open_positions=risk_group["open_positions"] + 1,
+                reserved_micros=risk_group["reserved_micros"] + debit,
+            )
             allocations.append(
                 _allocation(
                     scenario_id,
@@ -705,11 +728,11 @@ def _validate_common_lifecycle(
             raise ValueError(
                 "sizing opportunity is absent from common sealed lifecycle"
             )
-    for item in exit_evidence:
+    for exit_item in exit_evidence:
         if (
-            item.exit_replay_sequence,
-            item.exit_replay_hash,
-            item.contract_id,
+            exit_item.exit_replay_sequence,
+            exit_item.exit_replay_hash,
+            exit_item.contract_id,
         ) not in exits:
             raise ValueError("sizing exit is absent from common sealed lifecycle")
 
