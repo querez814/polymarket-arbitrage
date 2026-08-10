@@ -32,6 +32,7 @@ from core.platform_opportunities import (
 )
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.political_sizing_scenarios import required_political_sizing_scenarios
+from core.political_sizing_evidence import sealed_political_sizing_evidence
 from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
     PoliticalSizingExitEvidence,
@@ -1370,6 +1371,7 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     partially_closed = ledger._exit_position(
         position_id=result["payload"]["position_id"],
         replay_sequence=first_exit["event"]["sequence"],
+        trigger="event_boundary",
     )
     assert partially_closed["outcome"] == "partial"
     assert partially_closed["payload"]["quantity"] == 4
@@ -1393,6 +1395,7 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
     closed = ledger._exit_position(
         position_id=result["payload"]["position_id"],
         replay_sequence=final_exit["event"]["sequence"],
+        trigger="event_boundary",
     )
     assert closed["outcome"] == "closed"
     assert closed["payload"]["quantity"] == 6
@@ -1408,6 +1411,20 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         "realized_pnl_micros": 950_000,
         "payload": closed["payload"],
     }
+    opportunities, exit_evidence = sealed_political_sizing_evidence(
+        store=store, cohort_id="cohort:causal"
+    )
+    assert [
+        (item.signal_id, item.entry_replay_sequence, item.entry_replay_hash)
+        for item in opportunities
+    ] == [("signal:causal-fill", 2, later["state_hash"])]
+    assert [
+        (item.exit_replay_sequence, item.exit_replay_hash, item.trigger)
+        for item in exit_evidence
+    ] == [
+        (3, first_exit["state_hash"], "event_boundary"),
+        (4, final_exit["state_hash"], "event_boundary"),
+    ]
     assert ledger.snapshot() == {
         "account": {
             "starting_cash_micros": 1_000_000_000,
