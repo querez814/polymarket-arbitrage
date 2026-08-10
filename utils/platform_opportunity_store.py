@@ -2725,28 +2725,51 @@ class PlatformOpportunityStore:
         )
         payload = _json(signal) if signal is not None else _json({})
         signal_id = str(signal.intent_id) if signal is not None else None
-        with self._lock, self._connection:
-            inserted = self._connection.execute(
-                "INSERT OR IGNORE INTO political_scored_decisions "
-                "(cohort_id, replay_sequence, model_version, model_config_hash, "
-                "signal_id, outcome, state_hash, fee_hash, event_id, milestone_id, "
-                "payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    cohort_id,
-                    replay_sequence,
-                    model_version,
-                    model_config_hash,
-                    signal_id,
-                    "signal" if signal is not None else "no_signal",
-                    str(event["state_hash"]),
-                    str(event["fee_hash"]),
-                    event.get("reviewed_lock_event_id"),
-                    event.get("reviewed_milestone_id"),
-                    payload,
-                    _utc_iso(created_at),
-                ),
-            ).rowcount
-        return bool(inserted)
+        envelope = (
+            model_version,
+            model_config_hash,
+            signal_id,
+            "signal" if signal is not None else "no_signal",
+            str(event["state_hash"]),
+            str(event["fee_hash"]),
+            event.get("reviewed_lock_event_id"),
+            event.get("reviewed_milestone_id"),
+            payload,
+        )
+        with self._lock:
+            connection = self._connection
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT model_version, model_config_hash, signal_id, outcome, "
+                    "state_hash, fee_hash, event_id, milestone_id, payload_json "
+                    "FROM political_scored_decisions WHERE cohort_id = ? "
+                    "AND replay_sequence = ?",
+                    (cohort_id, replay_sequence),
+                ).fetchone()
+                if existing is not None:
+                    sealed = tuple(existing)
+                    if sealed != envelope:
+                        raise ValueError("conflicting sealed scored decision retry")
+                    connection.commit()
+                    return False
+                connection.execute(
+                    "INSERT INTO political_scored_decisions "
+                    "(cohort_id, replay_sequence, model_version, model_config_hash, "
+                    "signal_id, outcome, state_hash, fee_hash, event_id, milestone_id, "
+                    "payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        cohort_id,
+                        replay_sequence,
+                        *envelope,
+                        _utc_iso(created_at),
+                    ),
+                )
+                connection.commit()
+                return True
+            except Exception:
+                connection.rollback()
+                raise
 
     def political_scored_decision(
         self, *, cohort_id: str, replay_sequence: int, model_version: str

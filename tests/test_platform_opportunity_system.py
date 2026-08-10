@@ -1329,6 +1329,61 @@ def test_political_pending_signal_binds_sealed_identity_envelope(tmp_path):
     assert ledger.record_pending_signal(**signal) is False
 
 
+def test_political_scored_decision_rejects_conflicting_sealed_retries(tmp_path):
+    """A replay token has one immutable political score envelope."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    replay = store.record_replay_observation(
+        cohort_id="cohort:scored-conflict",
+        contract_id="kalshi:KXSCORED",
+        normalized_book={
+            "schema_version": 1,
+            "yes": {"bids": [[0.51, 10]], "asks": [[0.52, 10]]},
+            "no": {"bids": [[0.48, 10]], "asks": [[0.49, 10]]},
+        },
+        fee_schedule={"schema_version": 1, "venue": "kalshi", "fee_type": "none"},
+        lock_phase="hot",
+        observed_at=NOW + timedelta(milliseconds=100),
+        request_started_at=NOW,
+        received_at=NOW + timedelta(milliseconds=100),
+        reviewed_lock={
+            "event_id": "event:scored",
+            "milestone_id": "milestone:scored",
+            "event_start_at": NOW.isoformat(),
+            "event_end_at": (NOW + timedelta(hours=1)).isoformat(),
+            "selected_at": NOW.isoformat(),
+        },
+    )
+    arguments = {
+        "cohort_id": "cohort:scored-conflict",
+        "replay_sequence": replay["event"]["sequence"],
+        "model_version": "sealed-model-v1",
+        "model_config_hash": "sealed-config-v1",
+        "signal": SimpleNamespace(intent_id="signal:scored", strength="original"),
+        "created_at": NOW + timedelta(milliseconds=100),
+    }
+
+    assert store.record_political_scored_decision(**arguments) is True
+    assert store.record_political_scored_decision(**arguments) is False
+
+    for conflicting in (
+        {"model_version": "forged-model-v2"},
+        {"model_config_hash": "forged-config-v2"},
+        {"signal": None},
+        {"signal": SimpleNamespace(intent_id="signal:scored", strength="forged")},
+        {"signal": SimpleNamespace(intent_id="signal:forged", strength="original")},
+    ):
+        with pytest.raises(ValueError, match="conflicting sealed scored decision"):
+            store.record_political_scored_decision(**{**arguments, **conflicting})
+
+    decision = store.political_scored_decision(
+        cohort_id="cohort:scored-conflict",
+        replay_sequence=replay["event"]["sequence"],
+        model_version="sealed-model-v1",
+    )
+    assert decision["signal_id"] == "signal:scored"
+    assert "strength='original'" in decision["signal"]
+
+
 def test_political_paper_ttl_sweeper_durably_consumes_expired_signal_on_restart(
     tmp_path,
 ):
