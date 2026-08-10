@@ -220,6 +220,59 @@ async def test_typed_event_catalog_pages_exact_targets_and_deduplicates(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("terminal_cursor", [None, "", " \t "])
+async def test_typed_event_catalog_normalizes_terminal_cursors_to_source_exhaustion(
+    monkeypatch, terminal_cursor
+):
+    client = KalshiClient(dry_run=True)
+    monkeypatch.setattr(
+        client,
+        "_get",
+        AsyncMock(return_value={"events": [], "cursor": terminal_cursor}),
+    )
+
+    page = await client.list_events_page()
+    catalog = await client.list_event_catalog()
+
+    assert page.cursor is None
+    assert page.complete is True
+    assert page.stop_reason == "source_exhausted"
+    assert catalog.cursor is None
+    assert catalog.complete is True
+    assert catalog.stop_reason == "source_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_typed_event_catalog_preserves_non_empty_next_cursor(monkeypatch):
+    client = KalshiClient(dry_run=True)
+    monkeypatch.setattr(
+        client,
+        "_get",
+        AsyncMock(return_value={"events": [], "cursor": " next-page "}),
+    )
+
+    page = await client.list_events_page()
+
+    assert page.cursor == "next-page"
+    assert page.complete is False
+    assert page.stop_reason == "cursor_remaining"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_cursor", [0, False, []])
+async def test_typed_event_catalog_rejects_non_text_cursor(monkeypatch, invalid_cursor):
+    client = KalshiClient(dry_run=True)
+    monkeypatch.setattr(
+        client,
+        "_get",
+        AsyncMock(return_value={"events": [], "cursor": invalid_cursor}),
+    )
+
+    with pytest.raises(ValueError, match="cursor must be text or null"):
+        await client.list_events_page()
+
+
+@pytest.mark.asyncio
 async def test_typed_event_catalog_rejects_missing_requested_nested_markets(
     monkeypatch,
 ):

@@ -764,15 +764,21 @@ class KalshiClient:
                 if milestone is None:
                     raise ValueError("Kalshi milestone payload is invalid")
                 milestones.append(milestone)
-        next_cursor = data.get("cursor")
-        if next_cursor is not None and (
-            not isinstance(next_cursor, str) or not next_cursor.strip()
-        ):
-            raise ValueError("Kalshi event cursor must be non-empty text")
+        raw_next_cursor = data.get("cursor")
+        if raw_next_cursor is not None and not isinstance(raw_next_cursor, str):
+            raise ValueError("Kalshi event cursor must be text or null")
+        # Kalshi uses an empty cursor as its terminal-page sentinel. Normalize
+        # that transport detail at the typed boundary so all catalog callers
+        # have one unambiguous source-exhaustion representation.
+        next_cursor = (
+            raw_next_cursor.strip()
+            if isinstance(raw_next_cursor, str) and raw_next_cursor.strip()
+            else None
+        )
         return KalshiEventCatalogPage(
             events=tuple(events),
             milestones=tuple(milestones),
-            cursor=next_cursor.strip() if isinstance(next_cursor, str) else None,
+            cursor=next_cursor,
             decoded_bytes=len(
                 json.dumps(data, default=str, sort_keys=True).encode("utf-8")
             ),
