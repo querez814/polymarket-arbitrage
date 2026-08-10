@@ -33,7 +33,10 @@ from core.platform_opportunities import (
 )
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.political_sizing_scenarios import required_political_sizing_scenarios
-from core.political_sizing_evidence import sealed_political_sizing_evidence
+from core.political_sizing_evidence import (
+    sealed_political_sizing_evidence,
+    sealed_political_sizing_lifecycle_evidence,
+)
 from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
     PoliticalSizingExitEvidence,
@@ -1457,6 +1460,13 @@ def test_political_paper_ttl_sweeper_durably_consumes_expired_signal_on_restart(
         "idempotent": True,
         "payload": expired[0]["payload"],
     }
+    lifecycle = sealed_political_sizing_lifecycle_evidence(
+        store=restarted.store, cohort_id="cohort:ttl"
+    )
+    assert [(item.kind, item.signal_id, item.replay_hash) for item in lifecycle] == [
+        ("no_fill", "signal:ttl", replay["state_hash"]),
+        ("pending", "signal:ttl", replay["state_hash"]),
+    ]
 
 
 def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp_path):
@@ -1617,6 +1627,42 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
             "partial_exits": 1,
         },
     }
+    no_signal = store.record_replay_observation(
+        cohort_id="cohort:causal",
+        contract_id="kalshi:KXCAUSAL",
+        normalized_book=book,
+        fee_schedule=_authoritative_kalshi_fee(),
+        lock_phase="hot",
+        observed_at=NOW + timedelta(seconds=7),
+        request_started_at=NOW + timedelta(seconds=6, milliseconds=1),
+        received_at=NOW + timedelta(seconds=7),
+    )
+    assert store.record_political_scored_decision(
+        cohort_id="cohort:causal",
+        replay_sequence=no_signal["event"]["sequence"],
+        model_version="depth-imbalance-reaction-experimental-v1",
+        model_config_hash="config-hash",
+        signal=None,
+        created_at=NOW + timedelta(seconds=7),
+    )
+    lifecycle = sealed_political_sizing_lifecycle_evidence(
+        store=store, cohort_id="cohort:causal"
+    )
+    assert [item.kind for item in lifecycle] == [
+        "pending",
+        "filled",
+        "exit",
+        "exit",
+        "no_signal",
+    ]
+    assert [item.replay_hash for item in lifecycle] == [
+        first["state_hash"],
+        later["state_hash"],
+        first_exit["state_hash"],
+        final_exit["state_hash"],
+        no_signal["state_hash"],
+    ]
+    assert lifecycle[-1].signal_id is None
 
 
 def test_political_paper_never_skips_the_first_later_same_contract_token(tmp_path):

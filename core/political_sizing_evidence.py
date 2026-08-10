@@ -9,7 +9,9 @@ allocates, or writes a scenario row.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from decimal import Decimal
+from typing import Literal
 
 from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
@@ -17,6 +19,177 @@ from core.political_sizing_report import (
     PoliticalSizingOpportunity,
 )
 from utils.platform_opportunity_store import PlatformOpportunityStore
+
+
+@dataclass(frozen=True)
+class PoliticalSizingLifecycleEvidence:
+    """One immutable lifecycle fact shared by every sizing interpretation.
+
+    This is intentionally broader than an allocatable opportunity.  A
+    no-signal, pending signal, terminal no-fill, or no-exit is evidence that
+    every counterfactual must see, even though none may become hypothetical
+    PnL.  ``replay_hash`` always names the sealed replay token on which the
+    fact was decided; ``signal_id`` is absent only for a sealed no-signal.
+    """
+
+    evidence_cohort_id: str
+    kind: Literal["signal", "no_signal", "pending", "filled", "no_fill", "exit"]
+    replay_sequence: int
+    replay_hash: str
+    contract_id: str
+    signal_id: str | None = None
+    outcome: str | None = None
+    reason: str | None = None
+    trigger: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not all(
+                (
+                    self.evidence_cohort_id,
+                    self.replay_hash,
+                    self.contract_id,
+                )
+            )
+            or self.replay_sequence < 1
+        ):
+            raise ValueError("sealed lifecycle evidence identity is required")
+        if self.kind == "no_signal":
+            if self.signal_id is not None:
+                raise ValueError("sealed no-signal evidence cannot have a signal id")
+        elif not self.signal_id:
+            raise ValueError("sealed lifecycle evidence requires a signal id")
+
+
+def sealed_political_sizing_lifecycle_evidence(
+    *, store: PlatformOpportunityStore, cohort_id: str
+) -> tuple[PoliticalSizingLifecycleEvidence, ...]:
+    """Load the complete sealed lifecycle stream without allocating or writing.
+
+    The legacy entry/exit projection below deliberately remains narrow for the
+    existing evaluator.  This universal stream is the common counterfactual
+    input: it retains scored no-signals, pending state, terminal no-fills, and
+    all exit attempts (including ``no_exit``) so a scenario cannot manufacture
+    a missing trade or favorable exit by observing only control allocations.
+    """
+    if not cohort_id.strip():
+        raise ValueError("evidence cohort id must be non-empty")
+    with store._lock:
+        scored_rows = store._connection.execute(
+            "SELECT decision.replay_sequence, replay.state_hash, replay.contract_id, "
+            "decision.signal_id, decision.outcome "
+            "FROM political_scored_decisions AS decision "
+            "JOIN platform_replay_observation_events AS replay "
+            "ON replay.cohort_id = decision.cohort_id "
+            "AND replay.sequence = decision.replay_sequence "
+            "WHERE decision.cohort_id = ? "
+            "ORDER BY decision.replay_sequence, decision.model_version",
+            (cohort_id,),
+        ).fetchall()
+        pending_rows = store._connection.execute(
+            "SELECT pending.replay_sequence, replay.state_hash, pending.contract_id, "
+            "pending.signal_id FROM political_experimental_pending_signals AS pending "
+            "JOIN platform_replay_observation_events AS replay "
+            "ON replay.cohort_id = pending.cohort_id "
+            "AND replay.sequence = pending.replay_sequence "
+            "WHERE pending.cohort_id = ? "
+            "ORDER BY pending.replay_sequence, pending.signal_id",
+            (cohort_id,),
+        ).fetchall()
+        fill_rows = store._connection.execute(
+            "SELECT attempt.replay_sequence, replay.state_hash, pending.contract_id, "
+            "attempt.signal_id, attempt.outcome, attempt.reason "
+            "FROM political_experimental_fill_attempts AS attempt "
+            "JOIN political_experimental_pending_signals AS pending "
+            "ON pending.signal_id = attempt.signal_id "
+            "JOIN platform_replay_observation_events AS replay "
+            "ON replay.cohort_id = attempt.cohort_id "
+            "AND replay.sequence = attempt.replay_sequence "
+            "WHERE attempt.cohort_id = ? "
+            "ORDER BY attempt.replay_sequence, attempt.signal_id",
+            (cohort_id,),
+        ).fetchall()
+        exit_rows = store._connection.execute(
+            "SELECT exit.replay_sequence, replay.state_hash, pending.contract_id, "
+            "pending.signal_id, exit.outcome, exit.reason, exit.payload_json "
+            "FROM political_experimental_pending_signals AS pending "
+            "JOIN political_experimental_fill_attempts AS fill "
+            "ON fill.signal_id = pending.signal_id AND fill.outcome = 'filled' "
+            "JOIN political_experimental_exit_attempts AS exit "
+            "ON exit.cohort_id = pending.cohort_id "
+            "AND exit.position_id = 'position:' || pending.signal_id "
+            "JOIN platform_replay_observation_events AS replay "
+            "ON replay.cohort_id = exit.cohort_id "
+            "AND replay.sequence = exit.replay_sequence "
+            "WHERE pending.cohort_id = ? "
+            "ORDER BY exit.replay_sequence, exit.position_id",
+            (cohort_id,),
+        ).fetchall()
+
+    lifecycle: list[PoliticalSizingLifecycleEvidence] = []
+    lifecycle.extend(
+        PoliticalSizingLifecycleEvidence(
+            evidence_cohort_id=cohort_id,
+            kind=("signal" if row["outcome"] == "signal" else "no_signal"),
+            replay_sequence=int(row["replay_sequence"]),
+            replay_hash=str(row["state_hash"]),
+            contract_id=str(row["contract_id"]),
+            signal_id=(None if row["signal_id"] is None else str(row["signal_id"])),
+            outcome=str(row["outcome"]),
+        )
+        for row in scored_rows
+    )
+    lifecycle.extend(
+        PoliticalSizingLifecycleEvidence(
+            evidence_cohort_id=cohort_id,
+            kind="pending",
+            replay_sequence=int(row["replay_sequence"]),
+            replay_hash=str(row["state_hash"]),
+            contract_id=str(row["contract_id"]),
+            signal_id=str(row["signal_id"]),
+        )
+        for row in pending_rows
+    )
+    lifecycle.extend(
+        PoliticalSizingLifecycleEvidence(
+            evidence_cohort_id=cohort_id,
+            kind=("filled" if row["outcome"] == "filled" else "no_fill"),
+            replay_sequence=int(row["replay_sequence"]),
+            replay_hash=str(row["state_hash"]),
+            contract_id=str(row["contract_id"]),
+            signal_id=str(row["signal_id"]),
+            outcome=str(row["outcome"]),
+            reason=(None if row["reason"] is None else str(row["reason"])),
+        )
+        for row in fill_rows
+    )
+    for row in exit_rows:
+        payload = json.loads(str(row["payload_json"]))
+        economics = payload.get("economics")
+        trigger = economics.get("exit_trigger") if isinstance(economics, dict) else None
+        lifecycle.append(
+            PoliticalSizingLifecycleEvidence(
+                evidence_cohort_id=cohort_id,
+                kind="exit",
+                replay_sequence=int(row["replay_sequence"]),
+                replay_hash=str(row["state_hash"]),
+                contract_id=str(row["contract_id"]),
+                signal_id=str(row["signal_id"]),
+                outcome=str(row["outcome"]),
+                reason=(None if row["reason"] is None else str(row["reason"])),
+                trigger=trigger if isinstance(trigger, str) else None,
+            )
+        )
+    return tuple(
+        sorted(
+            lifecycle,
+            key=lambda item: (
+                item.replay_sequence,
+                item.kind,
+                item.signal_id or "",
+            ),
+        )
+    )
 
 
 def sealed_political_sizing_evidence(
