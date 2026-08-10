@@ -107,7 +107,10 @@ from core.platform_opportunities import (
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
-from core.political_sizing_evidence import sealed_political_sizing_evidence
+from core.political_sizing_evidence import (
+    sealed_political_sizing_evidence,
+    sealed_political_sizing_lifecycle_evidence,
+)
 from core.political_sizing_report import evaluate_required_political_sizing_scenarios
 from utils.config_loader import (
     BotConfig,
@@ -1070,6 +1073,10 @@ class TradingBotWithDashboard:
                 store=store,
                 cohort_id=system.cohort_id,
             )
+            lifecycle = sealed_political_sizing_lifecycle_evidence(
+                store=store,
+                cohort_id=system.cohort_id,
+            )
             if not opportunities:
                 payload = {
                     "label": "counterfactual_sizing",
@@ -1091,6 +1098,7 @@ class TradingBotWithDashboard:
                 payload = evaluate_required_political_sizing_scenarios(
                     opportunities=opportunities,
                     exit_evidence=exits,
+                    lifecycle_evidence=lifecycle,
                     starting_cash_micros=starting_cash_micros,
                     displayed_depth_fraction=Decimal(
                         str(

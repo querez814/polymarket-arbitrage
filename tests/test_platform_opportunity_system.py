@@ -1663,6 +1663,42 @@ def test_political_paper_opens_only_from_a_strictly_later_causal_replay_book(tmp
         no_signal["state_hash"],
     ]
     assert lifecycle[-1].signal_id is None
+    bundle = evaluate_required_political_sizing_scenarios(
+        opportunities=opportunities,
+        exit_evidence=exit_evidence,
+        lifecycle_evidence=lifecycle,
+        starting_cash_micros=1_000_000_000,
+    )
+    expected_identity = tuple(
+        (item.kind, item.signal_id, item.replay_hash) for item in lifecycle
+    )
+    assert all(
+        tuple(
+            (item.kind, item.signal_id, item.replay_hash)
+            for item in report.lifecycle_evidence
+        )
+        == expected_identity
+        for report in bundle.reports
+    )
+    assert all(
+        [
+            (allocation.signal_id, allocation.entry_replay_hash)
+            for allocation in report.allocations
+        ]
+        == [("signal:causal-fill", later["state_hash"])]
+        for report in bundle.reports
+    )
+
+    missing_fill = tuple(item for item in lifecycle if item.kind != "filled")
+    with pytest.raises(
+        ValueError, match="sizing opportunity is absent from common sealed lifecycle"
+    ):
+        evaluate_required_political_sizing_scenarios(
+            opportunities=opportunities,
+            exit_evidence=exit_evidence,
+            lifecycle_evidence=missing_fill,
+            starting_cash_micros=1_000_000_000,
+        )
 
 
 def test_political_paper_never_skips_the_first_later_same_contract_token(tmp_path):

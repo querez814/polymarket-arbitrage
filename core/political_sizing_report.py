@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
 from core.political_sizing_scenarios import (
@@ -153,6 +153,39 @@ class PoliticalSizingExit:
 
 
 @dataclass(frozen=True)
+class PoliticalSizingLifecycleEvidence:
+    """A sealed lifecycle fact every sizing policy receives unchanged.
+
+    This includes non-allocatable facts (no signal, pending, and no fill), so
+    counterfactual policies cannot selectively see only the control ledger's
+    executions.  ``replay_hash`` is the immutable identity of the source
+    observation rather than a scenario-specific calculation.
+    """
+
+    evidence_cohort_id: str
+    kind: Literal["signal", "no_signal", "pending", "filled", "no_fill", "exit"]
+    replay_sequence: int
+    replay_hash: str
+    contract_id: str
+    signal_id: str | None = None
+    outcome: str | None = None
+    reason: str | None = None
+    trigger: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not all((self.evidence_cohort_id, self.replay_hash, self.contract_id))
+            or self.replay_sequence < 1
+        ):
+            raise ValueError("sealed lifecycle evidence identity is required")
+        if self.kind == "no_signal":
+            if self.signal_id is not None:
+                raise ValueError("sealed no-signal evidence cannot have a signal id")
+        elif not self.signal_id:
+            raise ValueError("sealed lifecycle evidence requires a signal id")
+
+
+@dataclass(frozen=True)
 class PoliticalSizingScenarioReport:
     """Chronological read-only scenario outcome with no account side effects."""
 
@@ -170,6 +203,7 @@ class PoliticalSizingScenarioReport:
     open_unrealized_pnl_micros: int | None
     open_valuation_complete: bool
     maximum_drawdown_micros: int | None
+    lifecycle_evidence: tuple[PoliticalSizingLifecycleEvidence, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -218,6 +252,7 @@ def evaluate_political_sizing_scenario(
     scenario: PoliticalSizingScenario,
     opportunities: Sequence[PoliticalSizingOpportunity],
     exit_evidence: Sequence[PoliticalSizingExitEvidence] = (),
+    lifecycle_evidence: Sequence[PoliticalSizingLifecycleEvidence] = (),
     starting_cash_micros: int,
     displayed_depth_fraction: Decimal = Decimal("0.10"),
 ) -> PoliticalSizingScenarioReport:
@@ -240,6 +275,12 @@ def evaluate_political_sizing_scenario(
         raise ValueError("a scenario cannot combine evidence cohorts")
     if any(item.evidence_cohort_id != cohort_id for item in exit_evidence):
         raise ValueError("a scenario cannot combine evidence cohorts")
+    _validate_common_lifecycle(
+        cohort_id=cohort_id,
+        opportunities=opportunities,
+        exit_evidence=exit_evidence,
+        lifecycle_evidence=lifecycle_evidence,
+    )
 
     scenario_id = scenario.scenario_id(evidence_cohort_id=cohort_id)
     reserved_micros = 0
@@ -592,6 +633,7 @@ def evaluate_political_sizing_scenario(
         open_unrealized_pnl_micros=None,
         open_valuation_complete=not open_positions,
         maximum_drawdown_micros=(maximum_drawdown_micros if completed_exit else None),
+        lifecycle_evidence=tuple(lifecycle_evidence),
     )
 
 
@@ -599,6 +641,7 @@ def evaluate_required_political_sizing_scenarios(
     *,
     opportunities: Sequence[PoliticalSizingOpportunity],
     exit_evidence: Sequence[PoliticalSizingExitEvidence] = (),
+    lifecycle_evidence: Sequence[PoliticalSizingLifecycleEvidence] = (),
     starting_cash_micros: int,
     displayed_depth_fraction: Decimal = Decimal("0.10"),
 ) -> PoliticalSizingReportBundle:
@@ -616,6 +659,7 @@ def evaluate_required_political_sizing_scenarios(
             scenario=scenario,
             opportunities=opportunities,
             exit_evidence=exit_evidence,
+            lifecycle_evidence=lifecycle_evidence,
             starting_cash_micros=starting_cash_micros,
             displayed_depth_fraction=displayed_depth_fraction,
         )
@@ -627,6 +671,47 @@ def evaluate_required_political_sizing_scenarios(
         control=reports[0],
         counterfactuals=reports[1:],
     )
+
+
+def _validate_common_lifecycle(
+    *,
+    cohort_id: str,
+    opportunities: Sequence[PoliticalSizingOpportunity],
+    exit_evidence: Sequence[PoliticalSizingExitEvidence],
+    lifecycle_evidence: Sequence[PoliticalSizingLifecycleEvidence],
+) -> None:
+    """Fail closed if an allocatable projection is not in the shared stream."""
+    if not lifecycle_evidence:
+        return
+    if any(item.evidence_cohort_id != cohort_id for item in lifecycle_evidence):
+        raise ValueError("a scenario cannot combine lifecycle evidence cohorts")
+    fills = {
+        (item.signal_id, item.replay_sequence, item.replay_hash, item.contract_id)
+        for item in lifecycle_evidence
+        if item.kind == "filled"
+    }
+    exits = {
+        (item.replay_sequence, item.replay_hash, item.contract_id)
+        for item in lifecycle_evidence
+        if item.kind == "exit"
+    }
+    for item in opportunities:
+        if (
+            item.signal_id,
+            item.entry_replay_sequence,
+            item.entry_replay_hash,
+            item.contract_id,
+        ) not in fills:
+            raise ValueError(
+                "sizing opportunity is absent from common sealed lifecycle"
+            )
+    for item in exit_evidence:
+        if (
+            item.exit_replay_sequence,
+            item.exit_replay_hash,
+            item.contract_id,
+        ) not in exits:
+            raise ValueError("sizing exit is absent from common sealed lifecycle")
 
 
 def _requested_entry_debit(

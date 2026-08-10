@@ -9,56 +9,15 @@ allocates, or writes a scenario row.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal
 
 from core.political_sizing_report import (
     PoliticalSizingDepthLevel,
     PoliticalSizingExitEvidence,
+    PoliticalSizingLifecycleEvidence,
     PoliticalSizingOpportunity,
 )
 from utils.platform_opportunity_store import PlatformOpportunityStore
-
-
-@dataclass(frozen=True)
-class PoliticalSizingLifecycleEvidence:
-    """One immutable lifecycle fact shared by every sizing interpretation.
-
-    This is intentionally broader than an allocatable opportunity.  A
-    no-signal, pending signal, terminal no-fill, or no-exit is evidence that
-    every counterfactual must see, even though none may become hypothetical
-    PnL.  ``replay_hash`` always names the sealed replay token on which the
-    fact was decided; ``signal_id`` is absent only for a sealed no-signal.
-    """
-
-    evidence_cohort_id: str
-    kind: Literal["signal", "no_signal", "pending", "filled", "no_fill", "exit"]
-    replay_sequence: int
-    replay_hash: str
-    contract_id: str
-    signal_id: str | None = None
-    outcome: str | None = None
-    reason: str | None = None
-    trigger: str | None = None
-
-    def __post_init__(self) -> None:
-        if (
-            not all(
-                (
-                    self.evidence_cohort_id,
-                    self.replay_hash,
-                    self.contract_id,
-                )
-            )
-            or self.replay_sequence < 1
-        ):
-            raise ValueError("sealed lifecycle evidence identity is required")
-        if self.kind == "no_signal":
-            if self.signal_id is not None:
-                raise ValueError("sealed no-signal evidence cannot have a signal id")
-        elif not self.signal_id:
-            raise ValueError("sealed lifecycle evidence requires a signal id")
 
 
 def sealed_political_sizing_lifecycle_evidence(
