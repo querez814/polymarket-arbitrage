@@ -16,7 +16,7 @@ import statistics
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Literal, Sequence, cast
+from typing import Any, Iterable, Literal, Sequence, cast
 from collections.abc import Mapping
 
 from kalshi_client.models import KalshiMarket, KalshiMilestone
@@ -964,8 +964,17 @@ class PlatformOpportunitySystem:
         oldest_unprobed_age_seconds = None
         if unprobed:
             oldest_seen = min(
-                _aware(datetime.fromisoformat(str(row["first_seen_at"])))
-                for row in unprobed
+                (
+                    seen
+                    for row in unprobed
+                    if (
+                        seen := _aware(
+                            datetime.fromisoformat(str(row["first_seen_at"]))
+                        )
+                    )
+                    is not None
+                ),
+                default=None,
             )
             if oldest_seen is not None:
                 oldest_unprobed_age_seconds = max(

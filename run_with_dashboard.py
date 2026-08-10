@@ -26,7 +26,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Collection, Mapping
 
 import uvicorn
 from dotenv import load_dotenv
@@ -205,10 +205,12 @@ class TradingBotWithDashboard:
         self._event_calendar_snapshot = None
         self._event_calendar_refreshed_at: datetime | None = None
         self._event_pair_links: list[EventPairLink] = []
-        self.platform_opportunity_store = None
-        self.platform_opportunity_system = None
+        self.platform_opportunity_store: PlatformOpportunityStore | None = None
+        self.platform_opportunity_system: PlatformOpportunitySystem | None = None
         self.platform_opportunity_worker = None
-        self.political_experimental_paper_ledger = None
+        self.political_experimental_paper_ledger: (
+            PoliticalExperimentalPaperLedger | None
+        ) = None
         self._political_paper_ttl_task = None
         self._platform_poly_client = None
         self._platform_kalshi_client = None
@@ -906,7 +908,8 @@ class TradingBotWithDashboard:
             paper policy supply every provenance field.
             """
             ledger = self.political_experimental_paper_ledger
-            if ledger is None:
+            system = self.platform_opportunity_system
+            if ledger is None or system is None:
                 return
             # A later canonical token first consumes only prior pending
             # signals for its contract.  This must run even when scoring this
@@ -915,13 +918,9 @@ class TradingBotWithDashboard:
             # fill it.
             try:
                 ledger.process_observation(replay_sequence=token.sequence)
-                decision = self.platform_opportunity_system.political_scored_decision(
-                    token
-                )
+                decision = system.political_scored_decision(token)
                 if decision["outcome"] == "signal":
-                    context = self.platform_opportunity_system.political_replay_context(
-                        token
-                    )
+                    context = system.political_replay_context(token)
                     signal = decision["signal"]
                     if signal["contract_id"] == context["contract_id"]:
                         ledger.record_pending_signal(
@@ -1522,7 +1521,7 @@ class TradingBotWithDashboard:
         is an admission boundary for fresh reviewed locks.
         """
         targets = self._mandatory_kalshi_event_tickers(now=now)
-        status = {
+        status: dict[str, Any] = {
             "requested_event_tickers": len(targets),
             "returned_event_tickers": 0,
             "joined_event_tickers": 0,
@@ -1615,6 +1614,12 @@ class TradingBotWithDashboard:
             "events": {},
         }
 
+        if system is None or client is None:
+            status.update(
+                status="unavailable", stop_reason="dedicated_source_unavailable"
+            )
+            return [], [], status
+
         def record_failure(event_ticker: str, reason: str) -> None:
             system.store.record_kalshi_event_probe_failure(
                 event_ticker=event_ticker,
@@ -1623,12 +1628,6 @@ class TradingBotWithDashboard:
                 base_backoff_seconds=30,
                 max_backoff_seconds=900,
             )
-
-        if system is None or client is None:
-            status.update(
-                status="unavailable", stop_reason="dedicated_source_unavailable"
-            )
-            return [], [], status
 
         def finished_status() -> dict:
             status.update(system.kalshi_event_rotation_coverage(now=now))
@@ -1700,7 +1699,11 @@ class TradingBotWithDashboard:
         return markets, list(read.milestones), finished_status()
 
     async def _political_kalshi_milestones(
-        self, markets, *, now: datetime, excluded_event_tickers: set[str] = frozenset()
+        self,
+        markets,
+        *,
+        now: datetime,
+        excluded_event_tickers: Collection[str] = frozenset(),
     ):
         """Fetch exact, bounded milestone evidence for political event tickers.
 

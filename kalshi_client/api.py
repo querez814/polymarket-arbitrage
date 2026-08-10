@@ -707,7 +707,7 @@ class KalshiClient:
                             "Kalshi nested market payload must be an object"
                         )
                     market = self._parse_market(
-                        raw_market,
+                        dict(raw_market),
                         event_ticker=event_ticker,
                         event_title=event_title if isinstance(event_title, str) else "",
                         event_category=(

@@ -2087,11 +2087,14 @@ class PlatformOpportunityStore:
                 elif lane_position is not None:
                     reason = "base_lane_overlap"
                 elif risk_group_id is not None and (
-                    risk_group_open_count >= risk_group_max_open_positions
+                    risk_group_max_open_positions is not None
+                    and risk_group_open_count >= risk_group_max_open_positions
                 ):
                     reason = "risk_group_max_open_positions"
                 elif risk_group_id is not None and (
-                    risk_group_reserved + debit_micros > risk_group_max_reserved_micros
+                    risk_group_max_reserved_micros is not None
+                    and risk_group_reserved + debit_micros
+                    > risk_group_max_reserved_micros
                 ):
                     reason = "risk_group_total_reserved_cap"
                 if reason is not None:
