@@ -15,6 +15,7 @@ from core.event_lane import EventLanePolicy, EventLaneScheduler
 from core.pair_monitoring import PairTierMonitor
 from core.platform_opportunities import (
     MonitoringAssignment,
+    PoliticalEventLock,
     PlatformOpportunitySystem,
     PoliticalWatchPolicy,
     ReplayObservationToken,
@@ -73,6 +74,46 @@ def test_platform_fee_cache_expires_before_political_fee_evidence_does():
 
     bot.config.platform_opportunity.political_paper_max_fee_schedule_age_seconds = 2
     assert bot._platform_fee_cache_ttl_seconds() == pytest.approx(1.8)
+
+
+def test_mandatory_kalshi_targets_restore_raw_retained_lock_and_dedupe_forms(tmp_path):
+    """A raw persisted lock remains an exact mandatory API target after restart."""
+    now = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
+    db_path = tmp_path / "opportunities.db"
+    original = PlatformOpportunityStore(db_path)
+    original.upsert_political_event_lock(
+        PoliticalEventLock(
+            event_id="KXTRUMPSAY-26AUG10",
+            event_title="Trump remarks",
+            occurrence_at=now,
+            event_start_at=now,
+            event_end_at=now + timedelta(minutes=30),
+            locked_until=now + timedelta(hours=2),
+            selected_at=now,
+            contract_ids=(),
+        )
+    )
+    original.close()
+
+    # The ordinary bounded slice and reviewed-pin config no longer contain the
+    # event.  The restarted system must still hydrate its raw retained lock.
+    config = BotConfig()
+    config.platform_opportunity.reviewed_pinned_event_ids = [
+        "polymarket:will-trump-speak"
+    ]
+    bot = TradingBotWithDashboard(config)
+    restarted = PlatformOpportunityStore(db_path)
+    bot.platform_opportunity_system = PlatformOpportunitySystem(store=restarted)
+
+    try:
+        assert bot._mandatory_kalshi_event_tickers(now=now) == ("KXTRUMPSAY-26AUG10",)
+        config.platform_opportunity.reviewed_pinned_event_ids = [
+            "kalshi:KXTRUMPSAY-26AUG10",
+            "KXTRUMPSAY-26AUG10",
+        ]
+        assert bot._mandatory_kalshi_event_tickers(now=now) == ("KXTRUMPSAY-26AUG10",)
+    finally:
+        restarted.close()
 
 
 @pytest.mark.asyncio

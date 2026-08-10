@@ -1479,18 +1479,33 @@ class TradingBotWithDashboard:
 
     def _mandatory_kalshi_event_tickers(self, *, now: datetime) -> tuple[str, ...]:
         """Return reviewed pins plus durable retained Kalshi lock identities."""
+
+        def api_ticker(event_id: object) -> str | None:
+            """Map only canonical Kalshi event identities to API tickers.
+
+            Persisted political locks predate the config-facing venue prefix,
+            so a durable Kalshi lock is stored as its raw ``KX...`` event ID.
+            The API needs that exact raw ticker; other venue pins remain
+            unsupported by this Kalshi-only overlay.
+            """
+            if not isinstance(event_id, str):
+                return None
+            if event_id.startswith("kalshi:"):
+                event_id = event_id.removeprefix("kalshi:")
+            return event_id if event_id.startswith("KX") else None
+
         configured = (
-            event_id.removeprefix("kalshi:")
+            ticker
             for event_id in self.config.platform_opportunity.reviewed_pinned_event_ids
-            if event_id.startswith("kalshi:")
+            if (ticker := api_ticker(event_id)) is not None
         )
         retained: tuple[str, ...] = ()
         system = self.platform_opportunity_system
         if system is not None:
             retained = tuple(
-                str(lock["event_id"]).removeprefix("kalshi:")
+                ticker
                 for lock in system.store.active_political_event_locks(now=now)
-                if str(lock.get("event_id", "")).startswith("kalshi:")
+                if (ticker := api_ticker(lock.get("event_id"))) is not None
             )
         return tuple(dict.fromkeys((*configured, *retained)))
 
