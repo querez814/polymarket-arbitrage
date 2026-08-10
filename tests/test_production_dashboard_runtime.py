@@ -145,6 +145,21 @@ def test_counterfactual_dashboard_refresh_projects_sealed_evidence_without_store
     assert pane["read_only_not_realized"] is True
     assert pane["evidence_cohort_id"] == "evidence:dashboard"
     assert pane["control"]["allocations"][0]["signal_id"] == "signal:dashboard"
+    assert pane["control"]["allocations"][0] == {
+        "signal_id": "signal:dashboard",
+        "entry_replay_sequence": 7,
+        "entry_replay_hash": "hash:dashboard",
+        "event_id": "event:dashboard",
+        "milestone_id": "milestone:dashboard",
+        "contract_id": "contract:dashboard",
+        "base_lane": "event_live",
+        "risk_group_id": "milestone:dashboard",
+        "requested_quantity": 10,
+        "executable_quantity": 10,
+        "capital_used_micros": 4270000,
+        "unused_eligible_quantity": 0,
+        "saturation_reason": None,
+    }
     assert len(pane["counterfactuals"]) == 6
     assert "realized_pnl_micros" not in pane
     assert store._connection.total_changes == before

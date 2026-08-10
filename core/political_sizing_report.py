@@ -122,6 +122,11 @@ class PoliticalSizingAllocation:
     signal_id: str
     entry_replay_sequence: int
     entry_replay_hash: str
+    event_id: str
+    milestone_id: str
+    contract_id: str
+    base_lane: str
+    risk_group_id: str
     requested_quantity: int
     executable_quantity: int
     capital_used_micros: int
@@ -687,6 +692,11 @@ def _allocation(
         signal_id=evidence.signal_id,
         entry_replay_sequence=evidence.entry_replay_sequence,
         entry_replay_hash=evidence.entry_replay_hash,
+        event_id=evidence.event_id,
+        milestone_id=evidence.milestone_id,
+        contract_id=evidence.contract_id,
+        base_lane=evidence.base_lane,
+        risk_group_id=evidence.effective_risk_group_id,
         requested_quantity=requested,
         executable_quantity=executable,
         capital_used_micros=capital_used,
@@ -721,6 +731,11 @@ def _scenario_dashboard_payload(
                 "signal_id": allocation.signal_id,
                 "entry_replay_sequence": allocation.entry_replay_sequence,
                 "entry_replay_hash": allocation.entry_replay_hash,
+                "event_id": allocation.event_id,
+                "milestone_id": allocation.milestone_id,
+                "contract_id": allocation.contract_id,
+                "base_lane": allocation.base_lane,
+                "risk_group_id": allocation.risk_group_id,
                 "requested_quantity": allocation.requested_quantity,
                 "executable_quantity": allocation.executable_quantity,
                 "capital_used_micros": allocation.capital_used_micros,
