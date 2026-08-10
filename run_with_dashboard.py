@@ -107,6 +107,8 @@ from core.platform_opportunities import (
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
+from core.political_sizing_evidence import sealed_political_sizing_evidence
+from core.political_sizing_report import evaluate_required_political_sizing_scenarios
 from utils.config_loader import (
     BotConfig,
     load_config,
@@ -941,6 +943,7 @@ class TradingBotWithDashboard:
                 dashboard_state.platform_opportunity["political_experimental_paper"][
                     "snapshot"
                 ] = ledger.snapshot()
+                self._refresh_counterfactual_sizing()
 
         self.platform_opportunity_worker = PlatformOpportunityWorker(
             self.platform_opportunity_system,
@@ -1039,7 +1042,65 @@ class TradingBotWithDashboard:
             dashboard_state.platform_opportunity["political_experimental_paper"][
                 "snapshot"
             ] = await asyncio.to_thread(ledger.snapshot)
+            await asyncio.to_thread(self._refresh_counterfactual_sizing)
         return expired
+
+    def _refresh_counterfactual_sizing(self) -> None:
+        """Project durable control-paper evidence into seven read-only scenarios.
+
+        This is deliberately a dashboard-only boundary: it reads the sealed
+        replay/control-paper graph, runs the pure sizing evaluator, and writes
+        no scenario, ledger, or venue state.  A sizing failure is contained in
+        its own pane so it cannot obscure the authoritative control snapshot.
+        """
+        store = self.platform_opportunity_store
+        system = self.platform_opportunity_system
+        if store is None or system is None:
+            return
+        try:
+            opportunities, exits = sealed_political_sizing_evidence(
+                store=store,
+                cohort_id=system.cohort_id,
+            )
+            if not opportunities:
+                payload = {
+                    "label": "counterfactual_sizing",
+                    "status": "no_sealed_evidence",
+                    "read_only_not_realized": True,
+                    "reason": "no_sealed_evidence",
+                    "control": None,
+                    "counterfactuals": [],
+                }
+            else:
+                starting_cash_micros = int(
+                    Decimal(
+                        str(
+                            self.config.platform_opportunity.political_paper_starting_cash
+                        )
+                    )
+                    * 1_000_000
+                )
+                payload = evaluate_required_political_sizing_scenarios(
+                    opportunities=opportunities,
+                    exit_evidence=exits,
+                    starting_cash_micros=starting_cash_micros,
+                    displayed_depth_fraction=Decimal(
+                        str(
+                            self.config.platform_opportunity.political_paper_entry_depth_fraction
+                        )
+                    ),
+                ).dashboard_payload()
+        except Exception as exc:
+            logger.exception("Counterfactual sizing projection failed")
+            payload = {
+                "label": "counterfactual_sizing",
+                "status": "evidence_invalid",
+                "read_only_not_realized": True,
+                "reason": f"{type(exc).__name__}: {exc}"[:300],
+                "control": None,
+                "counterfactuals": [],
+            }
+        dashboard_state.platform_opportunity["counterfactual_sizing"] = payload
 
     async def _political_paper_ttl_sweeper(self) -> None:
         """Run a bounded TTL check independently of completed book reads."""

@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 import asyncio
 
 import httpx
 import pytest
 
+import run_with_dashboard
 from run_with_dashboard import TradingBotWithDashboard, _catalog_coverage_status
 from core.combinatorial_arb import SamePlatformArbitrageDetector
 from core.cross_platform_arb import MarketPair
@@ -20,6 +22,10 @@ from core.platform_opportunities import (
 )
 from core.platform_opportunity_runtime import PlatformOpportunityWorker
 from core.political_experimental_paper import PoliticalExperimentalPaperLedger
+from core.political_sizing_report import (
+    PoliticalSizingDepthLevel,
+    PoliticalSizingOpportunity,
+)
 from core.production_runtime import ProductionArbitrageRuntime
 from core.execution_journal import ExecutionJournal
 from core.operations import PersistentOperatorControls
@@ -91,6 +97,58 @@ async def test_platform_dashboard_starts_with_an_isolated_empty_counterfactual_p
         }
     finally:
         await bot._shutdown_platform_opportunity_system()
+
+
+def test_counterfactual_dashboard_refresh_projects_sealed_evidence_without_store_writes(
+    tmp_path, monkeypatch
+):
+    """The live pane evaluates control evidence but never creates scenario state."""
+    store = PlatformOpportunityStore(tmp_path / "opportunities.db")
+    bot = TradingBotWithDashboard(BotConfig())
+    bot.platform_opportunity_store = store
+    bot.platform_opportunity_system = SimpleNamespace(cohort_id="evidence:dashboard")
+    dashboard_state.platform_opportunity = {}
+    evidence = PoliticalSizingOpportunity(
+        evidence_cohort_id="evidence:dashboard",
+        signal_id="signal:dashboard",
+        entry_replay_sequence=7,
+        entry_replay_hash="hash:dashboard",
+        event_id="event:dashboard",
+        milestone_id="milestone:dashboard",
+        contract_id="contract:dashboard",
+        base_lane="event_live",
+        side="yes",
+        fee_schedule={
+            "schema_version": 1,
+            "venue": "kalshi",
+            "fee_type": "kalshi_quadratic",
+            "rate": "0.07",
+            "exponent": "1",
+            "multiplier": "1",
+            "observed_at": "2026-08-09T12:00:00+00:00",
+            "fetched_at": "2026-08-09T12:00:00+00:00",
+            "source": "kalshi_public_metadata",
+        },
+        levels=(PoliticalSizingDepthLevel("0.40", Decimal("100")),),
+    )
+    monkeypatch.setattr(
+        run_with_dashboard,
+        "sealed_political_sizing_evidence",
+        lambda *, store, cohort_id: ((evidence,), ()),
+    )
+    before = store._connection.total_changes
+
+    bot._refresh_counterfactual_sizing()
+
+    pane = dashboard_state.platform_opportunity["counterfactual_sizing"]
+    assert pane["status"] == "evaluated"
+    assert pane["read_only_not_realized"] is True
+    assert pane["evidence_cohort_id"] == "evidence:dashboard"
+    assert pane["control"]["allocations"][0]["signal_id"] == "signal:dashboard"
+    assert len(pane["counterfactuals"]) == 6
+    assert "realized_pnl_micros" not in pane
+    assert store._connection.total_changes == before
+    store.close()
 
 
 @pytest.mark.asyncio
