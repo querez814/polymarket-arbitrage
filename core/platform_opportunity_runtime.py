@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence, TypedDict
 
 from kalshi_client.models import KalshiMarket, KalshiMilestone
 from polymarket_client.models import Market, OrderBook
@@ -20,6 +20,21 @@ from core.platform_opportunities import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _EventLaneMetrics(TypedDict):
+    """Mutable, in-process service facts for a sealed occurrence lane."""
+
+    assigned: int
+    completed: int
+    dropped: int
+    failures: int
+    total_service_seconds: float
+    latest_service_seconds: float | None
+    first_assigned_at: datetime | None
+    last_assigned_at: datetime | None
+    last_completed_at: datetime | None
+    queued_at: dict[int, datetime]
 
 
 class PlatformOpportunityWorker:
@@ -49,7 +64,7 @@ class PlatformOpportunityWorker:
         # queues.  Durable backlog/restart coverage remains the store's
         # responsibility, so the dashboard never mistakes this for a replay
         # completeness measurement.
-        self._event_metrics: dict[str, dict[str, object]] = {}
+        self._event_metrics: dict[str, _EventLaneMetrics] = {}
         self._max_event_lanes = max_event_lanes
         self._running = False
         # Lanes may score canonical observations concurrently, but a paper
@@ -392,7 +407,7 @@ class PlatformOpportunityWorker:
             self._next_global_completion_sequence += 1
             self._global_completion_condition.notify_all()
 
-    def _lane_metric(self, route_key: str) -> dict[str, object]:
+    def _lane_metric(self, route_key: str) -> _EventLaneMetrics:
         return self._event_metrics.setdefault(
             route_key,
             {
